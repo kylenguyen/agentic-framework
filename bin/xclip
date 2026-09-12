@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# xclip shim for a headless host: serves the clipboard of the Mac that is attached over SSH.
+# Installed as ~/.local/bin/xclip (ahead of /usr/bin; do NOT apt install xclip).
+#
+# Claude Code calls:                                    shim:
+#   xclip -selection clipboard -t TARGETS -o          -> ssh <mac> clip-client targets
+#   xclip -selection clipboard -t image/png -o        -> ssh <mac> clip-client image   (raw PNG)
+#   xclip -selection clipboard -t text/plain -o | -o  -> ssh <mac> clip-client text
+#   xclip -selection clipboard|primary  (stdin)       -> ssh <mac> clip-client copy    (stdin -> pbcopy)
+# Anything else exits 1 so the caller falls through to its next option.
+#
+# Client discovery: SSH_CONNECTION from tmux (refreshed on every attach, so the latest attacher wins),
+# else from the environment; the IP is mapped to a tailnet name with `tailscale whois`.
+# Overrides: CLIP_BRIDGE_HOST=<ssh host>   CLIP_BRIDGE_FAKE=/path/file (serve a local file; testing)
+#            CLIP_BRIDGE_DEBUG=1 (trace to stderr)
+set -u
+
+log() { [ -n "${CLIP_BRIDGE_DEBUG:-}" ] && printf 'xclip-shim: %s\n' "$*" >&2; return 0; }
+
+sel=clipboard target= out=0
+while [ $# -gt 0 ]; do
+  case $1 in
+    -selection|-sel|-se|-s) [ $# -ge 2 ] || exit 1; sel=$2; shift 2 ;;
+    -t|-target|-targ)       [ $# -ge 2 ] || exit 1; target=$2; shift 2 ;;
+    -l|-loops|-d|-display)  [ $# -ge 2 ] || exit 1; shift 2 ;;
+    -o|-out)                out=1; shift ;;
+    -i|-in|-quiet|-silent|-verbose|-noutf8|-rmlastnl) shift ;;
+    *) log "unsupported arg: $1"; exit 1 ;;
+  esac
+done
+case $sel in clipboard|primary|secondary) ;; *) exit 1 ;; esac
+
+if [ "$out" = 1 ]; then
+  case $target in
+    TARGETS)                       op=targets ;;
+    image/png)                     op=image ;;
+    ""|text/plain*|UTF8_STRING|STRING|TEXT) op=text ;;
+    *) log "unsupported target: $target"; exit 1 ;;
+  esac
+else
+  op=copy
+fi
+log "sel=$sel op=$op"
+
+# ---- test backend: local file ----
+if [ -n "${CLIP_BRIDGE_FAKE:-}" ]; then
+  f=$CLIP_BRIDGE_FAKE
+  case $op in
+    targets)
+      if [ -f "$f" ] && head -c 8 "$f" | od -An -tx1 | tr -d ' \n' | grep -q '^89504e470d0a1a0a$'; then
+        echo image/png
+      else
+        echo 'text/plain UTF8_STRING'
+      fi ;;
+    image|text) exec cat "$f" ;;
+    copy) exec cat > "${CLIP_BRIDGE_COPY_FILE:-${XDG_RUNTIME_DIR:-/tmp}/clip-bridge-copied}" ;;
+  esac
+  exit 0
+fi
+
+# ---- real backend: ssh to the attached Mac ----
+host=${CLIP_BRIDGE_HOST:-}
+if [ -z "$host" ]; then
+  conn=
+  if [ -n "${TMUX:-}" ]; then
+    conn=$(tmux show-environment SSH_CONNECTION 2>/dev/null); conn=${conn#SSH_CONNECTION=}
+    case $conn in -*) conn= ;; esac
+  fi
+  [ -n "$conn" ] || conn=${SSH_CONNECTION:-}
+  [ -n "$conn" ] || { conn=$(tmux show-environment -t main SSH_CONNECTION 2>/dev/null); conn=${conn#SSH_CONNECTION=}; case $conn in -*) conn= ;; esac; }
+  ip=${conn%% *}
+  [ -n "$ip" ] || { log "no SSH_CONNECTION; set CLIP_BRIDGE_HOST"; exit 1; }
+  host=$(tailscale whois --json "$ip" 2>/dev/null | jq -r '.Node.ComputedName // empty' 2>/dev/null)
+  [ -n "$host" ] || host=$ip     # LAN client: ssh straight to the IP (ssh_config 192.168.10.* block)
+  log "ip=$ip host=$host"
+fi
+
+# Claude Code's clipboard probes have short timeouts; never hang.
+case $op in
+  targets) exec timeout 4 ssh "$host" clip-client targets ;;
+  image)   exec timeout 6 ssh "$host" clip-client image ;;
+  text)    exec timeout 4 ssh "$host" clip-client text ;;
+  copy)    exec timeout 4 ssh "$host" clip-client copy ;;
+esac

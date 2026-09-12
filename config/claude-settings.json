@@ -1,0 +1,36 @@
+{
+  "model": "claude-fable-5-1[1m]",
+  "theme": "dark",
+  "tui": "fullscreen",
+  "statusLine": {
+    "type": "command",
+    "command": "bash ~/.claude/statusline-command.sh"
+  },
+  "permissions": {
+    "allow": [
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git switch:*)",
+      "Bash(git checkout -b:*)",
+      "Bash(git worktree:*)",
+      "Bash(npm test:*)",
+      "Bash(bun test:*)",
+      "Bash(uv run:*)",
+      "Bash(pytest:*)"
+    ],
+    "deny": [
+      "Bash(git push --force:*)",
+      "Bash(git push -f:*)",
+      "Bash(rm -rf /:*)",
+      "Bash(sudo:*)",
+      "Read(~/.config/agents/**)",
+      "Edit(~/.config/agents/**)",
+      "Write(~/.config/agents/**)",
+      "Read(~/.ssh/**)"
+    ]
+  }
+}

@@ -1,0 +1,15 @@
+# as1 -> Macs, used by the xclip clipboard shim (bin/xclip). Rendered into ~/.ssh/config by
+# install-as1.sh, which replaces __MACUSER__ with the macOS login name (MAC_USER=...).
+# Names resolve via MagicDNS; the IP blocks cover a LAN-connected client (whois fails off-tailnet).
+Host macbook mini 100.* 192.168.10.*
+  User __MACUSER__
+  IdentityFile ~/.ssh/id_ed25519
+  IdentitiesOnly yes
+  BatchMode yes
+  ConnectTimeout 3
+  StrictHostKeyChecking accept-new
+  ControlMaster auto
+  ControlPath ~/.ssh/cm-%r@%h:%p
+  ControlPersist 10m
+  ServerAliveInterval 15
+  LogLevel ERROR

@@ -1,0 +1,15 @@
+# Mac -> as1. Appended to ~/.ssh/config on the Mac by install-mac.sh.
+Host as1
+  HostName as1
+  User kyle
+  IdentityFile ~/.ssh/id_ed25519
+  ServerAliveInterval 30
+  ServerAliveCountMax 4
+  ForwardAgent no
+
+Host as1-lan
+  HostName 192.168.10.2
+  User kyle
+  IdentityFile ~/.ssh/id_ed25519
+  ServerAliveInterval 30
+  ForwardAgent no
