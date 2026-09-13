@@ -25,8 +25,8 @@ Do not assume something exists because the plan describes it. Check this table a
 
 | Phase | Scope | State |
 |---|---|---|
-| 1 access | sshd hardening, ufw, mosh, linger | scripted (`install-as1-root.sh`, `config/sshd`, `config/ufw.sh`) |
-| 2 sessions | tmux, auto-attach, WezTerm domain | scripted (`config/tmux.conf`, `config/bashrc.d`, `config/wezterm-as1.lua`) |
+| 1 access | sshd hardening, ufw, mosh, zsh + chsh, linger | scripted (`install-as1-root.sh`, `config/sshd`, `config/ufw.sh`) |
+| 2 sessions | tmux, auto-attach, zsh + oh-my-zsh, WezTerm domain | scripted (`config/tmux.conf`, `config/zshenv`, `config/zshrc`, `config/bashrc.d`, `config/wezterm-as1.lua`) |
 | 3 harnesses | mise, uv, gh, four harnesses, secrets file, shared rules, Claude settings | scripted (`install-as1.sh`) |
 | 4 clipboard bridge | `xclip` shim on as1, `clip-client` on the Mac | scripted (`bin/xclip`, `bin/clip-client-mac.sh`) |
 | 5 automation | `agent` CLI, `agent-worker`, systemd units, GitHub runner workflow | planned, not started |
@@ -38,14 +38,16 @@ When you implement part of phase 5 or 6, update this table and section 8 of the 
 
 | Path | What it is | Installed to |
 |---|---|---|
-| `install-as1.sh` | idempotent user-level setup on as1, phases 2 to 4, plus toolchains and harnesses | run in place |
-| `install-as1-root.sh` | phase 1 root steps: password check, sshd, ufw, apt, linger, tailscale | run by a human with sudo |
+| `install-as1.sh` | idempotent user-level setup on as1, phases 2 to 4, plus oh-my-zsh, toolchains and harnesses | run in place |
+| `install-as1-root.sh` | phase 1 root steps: password check, sshd, ufw, apt (mosh gh zsh), chsh to zsh, linger, tailscale | run by a human with sudo |
 | `install-mac.sh` | idempotent Mac client setup, phases 1 to 4 | run on the Mac |
 | `bin/xclip` | clipboard shim; serves the attached Mac's clipboard to Claude Code | `~/.local/bin/xclip` on as1 |
 | `bin/clip-client-mac.sh` | `targets`/`image`/`text`/`copy` over pbpaste, pngpaste, pbcopy | `/usr/local/bin/clip-client` on the Mac |
 | `config/tmux.conf` | OSC 52 passthrough, mouse, history, SSH_CONNECTION refresh | `~/.tmux.conf` (symlink) |
-| `config/bashrc.d/agents-env.sh` | PATH and secrets for every shell, including non-interactive SSH | sourced at top of `~/.bashrc` |
-| `config/bashrc.d/mise.sh`, `tmux-autoattach.sh` | interactive-only shell bits | sourced at bottom of `~/.bashrc` |
+| `config/zshenv` | sources `agents-env.sh` for every zsh, incl. `ssh as1 <cmd>` | `~/.zshenv` (symlink) |
+| `config/zshrc` | oh-my-zsh (robbyrussell, git plugin, updates off) then the interactive fragments | `~/.zshrc` (symlink) |
+| `config/bashrc.d/agents-env.sh` | PATH and secrets for every shell, including non-interactive SSH; POSIX sh, shared by bash and zsh | sourced at top of `~/.bashrc` and from `~/.zshenv` |
+| `config/bashrc.d/mise.sh`, `tmux-autoattach.sh` | interactive-only shell bits, valid in bash and zsh | sourced at bottom of `~/.bashrc` and end of `~/.zshrc` |
 | `config/sshd/10-hardening.conf` | key or password for `kyle` (no empty passwords, `MaxAuthTries 4`), no root, `AllowUsers kyle` | `/etc/ssh/sshd_config.d/` (root script) |
 | `config/ufw.sh` | tailnet-only inbound, LAN SSH fallback | run by root script |
 | `config/ssh_config.as1` | as1 to Mac SSH block for the shim; `__MACUSER__` placeholder | marker block in `~/.ssh/config` on as1 |
@@ -74,7 +76,10 @@ mechanisms rather than inventing new ones:
 - **Placeholders** are rendered at install time: `__MACUSER__` in `config/ssh_config.as1`
   (from `MAC_USER=`), `<macuser>` in the docs. Do not hardcode a login name.
 - **Network installs are behind `--no-tools`** in `install-as1.sh`. Anything that downloads goes in
-  that branch, guarded with `command -v` so a re-run skips it.
+  that branch, guarded with `command -v` (or `[ -d ]` for `~/.oh-my-zsh`) so a re-run skips it.
+- **Shell fragments run under bash and zsh.** `~/.zshrc` and `~/.zshenv` source the same
+  `config/bashrc.d/*.sh` files as `~/.bashrc`; keep them POSIX or `[[ ]]`-only and branch on
+  `$ZSH_VERSION` where the shells differ, rather than duplicating a zsh copy.
 - **Root and user steps stay in separate scripts.** Nothing in `install-as1.sh` or `install-mac.sh`
   may call `sudo` on as1; `install-mac.sh` may sudo only for the two documented steps.
 
@@ -101,6 +106,8 @@ Run these on as1 without sudo before you open a PR. `shellcheck` is not installe
 ```
 shellcheck install-as1.sh install-mac.sh install-as1-root.sh bin/xclip bin/clip-client-mac.sh config/ufw.sh config/bashrc.d/*.sh
 bash -n install-as1.sh install-mac.sh install-as1-root.sh bin/xclip
+zsh -n config/zshenv config/zshrc config/bashrc.d/*.sh
+NO_TMUX=1 zsh -ic 'echo $ZSH_THEME; type omz; command -v mise'   # robbyrussell, function, mise path
 tmux -f config/tmux.conf new -d -s check && tmux show -s set-clipboard && tmux kill-session -t check
 CLIP_BRIDGE_FAKE=/usr/share/pixmaps/debian-logo.png bin/xclip -selection clipboard -t TARGETS -o     # image/png
 CLIP_BRIDGE_FAKE=/usr/share/pixmaps/debian-logo.png bin/xclip -selection clipboard -t image/png -o | file -
@@ -108,7 +115,7 @@ python3 -m json.tool config/claude-settings.json >/dev/null
 ```
 
 `./install-as1.sh --no-tools` is safe to re-run on as1 and is the real idempotency test, but it
-rewrites `~/.bashrc`, `~/.ssh/config` and `~/.claude/settings.json` on this host. Run it only when
+rewrites `~/.bashrc`, `~/.ssh/config`, `~/.zshrc`, `~/.zshenv` and `~/.claude/settings.json` on this host. Run it only when
 your change touches those paths and say so in the PR.
 
 Needs a human, do not attempt: `install-as1-root.sh`, `config/ufw.sh`, anything under
@@ -126,7 +133,7 @@ In addition to the workspace house rules:
 - Never `apt install xclip` or otherwise put a real `xclip` ahead of the shim.
 - Never change the `AllowUsers`, `PasswordAuthentication` or firewall defaults without a note in
   the PR title; a reviewer must see it before merge.
-- Do not edit `~/.bashrc`, `~/.ssh/config` or `~/.claude/settings.json` by hand; change the repo
+- Do not edit `~/.bashrc`, `~/.zshrc`, `~/.zshenv`, `~/.ssh/config` or `~/.claude/settings.json` by hand; change the repo
   file and let the install script render it.
 - One agent per worktree. If `~/workspace/agentic-framework.wt/<slug>` exists for another job,
   pick a new slug.
