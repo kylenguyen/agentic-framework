@@ -28,7 +28,7 @@ Do not assume something exists because the plan describes it. Check this table a
 | 1 access | sshd hardening, ufw, mosh, zsh + chsh, linger | scripted (`install-as1-root.sh`, `config/sshd`, `config/ufw.sh`) |
 | 2 sessions | tmux, auto-attach, zsh + oh-my-zsh, WezTerm domain | scripted (`config/tmux.conf`, `config/zshenv`, `config/zshrc`, `config/bashrc.d`, `config/wezterm-as1.lua`) |
 | 3 harnesses | mise, uv, gh, four harnesses, secrets file, shared rules, Claude settings | scripted (`install-as1.sh`) |
-| 4 clipboard bridge | `xclip` shim on as1, `clip-client` on the Mac | scripted (`bin/xclip`, `bin/clip-client-mac.sh`) |
+| 4 clipboard bridge | Mac pushes images on Cmd+V; `clip-put` spool and `xclip` shim on as1 | scripted (`bin/xclip`, `bin/clip-put`, `bin/clip-push-mac.sh`, Cmd+V in `config/wezterm-as1.lua`) |
 | 5 automation | `agent` CLI, `agent-worker`, systemd units, GitHub runner workflow | planned, not started |
 | 6 isolation | `docker/Dockerfile.agent-sandbox`, `agent run --sandbox` | planned, not started |
 
@@ -40,9 +40,10 @@ When you implement part of phase 5 or 6, update this table and section 8 of the 
 |---|---|---|
 | `install-as1.sh` | idempotent user-level setup on as1, phases 2 to 4, plus oh-my-zsh, toolchains and harnesses | run in place |
 | `install-as1-root.sh` | phase 1 root steps: password check, sshd, ufw, apt (mosh gh zsh), chsh to zsh, linger, tailscale | run by a human with sudo |
-| `install-mac.sh` | idempotent Mac client setup, phases 1 to 4 | run on the Mac |
-| `bin/xclip` | clipboard shim; serves the attached Mac's clipboard to Claude Code | `~/.local/bin/xclip` on as1 |
-| `bin/clip-client-mac.sh` | `targets`/`image`/`text`/`copy` over pbpaste, pngpaste, pbcopy | `/usr/local/bin/clip-client` on the Mac |
+| `install-mac.sh` | idempotent Mac client setup, phases 1, 2 and 4; no sudo | run on the Mac |
+| `bin/xclip` | clipboard shim; serves the spool the Mac pushed (`~/.clip/latest`) to Claude Code, copies go back via OSC 52 | `~/.local/bin/xclip` on as1 |
+| `bin/clip-put` | stdin to the spool, atomic, mode 600; `--clear` | `~/.local/bin/clip-put` on as1 |
+| `bin/clip-push-mac.sh` | pngpaste or pbpaste piped over `ssh as1-clip` into `clip-put`, prints the type; WezTerm runs `--if-image` on Cmd+V | `~/.local/bin/clip-push` on the Mac |
 | `config/tmux.conf` | OSC 52 passthrough, mouse, history, SSH_CONNECTION refresh | `~/.tmux.conf` (symlink) |
 | `config/zshenv` | sources `agents-env.sh` for every zsh, incl. `ssh as1 <cmd>` | `~/.zshenv` (symlink) |
 | `config/zshrc` | oh-my-zsh (robbyrussell, git plugin, updates off) then the interactive fragments | `~/.zshrc` (symlink) |
@@ -50,12 +51,10 @@ When you implement part of phase 5 or 6, update this table and section 8 of the 
 | `config/bashrc.d/mise.sh`, `tmux-autoattach.sh` | interactive-only shell bits, valid in bash and zsh | sourced at bottom of `~/.bashrc` and end of `~/.zshrc` |
 | `config/sshd/10-hardening.conf` | key or password for `kyle` (no empty passwords, `MaxAuthTries 4`), no root, `AllowUsers kyle` | `/etc/ssh/sshd_config.d/` (root script) |
 | `config/ufw.sh` | tailnet-only inbound, LAN SSH fallback | run by root script |
-| `config/ssh_config.as1` | as1 to Mac SSH block for the shim; `__MACUSER__` placeholder | marker block in `~/.ssh/config` on as1 |
-| `config/ssh_config.mac` | `Host as1` and `as1-lan` | marker block in `~/.ssh/config` on the Mac |
-| `config/wezterm-as1.lua` | SSH domain `as1`, Cmd+Shift+A tab | `~/.config/wezterm/wezterm-as1.lua` |
+| `config/ssh_config.mac` | `Host as1`, `as1-lan`, and `as1-clip` (BatchMode, ControlMaster) for the push | marker block in `~/.ssh/config` on the Mac |
+| `config/wezterm-as1.lua` | SSH domain `as1`, Cmd+Shift+A tab, Cmd+V image push | `~/.config/wezterm/wezterm-as1.lua` |
 | `config/claude-settings.json` | Claude Code allow and deny lists | `~/.claude/settings.json` (symlink) |
 | `config/workspace/CLAUDE.md` | house rules for all repos under `~/workspace` | `~/workspace/CLAUDE.md` and `~/workspace/AGENTS.md` (symlinks) |
-| `config/as1.pub` | as1's public key, for Mac `authorized_keys` when as1 is unreachable | appended by `install-mac.sh` |
 | `env.example` | secret variable names only | copied to `~/.config/agents/env` once, mode 600 |
 | `docs/` | plan, Mac setup, runbook (to be written) | read only |
 
@@ -73,15 +72,15 @@ mechanisms rather than inventing new ones:
   `~/.ssh/config`. The `block` helper wraps content in `# >>> agentic-framework:<marker> >>>` and
   `# <<< agentic-framework:<marker> <<<` and replaces the block in place on re-run. Use a new
   marker name for new content; never append unmarked lines.
-- **Placeholders** are rendered at install time: `__MACUSER__` in `config/ssh_config.as1`
-  (from `MAC_USER=`), `<macuser>` in the docs. Do not hardcode a login name.
+- **No Mac login names anywhere.** Nothing on as1 needs to know who is at the Mac; the push is
+  anonymous and the last pusher wins. Do not reintroduce a `__MACUSER__`-style placeholder.
 - **Network installs are behind `--no-tools`** in `install-as1.sh`. Anything that downloads goes in
   that branch, guarded with `command -v` (or `[ -d ]` for `~/.oh-my-zsh`) so a re-run skips it.
 - **Shell fragments run under bash and zsh.** `~/.zshrc` and `~/.zshenv` source the same
   `config/bashrc.d/*.sh` files as `~/.bashrc`; keep them POSIX or `[[ ]]`-only and branch on
   `$ZSH_VERSION` where the shells differ, rather than duplicating a zsh copy.
 - **Root and user steps stay in separate scripts.** Nothing in `install-as1.sh` or `install-mac.sh`
-  may call `sudo` on as1; `install-mac.sh` may sudo only for the two documented steps.
+  may call `sudo`. The Mac side must stay sudo-free: a managed laptop should need no system changes.
 
 ## Change conventions
 
@@ -93,8 +92,8 @@ mechanisms rather than inventing new ones:
   `.env` and `*.local`; if you add a file that can hold a value, add it there too.
 - Docs move with code. A change to a script or config updates the matching phase in
   `docs/remote-agent-host-plan.md` or `docs/mac-client-setup.md`, including the test commands.
-- Keep the two Macs interchangeable. Nothing may depend on `macbook` specifically; the shim
-  discovers the attached client via `SSH_CONNECTION` and `tailscale whois`.
+- Keep the two Macs interchangeable. Nothing may depend on `macbook` specifically; the spool holds
+  whatever the last Mac pushed and nothing identifies a client.
 - Claude Code specifics belong in `config/claude-settings.json`; cross-harness rules belong in
   `config/workspace/CLAUDE.md`. Do not put Claude-only behaviour in the shared rules.
 
@@ -104,13 +103,14 @@ Run these on as1 without sudo before you open a PR. `shellcheck` is not installe
 `mise use -g shellcheck@latest` adds it without sudo, otherwise skip that line and say so.
 
 ```
-shellcheck install-as1.sh install-mac.sh install-as1-root.sh bin/xclip bin/clip-client-mac.sh config/ufw.sh config/bashrc.d/*.sh
-bash -n install-as1.sh install-mac.sh install-as1-root.sh bin/xclip
+shellcheck install-as1.sh install-mac.sh install-as1-root.sh bin/xclip bin/clip-put bin/clip-push-mac.sh config/ufw.sh config/bashrc.d/*.sh
+bash -n install-as1.sh install-mac.sh install-as1-root.sh bin/xclip bin/clip-put bin/clip-push-mac.sh
 zsh -n config/zshenv config/zshrc config/bashrc.d/*.sh
 NO_TMUX=1 zsh -ic 'echo $ZSH_THEME; type omz; command -v mise'   # robbyrussell, function, mise path
 tmux -f config/tmux.conf new -d -s check && tmux show -s set-clipboard && tmux kill-session -t check
-CLIP_BRIDGE_FAKE=/usr/share/pixmaps/debian-logo.png bin/xclip -selection clipboard -t TARGETS -o     # image/png
-CLIP_BRIDGE_FAKE=/usr/share/pixmaps/debian-logo.png bin/xclip -selection clipboard -t image/png -o | file -
+CLIP_BRIDGE_SPOOL=/usr/share/pixmaps/debian-logo.png bin/xclip -selection clipboard -t TARGETS -o    # image/png
+CLIP_BRIDGE_SPOOL=/usr/share/pixmaps/debian-logo.png bin/xclip -selection clipboard -t image/png -o | file -
+S=$(mktemp); printf plain | CLIP_BRIDGE_SPOOL=$S bin/clip-put && CLIP_BRIDGE_SPOOL=$S bin/xclip -selection clipboard -o; echo; rm -f $S   # plain
 python3 -m json.tool config/claude-settings.json >/dev/null
 ```
 
@@ -129,7 +129,7 @@ In addition to the workspace house rules:
 - Never run or "test" the root script, the ufw script or an sshd config, and never reload
   `ssh`, `ufw` or `tailscale`. A mistake there locks the only operator out of a headless box.
 - Never read, print or alter key material: `~/.ssh/id_ed25519`, `authorized_keys`,
-  `~/.config/agents/env`. `config/as1.pub` is the one public key in the repo and may be read.
+  `~/.config/agents/env`. Treat `~/.clip/latest` the same way: it holds whatever the user last pasted.
 - Never `apt install xclip` or otherwise put a real `xclip` ahead of the shim.
 - Never change the `AllowUsers`, `PasswordAuthentication` or firewall defaults without a note in
   the PR title; a reviewer must see it before merge.

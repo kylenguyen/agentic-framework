@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 # Idempotent user-level setup for as1 (phases 2-4). Safe to re-run.
-# Usage: MAC_USER=<macOS login> ./install-as1.sh [--no-tools]
+# Usage: ./install-as1.sh [--no-tools]
 #   --no-tools   skip network installs (oh-my-zsh, mise toolchains, uv, harnesses)
 # Root-level steps (sshd, ufw, apt, chsh to zsh, linger, tailscale) live in install-as1-root.sh.
 set -euo pipefail
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-MAC_USER=${MAC_USER:-kyle}
 TOOLS=1; [ "${1:-}" = "--no-tools" ] && TOOLS=0
 
 say()  { printf '\033[1;34m==> %s\033[0m\n' "$*"; }
@@ -41,6 +40,16 @@ block() {
   cat "$tmp" > "$file"; rm -f "$tmp"
 }
 
+# unblock <file> <marker>: remove a marked block left by an earlier version of this script, if present.
+unblock() {
+  local file=$1 marker=$2 begin end tmp
+  begin="# >>> agentic-framework:$marker >>>"; end="# <<< agentic-framework:$marker <<<"
+  grep -qF "$begin" "$file" 2>/dev/null || return 0
+  tmp=$(mktemp)
+  awk -v b="$begin" -v e="$end" '$0==b {skip=1; next} $0==e {skip=0; next} !skip' "$file" > "$tmp"
+  cat "$tmp" > "$file"; rm -f "$tmp"; note "rm   $file [$marker]"
+}
+
 say "Phase 2: tmux + shell"
 link "$REPO/config/tmux.conf" "$HOME/.tmux.conf"
 link "$REPO/config/bashrc.d" "$HOME/.bashrc.d"
@@ -71,12 +80,12 @@ link "$REPO/config/workspace/AGENTS.md" "$HOME/workspace/AGENTS.md"
 install -d "$HOME/.claude"
 link "$REPO/config/claude-settings.json" "$HOME/.claude/settings.json"
 
-say "Phase 4: clipboard bridge"
+say "Phase 4: clipboard bridge (clip-put writes the spool, the xclip shim serves it)"
 install -d "$HOME/.local/bin"
 link "$REPO/bin/xclip" "$HOME/.local/bin/xclip"
-install -d -m 700 "$HOME/.ssh"; touch "$HOME/.ssh/config"; chmod 600 "$HOME/.ssh/config"
-block "$HOME/.ssh/config" clip-bridge bottom "$(sed "s/__MACUSER__/$MAC_USER/" "$REPO/config/ssh_config.as1" | grep -v '^#')"
-note "ssh config User for the Macs: $MAC_USER (override with MAC_USER=...)"
+link "$REPO/bin/clip-put" "$HOME/.local/bin/clip-put"
+# The first design had as1 SSH into the Macs; drop the ~/.ssh/config block it left behind.
+if [ -f "$HOME/.ssh/config" ]; then unblock "$HOME/.ssh/config" clip-bridge; fi
 
 if [ "$TOOLS" = 1 ]; then
   say "Phase 2: oh-my-zsh"

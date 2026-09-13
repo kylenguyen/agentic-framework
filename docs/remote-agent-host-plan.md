@@ -18,7 +18,7 @@ Assumed (correct me if wrong):
 - Tailnet-only access. Nothing exposed to the internet. LAN 192.168.10.0/24 kept as a fallback path for SSH.
 - Repos live under `~/workspace/<repo>`. This repo (`agentic-framework`) holds all scripts, configs and docs from this plan.
 - Git hosting is GitHub.
-- Both Macs may run the built-in SSH server (Remote Login) restricted to the tailnet. This is what the clipboard bridge relies on.
+- Nothing connects into the Macs. The clipboard bridge is a push from the Mac (Cmd+V in WezTerm) over the same Mac → as1 SSH path; Remote Login on the Macs is not required.
 - as1 sshd accepts key or password for `kyle`. Password login exists so a device without a provisioned key can still get in; ufw limits who can even reach port 22 (tailnet and home LAN only), and `AllowUsers` plus `PermitEmptyPasswords no` limit what a guess can hit. Keys stay the default for the Macs and for everything non-interactive (mosh, the clipboard bridge, `ssh as1 agent`).
 
 Verified on as1 while planning:
@@ -31,15 +31,15 @@ Verified on as1 while planning:
 ## 1. Target architecture
 
 ```
-  macbook / mini (WezTerm, Remote Login on)
-        │  ssh / mosh  →                ← ssh back for clipboard
+  macbook / mini (WezTerm)
+        │  ssh / mosh  →        image push on Cmd+V  →
         │        Tailscale only (100.64.0.0/10), LAN fallback for ssh
   ┌─────▼──────────────────────────────────────────────┐
   │ as1                                                │
   │  sshd key or password (kyle only) + mosh-server    │
   │  tmux: one session per repo, "agents" for jobs     │
   │  harnesses: claude, opencode, aider, omp           │
-  │  clipboard bridge: xclip shim → ssh <mac> pbpaste  │
+  │  clipboard: Mac push → clip-put spool → xclip shim │
   │  automation: agent CLI, systemd timers,            │
   │              GitHub runner, queue worker           │
   │  optional: Docker sandbox per repo                 │
@@ -49,7 +49,7 @@ Verified on as1 while planning:
 ```
 
 Text copy: remote → Mac via OSC 52 (tmux passes it through, WezTerm writes the Mac clipboard). Mac → remote via ordinary paste.
-Image paste: Claude Code calls `xclip`; the shim on as1 fetches the PNG from the attached Mac over SSH.
+Image paste: Cmd+V in WezTerm runs `clip-push --if-image` on the Mac, which pipes the image into `clip-put` on as1; WezTerm then sends Ctrl+V, Claude Code calls `xclip` and the shim serves that file.
 
 ## 2. Phase 1: access and hardening
 
@@ -84,7 +84,7 @@ Image paste: Claude Code calls `xclip`; the shim on as1 fetches the PNG from the
 6. `sudo apt install mosh zsh` (UDP 60000–61000 is covered by the tailscale0 allow rule); `chsh -s /usr/bin/zsh kyle`. Shell config is phase 2.
 7. `loginctl enable-linger kyle` so user systemd units and tmux survive logout.
 8. `sudo tailscale set --auto-update` and confirm unattended-upgrades is enabled: `systemctl status unattended-upgrades`.
-9. Optional: `sudo tailscale up --ssh` for identity-based SSH via Tailscale ACLs. Keep OpenSSH as well; mosh and the clipboard bridge use plain sshd.
+9. Optional: `sudo tailscale up --ssh` for identity-based SSH via Tailscale ACLs. Keep OpenSSH as well; mosh and the clipboard push use plain sshd.
 
 ### On the Mac
 
@@ -239,86 +239,62 @@ From the Mac, `ssh as1 'claude --bare -p "reply ok"'` returns text. This proves 
 
 ## 5. Phase 4: clipboard bridge for images
 
-Problem: a headless box has no clipboard, so Ctrl+V of a screenshot in Claude Code on as1 finds nothing. Claude Code shells out to `xclip`; a shim named `xclip` earlier in `PATH` serves the attached Mac's clipboard instead.
+Problem: a headless box has no clipboard, so pasting a screenshot into Claude Code on as1 finds nothing. A terminal carries text only, so the image has to travel separately. Claude Code shells out to `xclip`; a shim named `xclip` earlier in `PATH` serves a file that the Mac pushed a moment earlier.
+
+Design: push, not pull. Cmd+V in WezTerm runs `clip-push --if-image` on the Mac. Text is not pushed at all; WezTerm pastes it natively. An image is piped as PNG over the existing Mac → as1 SSH path into `clip-put` on as1, which writes `~/.clip/latest` atomically. WezTerm then sends Ctrl+V (the key Claude Code reads the clipboard on), Claude Code calls `xclip`, the shim reads the file. The first design had as1 SSH back into the Mac (Remote Login, an sshd drop-in, as1's key in `authorized_keys`); it was dropped because a managed Mac should not run an SSH server for this, and because a pull exposes the whole clipboard on demand while a push moves only what is deliberately pasted.
 
 ### On as1
 
-1. `bin/xclip` (installed to `~/.local/bin/xclip`, which is ahead of `/usr/bin` in PATH; do **not** `apt install xclip`). Behaviour:
+1. `bin/xclip` (installed to `~/.local/bin/xclip`, ahead of `/usr/bin` in PATH; do **not** `apt install xclip`). Behaviour:
 
    | Call Claude Code makes | Shim action |
    |---|---|
-   | `xclip -selection clipboard -t TARGETS -o` | `ssh <mac> clip-client targets` → prints `image/png` when the Mac clipboard holds an image, else `text/plain UTF8_STRING` |
-   | `xclip -selection clipboard -t image/png -o` | `ssh <mac> clip-client image` → raw PNG on stdout |
-   | `xclip -selection clipboard -t text/plain -o` (or `-o` alone) | `ssh <mac> clip-client text` |
-   | `xclip -selection clipboard` / `-selection primary` with stdin | `ssh <mac> clip-client copy` (stdin → pbcopy) |
+   | `xclip -selection clipboard -t TARGETS -o` | `image/png` if `~/.clip/latest` starts with the PNG magic, else `text/plain UTF8_STRING` |
+   | `xclip -selection clipboard -t image/png -o` | the file, raw PNG; exit 1 if it is not a PNG |
+   | `xclip -selection clipboard -t text/plain -o` (or `-o` alone) | the file; exit 1 if it is a PNG |
+   | `xclip -selection clipboard` / `-selection primary` with stdin | stdin → the file, plus an OSC 52 write to the terminal so the Mac clipboard follows (tmux `set-clipboard on` forwards it) |
 
-   Any other argument pattern: exit 1 so Claude Code falls through to its next option.
-2. Client discovery inside the shim:
-   - `ip=$(tmux show-environment SSH_CONNECTION 2>/dev/null || echo "$SSH_CONNECTION")`, take the first field. tmux refreshes SSH_CONNECTION on every attach, so the most recent attacher wins.
-   - `host=$(tailscale whois --json "$ip" | jq -r '.Node.ComputedName')`.
-   - `CLIP_BRIDGE_HOST` env var overrides discovery; `CLIP_BRIDGE_FAKE=/path/to.png` makes the shim serve a local file, used for testing as1 alone.
-3. SSH from as1 to the Macs: `~/.ssh/config` on as1 (repo `config/ssh_config.as1`):
-   ```
-   Host macbook mini
-     User <macuser>
-     IdentityFile ~/.ssh/id_ed25519
-     BatchMode yes
-     ConnectTimeout 3
-     StrictHostKeyChecking accept-new
-   ```
-   The shim must finish in about 2 s; Claude Code's clipboard calls have short timeouts. `ControlMaster auto` with `ControlPersist 10m` in the same block keeps a warm connection so later calls take milliseconds.
-4. `sudo apt install jq`.
+   Missing or empty file, or any other argument pattern: exit 1 so Claude Code falls through to its next option.
+   `CLIP_BRIDGE_SPOOL=/path` moves the file (point it at any PNG to test as1 alone); `CLIP_BRIDGE_DEBUG=1` traces to stderr.
+2. `bin/clip-put` (installed to `~/.local/bin/clip-put`): stdin → `~/.clip/latest`, directory mode 700, file mode 600, written through a temp file and `mv` so the shim never sees a half-written PNG. `clip-put --clear` deletes it. The Mac calls it by absolute path, so the minimal PATH of a non-interactive SSH command does not matter.
+3. Nothing else: no `jq`, no `tailscale whois`, no SSH config towards the Macs. The last Mac to push wins, which is what "the Mac I am typing on" means in practice.
 
 ### On the Mac
 
-1. Remote Login: System Settings → General → Sharing → Remote Login, on, "Allow access for: only these users: <macuser>". Or `sudo systemsetup -setremotelogin on`.
-2. Restrict sshd to the tailnet: in `/etc/ssh/sshd_config.d/100-tailnet.conf`
-   ```
-   PasswordAuthentication no
-   KbdInteractiveAuthentication no
-   AllowUsers <macuser>@100.64.0.0/10 <macuser>@192.168.10.0/24
-   ```
-   then `sudo launchctl kickstart -k system/com.openssh.sshd`.
-3. Append as1's public key (`ssh kyle@as1 cat ~/.ssh/id_ed25519.pub`) to `~/.ssh/authorized_keys` on the Mac, mode 600, `~/.ssh` mode 700.
-4. `brew install pngpaste`.
-5. `clip-client` script (repo `bin/clip-client-mac.sh`) installed to `/usr/local/bin/clip-client` so it is on the non-interactive SSH PATH:
-   ```
-   targets: osascript -e 'clipboard info' | grep -q 'PNGf\|TIFF' && echo image/png || echo 'text/plain UTF8_STRING'
-   image:   pngpaste -
-   text:    pbpaste
-   copy:    pbcopy
-   ```
-   Non-interactive SSH sessions get a minimal PATH; `/usr/local/bin` and `/opt/homebrew/bin` must be spelled out inside the script.
-6. Mac firewall: if the application firewall is on, allow `sshd-keygen-wrapper`; the `AllowUsers` rule above does the network scoping.
+1. `brew install pngpaste` (turns whatever image class the clipboard holds into PNG on stdout).
+2. `bin/clip-push-mac.sh` installed to `~/.local/bin/clip-push`, no sudo. `osascript -e 'clipboard info'` decides image or text and the type is printed first; `pngpaste -` or `pbpaste` is piped to `ssh as1-clip '~/.local/bin/clip-put'`. With `--if-image` text is reported but not pushed. WezTerm starts it with a minimal environment, so the script sets its own PATH. `CLIP_PUSH_HOST=as1-lan` when off the tailnet.
+3. `Host as1-clip` in `~/.ssh/config` (repo `config/ssh_config.mac`): same key as `as1`, `BatchMode yes`, `ConnectTimeout 3`, `ControlMaster auto` with `ControlPersist 10m` so every push after the first takes milliseconds. Separate from `Host as1` so interactive sessions and mosh keep their own settings.
+4. `config/wezterm-as1.lua` binds Cmd+V: if the pane is the `as1` SSH domain, or a local pane whose foreground process is `ssh` or `mosh-client`, run `clip-push --if-image` synchronously (`wezterm.run_child_process`). Type `text/plain`: ordinary `PasteFrom Clipboard`. Type `image/png` and the push succeeded: send Ctrl+V to the pane. Push failed: a toast shows the error and no key is sent, so a stale image is never pasted. Any other pane gets the ordinary paste. Ctrl+V is left unbound.
 
 ### Test as1 alone
 
 ```
-ls -l ~/.local/bin/xclip && command -v xclip        # shim wins over /usr/bin
-CLIP_BRIDGE_FAKE=/usr/share/pixmaps/debian-logo.png xclip -selection clipboard -t TARGETS -o   # image/png
-CLIP_BRIDGE_FAKE=/usr/share/pixmaps/debian-logo.png xclip -selection clipboard -t image/png -o | file -   # PNG image data
-tailscale whois --json 100.93.240.89 | jq -r .Node.ComputedName    # macbook
+ls -l ~/.local/bin/xclip ~/.local/bin/clip-put && command -v xclip       # shim wins over /usr/bin
+CLIP_BRIDGE_SPOOL=/usr/share/pixmaps/debian-logo.png xclip -selection clipboard -t TARGETS -o             # image/png
+CLIP_BRIDGE_SPOOL=/usr/share/pixmaps/debian-logo.png xclip -selection clipboard -t image/png -o | file -  # PNG image data
+printf plain | clip-put && xclip -selection clipboard -t TARGETS -o && xclip -selection clipboard -o; echo # text/plain UTF8_STRING, plain
+clip-put --clear; xclip -selection clipboard -t TARGETS -o; echo "exit $?"                                # exit 1
 ```
-Then start `claude` in tmux with `CLIP_BRIDGE_FAKE` exported, press Ctrl+V: the prompt shows an attached image. This proves the Claude Code ↔ shim contract without any Mac involvement.
+Then start `claude` in tmux with `CLIP_BRIDGE_SPOOL=/usr/share/pixmaps/debian-logo.png` exported, press Ctrl+V: the prompt shows an attached image. This proves the Claude Code ↔ shim contract without any Mac involvement.
 
 ### Test the Mac alone
 
-In a local terminal after Cmd+Shift+Ctrl+4 (screenshot to clipboard):
+After Cmd+Shift+Ctrl+4 (screenshot to clipboard), in a local terminal:
 
 ```
-clip-client targets        # image/png
-clip-client image | file - # PNG image data
-printf plain | pbcopy; clip-client targets; clip-client text
-ssh -o BatchMode=yes <macuser>@localhost clip-client targets     # exercises the non-interactive PATH and sshd config
-sudo sshd -T | grep -iE '^(passwordauthentication|allowusers)'
+clip-push && ssh as1 'file ~/.clip/latest'                                 # PNG image data
+printf plain | pbcopy; clip-push && ssh as1 'cat ~/.clip/latest'; echo     # plain
+time clip-push                                                             # second run well under 1 s (ControlMaster warm)
+clip-push --clear && ssh as1 'ls ~/.clip'                                  # nothing listed
 ```
 
 ### Joint checkpoint
 
-1. On as1: `ssh macbook clip-client text` returns the Mac clipboard in under a second; second call is faster (ControlMaster warm).
-2. From WezTerm on the Mac, `ssh as1`, in tmux start `claude`. Take a screenshot with Cmd+Shift+Ctrl+4, press Ctrl+V in Claude Code: the image attaches. Ask "what is in this image" to confirm it arrived intact.
-3. Attach from `mini` instead; repeat. The shim follows the most recent attacher.
-4. Over `mosh as1` repeat step 2. If SSH_CONNECTION is missing under mosh, set `CLIP_BRIDGE_HOST` in that shell; note the result in the runbook.
+1. Cmd+Shift+A (as1 tab), `claude` in tmux, Cmd+Shift+Ctrl+4, Cmd+V in Claude Code: the image attaches. Ask "what is in this image" to confirm it arrived intact.
+2. Same from a local WezTerm tab via `ssh as1`, then via `mosh as1`: the binding recognises both foreground processes.
+3. Repeat from `mini`. Whatever was pushed last is what pastes.
+4. Cmd+V of text into a shell on as1 pastes at once and does not touch the spool (`ls -l ~/.clip/latest` on as1 keeps its timestamp); Cmd+V in a local shell tab is the plain WezTerm paste.
+5. Copy inside Claude Code or tmux copy mode still lands on the Mac clipboard via OSC 52 (phase 2).
 
 Fallbacks that always work: `tailscale file cp shot.png as1:` then `tailscale file get ~/inbox` on as1 and paste the path into the prompt; or `claude --remote-control` and attach the image from claude.ai in a browser.
 
@@ -397,15 +373,15 @@ A sandboxed run from the Mac completes with changes only inside the mounted work
 ## 8. Repo layout for agentic-framework
 
 ```
-bin/            agent, agent-worker, xclip (shim), clip-client-mac.sh
-config/         tmux.conf, zshenv, zshrc, sshd/10-hardening.conf, ufw.sh, ssh_config.as1, ssh_config.mac,
+bin/            agent, agent-worker, xclip (shim), clip-put, clip-push-mac.sh
+config/         tmux.conf, zshenv, zshrc, sshd/10-hardening.conf, ufw.sh, ssh_config.mac,
                 wezterm-as1.lua, claude-settings.json, bashrc.d/{agents-env,mise,tmux-autoattach}.sh
 systemd/        agent@.service, agent-worker.service, agent-<job>.timer templates
 docker/         Dockerfile.agent-sandbox
 docs/           this plan, runbook (attach/steer/kill/clean), mac-client-setup.md
 env.example     variable names only
 install-as1.sh  idempotent: symlinks configs, installs bin/, enables units, prints manual sudo steps
-install-mac.sh  idempotent: brew installs, clip-client, ssh config, prints the Remote Login steps
+install-mac.sh  idempotent, no sudo: brew installs, clip-push, ssh config block, WezTerm include
 ```
 
 ## 9. Order and time
@@ -422,7 +398,6 @@ install-mac.sh  idempotent: brew installs, clip-client, ssh config, prints the R
 ## 10. Open items
 
 - Git host confirmation (GitHub assumed).
-- macOS login names on macbook and mini, and whether both Macs get Remote Login or only macbook.
 - Notification channel for finished jobs (ntfy assumed).
 - First repo and prompt for a scheduled job.
 - Claude Code `--remote-control` availability on your plan, only if the phone path matters.

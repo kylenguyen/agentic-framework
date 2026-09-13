@@ -1,16 +1,15 @@
 # Mac client setup for as1 (phases 1–4)
 
 Companion to `remote-agent-host-plan.md`. Do these steps on `macbook` first, then repeat on `mini`.
-Everything here runs in a local terminal on the Mac unless it says "on as1".
-`<macuser>` is your macOS login name (`id -un`). Replace `macbook` with `mini` when doing the second Mac.
+Everything here runs in a local terminal on the Mac unless it says "on as1". Nothing needs sudo.
 
 Prerequisites: Homebrew, the Tailscale app signed in to the same tailnet, WezTerm, and an
 `~/.ssh/id_ed25519` key whose public half is already in `~/.ssh/authorized_keys` on as1
 (it is; `ssh kyle@as1` already works from macbook).
 
-Fast path: clone this repo on the Mac and run `./install-mac.sh`. It does steps 1.1, 1.2, 2.1, 4.3, 4.4, 4.5
-and writes the sshd file from 4.2. Steps 1.3, 2.2 and 4.1 are manual. The rest of this document is the
-same work step by step, plus the verification for each phase.
+Fast path: clone this repo on the Mac and run `./install-mac.sh`. It does steps 1.1, 1.2, 2.1, 4.1 and 4.2.
+Steps 1.3 and 2.2 are manual. The rest of this document is the same work step by step, plus the verification
+for each phase.
 
 ```
 git clone git@github.com:kylenguyen/agentic-framework.git ~/workspace/agentic-framework
@@ -21,7 +20,9 @@ cd ~/workspace/agentic-framework && ./install-mac.sh
 
 ### 1.1 SSH client config
 
-Append to `~/.ssh/config` (content also in `config/ssh_config.mac`):
+The installer writes the content of `config/ssh_config.mac` into a marker block in `~/.ssh/config`
+(between `# >>> agentic-framework:as1 >>>` and `# <<< agentic-framework:as1 <<<`, replaced in place on re-run).
+By hand, append:
 
 ```
 Host as1
@@ -38,9 +39,24 @@ Host as1-lan
   IdentityFile ~/.ssh/id_ed25519
   ServerAliveInterval 30
   ForwardAgent no
+
+Host as1-clip
+  HostName as1
+  User kyle
+  IdentityFile ~/.ssh/id_ed25519
+  IdentitiesOnly yes
+  BatchMode yes
+  ConnectTimeout 3
+  ControlMaster auto
+  ControlPath ~/.ssh/cm-%r@%h:%p
+  ControlPersist 10m
+  ForwardAgent no
+  LogLevel ERROR
 ```
 
-`as1` resolves through MagicDNS (`as1.manee-goby.ts.net`). `as1-lan` is the home-LAN fallback.
+`as1` resolves through MagicDNS (`as1.manee-goby.ts.net`). `as1-lan` is the home-LAN fallback. `as1-clip` is
+the same host with settings for the clipboard push (phase 4): it never prompts, gives up after 3 s, and keeps one
+connection warm for 10 minutes so a push takes milliseconds.
 
 ### 1.2 mosh
 
@@ -50,13 +66,14 @@ brew install mosh
 
 ### 1.3 Tailscale at login
 
-Tailscale menu bar icon → Preferences → tick "Start Tailscale on login". Leave "Allow incoming connections" on;
-the clipboard bridge (phase 4) needs as1 to reach the Mac.
+Tailscale menu bar icon → Preferences → tick "Start Tailscale on login". "Allow incoming connections" can stay
+off; nothing on as1 connects into the Mac.
 
 ### Verify Phase 1 (Mac alone)
 
 ```
 ssh -G as1 | grep -E '^(hostname|user|identityfile) '   # hostname as1, user kyle, identityfile ~/.ssh/id_ed25519
+ssh -G as1-clip | grep -E '^(batchmode|controlmaster|connecttimeout) '   # yes, auto, 3
 /Applications/Tailscale.app/Contents/MacOS/Tailscale status | grep as1   # as1 listed, not offline
 dns-sd -G v4 as1.manee-goby.ts.net                        # Ctrl+C after it prints 100.112.145.54
 mosh --version | head -1
@@ -71,7 +88,7 @@ ssh as1-lan true && echo lan-ok            # only while on the 192.168.10.0/24 L
 mosh as1                                   # lands in tmux "main"; toggle Wi-Fi off/on, session survives
 ```
 
-`ssh as1 true` must not prompt: the Mac's key is the everyday path, and mosh, the clipboard bridge and `ssh as1 agent` all depend on it. The password test is the fallback for a device without a provisioned key; if it says "Permission denied (publickey)" the root script on as1 has not run yet.
+`ssh as1 true` must not prompt: the Mac's key is the everyday path, and mosh, the clipboard push and `ssh as1 agent` all depend on it. The password test is the fallback for a device without a provisioned key; if it says "Permission denied (publickey)" the root script on as1 has not run yet.
 
 ## Phase 2: terminal
 
@@ -94,8 +111,9 @@ return config
 ```
 
 What it does: registers an SSH domain named `as1` (plain ssh, no WezTerm multiplexing, tmux on as1 does that),
-sets `TERM=xterm-256color`, and binds Cmd+Shift+A to open a new tab on as1. OSC 52 clipboard writes are on
-by default in WezTerm, so text copied inside tmux on as1 lands on the Mac clipboard without any bridge.
+sets `TERM=xterm-256color`, binds Cmd+Shift+A to open a new tab on as1, and takes over Cmd+V for the clipboard
+push described in phase 4 (in every other pane Cmd+V is the ordinary paste). OSC 52 clipboard writes are on by default in WezTerm, so text copied inside tmux on as1
+lands on the Mac clipboard without any bridge.
 
 ### 2.2 Reload WezTerm
 
@@ -139,105 +157,78 @@ filled in on as1 (`~/.config/agents/env`); until then it fails with an authentic
 
 ## Phase 4: clipboard bridge (image paste into Claude Code on as1)
 
-as1 fetches the Mac clipboard by SSHing back to the Mac and running `clip-client`. Four things must be true:
-Remote Login on, sshd restricted to the tailnet, as1's key authorised, `clip-client` and `pngpaste` installed.
+The Mac pushes; as1 never connects back. When you press Cmd+V in a pane connected to as1, WezTerm first runs
+`clip-push --if-image`. If the clipboard holds text, nothing is pushed and WezTerm pastes it the normal way. If it
+holds an image, `clip-push` pipes it as PNG over `ssh as1-clip` into `clip-put` on as1, which stores it as
+`~/.clip/latest`; WezTerm then sends Ctrl+V, the key Claude Code reads the clipboard on, Claude Code calls `xclip`,
+and the shim on as1 serves that file. No Remote Login, no sshd change, no key from as1, no sudo, and only the
+images you deliberately paste leave the Mac.
 
-### 4.1 Remote Login
+Panes that get this treatment: as1 SSH domain tabs (Cmd+Shift+A) and local tabs whose foreground process is `ssh`
+or `mosh-client`. Everywhere else Cmd+V is the ordinary paste. If an image push fails, WezTerm shows a toast and
+does not send Ctrl+V, so Claude Code never pastes a stale image. Ctrl+V itself is not bound: pressing it in Claude
+Code reads whatever as1 last received.
 
-System Settings → General → Sharing → Remote Login: on. Click the (i) button and set
-"Allow access for: Only these users" → add `<macuser>` only. Leave "Allow full disk access for remote users" off.
-
-Terminal alternative: `sudo systemsetup -setremotelogin on`.
-
-### 4.2 Restrict sshd to key-only and the tailnet
-
-```
-sudo tee /etc/ssh/sshd_config.d/100-tailnet.conf >/dev/null <<'CONF'
-PasswordAuthentication no
-KbdInteractiveAuthentication no
-AllowUsers <macuser>@100.64.0.0/10 <macuser>@192.168.10.0/24
-CONF
-sudo sshd -t && sudo launchctl kickstart -k system/com.openssh.sshd
-```
-
-macOS 13 and later already have `Include /etc/ssh/sshd_config.d/*` in `/etc/ssh/sshd_config`; check with
-`grep Include /etc/ssh/sshd_config`. Replace `<macuser>` literally, e.g. `AllowUsers alice@100.64.0.0/10 alice@192.168.10.0/24`.
-
-### 4.3 Authorise as1's key
-
-```
-ssh as1 cat .ssh/id_ed25519.pub >> ~/.ssh/authorized_keys
-chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys
-```
-
-The same key is in `config/as1.pub` in this repo if as1 is unreachable.
-
-### 4.4 pngpaste
+### 4.1 pngpaste
 
 ```
 brew install pngpaste
 ```
 
-### 4.5 clip-client
+### 4.2 clip-push
 
 ```
-sudo install -m 755 bin/clip-client-mac.sh /usr/local/bin/clip-client
+install -d ~/.local/bin && install -m 755 bin/clip-push-mac.sh ~/.local/bin/clip-push
 ```
 
-It must live in `/usr/local/bin` because non-interactive SSH sessions get a minimal PATH. The script itself
-adds `/opt/homebrew/bin` so it can find `pngpaste`.
+WezTerm starts it with a minimal environment, so the script sets its own PATH (Homebrew for `pngpaste`) and the
+Lua config calls it by absolute path. `CLIP_PUSH_HOST=as1-lan clip-push` pushes over the LAN when off the tailnet.
 
-### 4.6 Application firewall
+### 4.3 Reload WezTerm
 
-If System Settings → Network → Firewall is on: it prompts the first time sshd receives a connection, allow it.
-Or add it up front: `sudo /usr/libexec/ApplicationFirewall/socketfilterfw --add /usr/libexec/sshd-keygen-wrapper`.
-Network scoping is done by the `AllowUsers` line, not by the firewall.
+Cmd+Shift+R. The Cmd+V binding is in the same `wezterm-as1.lua` you installed in 2.1.
 
-### Verify Phase 4 (Mac alone)
+### Verify Phase 4 (Mac alone; as1 must have run `install-as1.sh`)
 
 Take a screenshot to the clipboard with Cmd+Shift+Ctrl+4, then:
 
 ```
-clip-client targets            # image/png
-clip-client image | file -     # PNG image data
-printf plain | pbcopy; clip-client targets; clip-client text; echo     # text/plain UTF8_STRING, then "plain"
-ssh -o BatchMode=yes <macuser>@localhost clip-client targets   # exercises the non-interactive PATH and sshd
-sudo sshd -T | grep -iE '^(passwordauthentication|allowusers)'   # no, and your AllowUsers line
-sudo systemsetup -getremotelogin                                 # Remote Login: On
+clip-push && ssh as1 'file ~/.clip/latest'                    # prints image/png, then: PNG image data
+printf plain | pbcopy; clip-push && ssh as1 'cat ~/.clip/latest'; echo   # text/plain, then plain
+clip-push --if-image                                          # text/plain, and ~/.clip/latest on as1 is unchanged
+time clip-push                                                # well under 1 s on the second run (ControlMaster warm)
+ls ~/.ssh/cm-kyle@as1:22                                      # control socket, lives 10 min after the last push
+clip-push --clear && ssh as1 'ls ~/.clip'                     # nothing listed
 ```
-
-The `localhost` test will be refused by `AllowUsers` if you connect from 127.0.0.1, because only tailnet and LAN
-sources are allowed. That refusal is itself a correct result; use your tailnet IP instead:
-`ssh -o BatchMode=yes <macuser>@100.93.240.89 clip-client targets` (mini: `100.84.188.45`).
 
 ### Joint checkpoint Phase 4
 
-1. On as1 (`ssh as1`): `time ssh macbook clip-client text` returns the Mac clipboard in under a second;
-   run it twice, the second is faster (ControlMaster keeps the connection warm for 10 minutes).
-   First run may print a "Permanently added" host-key line; that is `StrictHostKeyChecking accept-new`.
-2. From WezTerm on the Mac: `ssh as1`, in tmux run `claude`. Cmd+Shift+Ctrl+4, select an area, then in
-   Claude Code press Ctrl+V. The prompt shows `[Image #1]`. Ask "what is in this image".
-3. Repeat step 2 from `mini`. The shim follows the most recent attacher (tmux refreshes `SSH_CONNECTION`
-   on each attach).
-4. Repeat step 2 over `mosh as1`. If the paste finds nothing, run `echo $SSH_CONNECTION` on as1: mosh may not
-   set it. Workaround in that shell: `export CLIP_BRIDGE_HOST=macbook`, then start `claude`. Note the result
-   in the runbook.
-5. Debugging on as1: `CLIP_BRIDGE_DEBUG=1 xclip -selection clipboard -t TARGETS -o` prints the discovered IP
-   and host, then the ssh result.
+1. Cmd+Shift+A (as1 tab), in tmux run `claude`. Cmd+Shift+Ctrl+4, select an area, then in Claude Code press
+   Cmd+V. The prompt shows `[Image #1]`. Ask "what is in this image".
+2. Same from a local WezTerm tab via `ssh as1`, then via `mosh as1`: the binding recognises both.
+3. Repeat step 1 from `mini`. Whatever was pushed last is what pastes.
+4. Cmd+V of text into a shell on as1 pastes at once and leaves the spool alone: `ls -l ~/.clip/latest` on as1
+   keeps its timestamp. Cmd+V in a local shell tab is the plain WezTerm paste.
+5. Debugging: on as1 `CLIP_BRIDGE_DEBUG=1 xclip -selection clipboard -t TARGETS -o` prints the spool path and
+   the decision; on the Mac run `clip-push` in a local terminal to see the ssh error the toast summarised.
+
+Hygiene: the last pushed item sits on as1 in `~/.clip/latest` (directory 700, file 600) until the next push.
+`clip-push --clear` from the Mac or `clip-put --clear` on as1 deletes it.
 
 Fallbacks that always work: `tailscale file cp shot.png as1:` on the Mac, then `tailscale file get ~/inbox`
 on as1 and give Claude Code the path; or `claude --remote-control` and attach the image from claude.ai.
 
 ## Redo on mini
 
-Same steps. In 4.2 use mini's own `<macuser>`. In the checkpoints, `tailscale whois --json 100.84.188.45`
-on as1 must return `mini`, and as1's `~/.ssh/config` block `Host macbook mini ...` already covers it;
-if mini's login name differs from macbook's, add a `Host mini` block with its own `User` above the shared block.
+Same steps; nothing is per-Mac. In the checkpoints, a push from mini simply replaces what macbook pushed.
 
 ## Rollback
 
-- Remove the bridge: on the Mac `sudo systemsetup -setremotelogin off`, delete
-  `/etc/ssh/sshd_config.d/100-tailnet.conf`, remove the `kyle@as1` line from `~/.ssh/authorized_keys`.
+- Remove the clipboard push: `rm ~/.local/bin/clip-push`, delete the `Host as1-clip` block from `~/.ssh/config`
+  (inside the `agentic-framework:as1` markers), reload WezTerm. On as1: `rm ~/.local/bin/clip-put ~/.local/bin/xclip`
+  and `rm -rf ~/.clip`.
 - Remove the WezTerm include: delete the `require("wezterm-as1")` line.
-- Remove the ssh config: delete the `Host as1` and `Host as1-lan` blocks (between the `agentic-framework:as1` markers
-  if `install-mac.sh` added them).
+- Remove the ssh config: delete the block between the `agentic-framework:as1` markers.
+- If the earlier pull design was installed (as1 SSHing into the Mac): `sudo systemsetup -setremotelogin off`,
+  `sudo rm /etc/ssh/sshd_config.d/100-tailnet.conf /usr/local/bin/clip-client`, remove the `kyle@as1` line from
+  `~/.ssh/authorized_keys`. On as1, `install-as1.sh` removes the old `Host macbook mini` block from `~/.ssh/config`.

@@ -1,22 +1,26 @@
 #!/usr/bin/env bash
-# xclip shim for a headless host: serves the clipboard of the Mac that is attached over SSH.
+# xclip shim for a headless host: serves the clipboard that the attached Mac pushed here.
 # Installed as ~/.local/bin/xclip (ahead of /usr/bin; do NOT apt install xclip).
 #
-# Claude Code calls:                                    shim:
-#   xclip -selection clipboard -t TARGETS -o          -> ssh <mac> clip-client targets
-#   xclip -selection clipboard -t image/png -o        -> ssh <mac> clip-client image   (raw PNG)
-#   xclip -selection clipboard -t text/plain -o | -o  -> ssh <mac> clip-client text
-#   xclip -selection clipboard|primary  (stdin)       -> ssh <mac> clip-client copy    (stdin -> pbcopy)
-# Anything else exits 1 so the caller falls through to its next option.
+# Data flow: Cmd+V in WezTerm runs clip-push on the Mac; when the Mac clipboard holds an image it is piped over
+# SSH into clip-put on this host, which writes the spool file ~/.clip/latest, and WezTerm then sends Ctrl+V,
+# the key Claude Code reads the clipboard on. Claude Code calls xclip:
 #
-# Client discovery: SSH_CONNECTION from tmux (refreshed on every attach, so the latest attacher wins),
-# else from the environment; the IP is mapped to a tailnet name with `tailscale whois`.
-# Overrides: CLIP_BRIDGE_HOST=<ssh host>   CLIP_BRIDGE_FAKE=/path/file (serve a local file; testing)
+# Claude Code calls:                                    shim:
+#   xclip -selection clipboard -t TARGETS -o          -> image/png if the spool starts with the PNG magic, else text/plain UTF8_STRING
+#   xclip -selection clipboard -t image/png -o        -> the spool, raw PNG (exit 1 if it is not a PNG)
+#   xclip -selection clipboard -t text/plain -o | -o  -> the spool (exit 1 if it is a PNG)
+#   xclip -selection clipboard|primary  (stdin)       -> stdin -> spool, plus OSC 52 to the terminal so the Mac clipboard follows
+# A missing or empty spool, or any other argument pattern, exits 1 so the caller falls through to its next option.
+#
+# Overrides: CLIP_BRIDGE_SPOOL=/path/file (spool location; point it at any PNG to test without a Mac)
 #            CLIP_BRIDGE_DEBUG=1 (trace to stderr)
 set -u
 
 log() { [ -n "${CLIP_BRIDGE_DEBUG:-}" ] && printf 'xclip-shim: %s\n' "$*" >&2; return 0; }
+is_png() { head -c 8 "$1" 2>/dev/null | od -An -tx1 | tr -d ' \n' | grep -q '^89504e470d0a1a0a$'; }
 
+spool=${CLIP_BRIDGE_SPOOL:-$HOME/.clip/latest}
 sel=clipboard target= out=0
 while [ $# -gt 0 ]; do
   case $1 in
@@ -40,45 +44,25 @@ if [ "$out" = 1 ]; then
 else
   op=copy
 fi
-log "sel=$sel op=$op"
+log "sel=$sel op=$op spool=$spool"
 
-# ---- test backend: local file ----
-if [ -n "${CLIP_BRIDGE_FAKE:-}" ]; then
-  f=$CLIP_BRIDGE_FAKE
-  case $op in
-    targets)
-      if [ -f "$f" ] && head -c 8 "$f" | od -An -tx1 | tr -d ' \n' | grep -q '^89504e470d0a1a0a$'; then
-        echo image/png
-      else
-        echo 'text/plain UTF8_STRING'
-      fi ;;
-    image|text) exec cat "$f" ;;
-    copy) exec cat > "${CLIP_BRIDGE_COPY_FILE:-${XDG_RUNTIME_DIR:-/tmp}/clip-bridge-copied}" ;;
-  esac
+if [ "$op" = copy ]; then
+  dir=$(dirname "$spool")
+  install -d -m 700 "$dir" || exit 1
+  tmp=$(mktemp "$dir/.put.XXXXXX") || exit 1
+  if ! cat > "$tmp" || ! chmod 600 "$tmp" || ! mv -f "$tmp" "$spool"; then rm -f "$tmp"; exit 1; fi
+  # Best effort OSC 52: tmux (set-clipboard on) forwards it to WezTerm, which writes the Mac clipboard.
+  # Without a controlling terminal (systemd job, plain `ssh as1 cmd`) the copy simply stays in the spool.
+  if { exec 3>/dev/tty; } 2>/dev/null; then
+    printf '\033]52;c;%s\a' "$(base64 < "$spool" | tr -d '\n')" >&3 || true
+    exec 3>&-
+  fi
   exit 0
 fi
 
-# ---- real backend: ssh to the attached Mac ----
-host=${CLIP_BRIDGE_HOST:-}
-if [ -z "$host" ]; then
-  conn=
-  if [ -n "${TMUX:-}" ]; then
-    conn=$(tmux show-environment SSH_CONNECTION 2>/dev/null); conn=${conn#SSH_CONNECTION=}
-    case $conn in -*) conn= ;; esac
-  fi
-  [ -n "$conn" ] || conn=${SSH_CONNECTION:-}
-  [ -n "$conn" ] || { conn=$(tmux show-environment -t main SSH_CONNECTION 2>/dev/null); conn=${conn#SSH_CONNECTION=}; case $conn in -*) conn= ;; esac; }
-  ip=${conn%% *}
-  [ -n "$ip" ] || { log "no SSH_CONNECTION; set CLIP_BRIDGE_HOST"; exit 1; }
-  host=$(tailscale whois --json "$ip" 2>/dev/null | jq -r '.Node.ComputedName // empty' 2>/dev/null)
-  [ -n "$host" ] || host=$ip     # LAN client: ssh straight to the IP (ssh_config 192.168.10.* block)
-  log "ip=$ip host=$host"
-fi
-
-# Claude Code's clipboard probes have short timeouts; never hang.
+[ -s "$spool" ] || { log "spool missing or empty"; exit 1; }
 case $op in
-  targets) exec timeout 4 ssh "$host" clip-client targets ;;
-  image)   exec timeout 6 ssh "$host" clip-client image ;;
-  text)    exec timeout 4 ssh "$host" clip-client text ;;
-  copy)    exec timeout 4 ssh "$host" clip-client copy ;;
+  targets) if is_png "$spool"; then echo image/png; else echo 'text/plain UTF8_STRING'; fi ;;
+  image)   is_png "$spool" || { log "spool is not a PNG"; exit 1; }; exec cat "$spool" ;;
+  text)    if is_png "$spool"; then log "spool is a PNG, not text"; exit 1; fi; exec cat "$spool" ;;
 esac
