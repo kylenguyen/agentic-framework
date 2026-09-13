@@ -43,7 +43,7 @@ install -d "$HOME/.config/wezterm"
 cp "$REPO/config/wezterm-as1.lua" "$HOME/.config/wezterm/wezterm-as1.lua"
 WEZ="$HOME/.config/wezterm/wezterm.lua"
 if [ ! -f "$WEZ" ]; then
-  # No config yet: write the minimal one from docs/mac-client-setup.md 2.1. An existing file is the user's; never edit it.
+  # No config yet: write the minimal one from README.md, section 2. An existing file is the user's; never edit it.
   cat > "$WEZ" <<'EOF'
 local wezterm = require("wezterm")
 local config = wezterm.config_builder()
@@ -66,10 +66,10 @@ block "$HOME/.zshrc" path 'case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) expor
 case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) note "open a new shell so clip-push is on PATH" ;; esac
 # The first design had as1 SSH into the Mac. Its leftovers need sudo to remove; point at the doc instead.
 for f in /usr/local/bin/clip-client /etc/ssh/sshd_config.d/100-tailnet.conf; do
-  if [ -e "$f" ]; then note "old pull-bridge file present: $f (remove per docs/mac-client-setup.md, Rollback)"; fi
+  if [ -e "$f" ]; then note "old pull-bridge file present: $f (remove per README.md, Rollback)"; fi
 done
 if grep -qs '@as1$' "$HOME/.ssh/authorized_keys"; then
-  note "as1's key is still in ~/.ssh/authorized_keys; it is no longer needed (docs/mac-client-setup.md, Rollback)"
+  note "as1's key is still in ~/.ssh/authorized_keys; it is no longer needed (README.md, Rollback)"
 fi
 
 say "Phase 1, continued: key login to as1 (asks for kyle's password on as1 once, only if it has to)"
@@ -133,7 +133,7 @@ setup_as1_login() {
     case "$auth" in
       *password*) ;;
       *) fail "as1 does not trust any local key and has password login off (a key was imported at install)."
-         note "either run the root script on as1 (docs/setup-from-scratch.md, part D) and re-run this script, or"
+         note "either run the root script on as1 (README.md, section 3) and re-run this script, or"
          note "at the as1 console:  mkdir -p -m 700 ~/.ssh && echo '$(cat "$PUB")' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
          return 1 ;;
     esac
@@ -150,7 +150,7 @@ setup_as1_login() {
 }
 
 if setup_as1_login; then
-  say "Done. Open a new shell, reload WezTerm (Cmd+Shift+R), then verify with docs/mac-client-setup.md"
+  say "Done. Open a new shell, reload WezTerm (Cmd+Shift+R), then verify with README.md, sections 2 and 6"
 else
   say "Done, but ssh as1 is not keyless yet (see above). Fix that, then re-run ./install-mac.sh"
   exit 1

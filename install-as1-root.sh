@@ -40,7 +40,7 @@ loginctl show-user "$USER_NAME" | grep Linger
 
 echo "==> tailscale auto-update, unattended-upgrades"
 if command -v tailscale >/dev/null; then tailscale set --auto-update || true
-else echo "tailscale not installed: curl -fsSL https://tailscale.com/install.sh | sh && tailscale up  (docs/setup-from-scratch.md, part A)"; fi
+else echo "tailscale not installed: curl -fsSL https://tailscale.com/install.sh | sh && tailscale up  (README.md, section 1)"; fi
 systemctl enable --now unattended-upgrades >/dev/null 2>&1 || true
 systemctl is-active unattended-upgrades || echo "unattended-upgrades is not active; check: systemctl status unattended-upgrades"
 

@@ -120,4 +120,4 @@ if [ "$TOOLS" = 1 ]; then
   note "first-time logins are manual: claude (OAuth) or ANTHROPIC_API_KEY in ~/.config/agents/env; gh auth login"
 fi
 
-say "Done. Root steps: sudo bash $REPO/install-as1-root.sh. Full order of work: docs/setup-from-scratch.md"
+say "Done. Root steps: sudo bash $REPO/install-as1-root.sh. Full order of work: README.md"

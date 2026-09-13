@@ -3,7 +3,7 @@
 Date: 12 Sep 2026. Host: `as1` (Ubuntu 26.04 LTS, 12 cores, 14 GB RAM, headless, Tailscale `as1.manee-goby.ts.net`, 100.112.145.54).
 Clients in scope: macOS only for now — `macbook` (100.93.240.89) and `mini` (100.84.188.45), both on the tailnet, both running WezTerm. Windows (kylepc) and phone are deferred; the design does not block them.
 
-Each phase below has four parts: what to set up on as1, what to set up on the Mac, how to test as1 on its own, how to test the Mac on its own. A final joint checkpoint closes the phase. This document explains the design and the per-phase tests; the ordered from-nothing procedure, including the steps before phase 1 (OS install, Tailscale join, key provisioning), is `setup-from-scratch.md`.
+Each phase below has four parts: what to set up on as1, what to set up on the Mac, how to test as1 on its own, how to test the Mac on its own. A final joint checkpoint closes the phase. This document explains the design and the per-phase tests; the ordered from-nothing procedure, including the steps before phase 1 (OS install, Tailscale join, key provisioning), is the README.
 
 ## 0. Decisions and assumptions
 
@@ -378,7 +378,7 @@ config/         tmux.conf, zshenv, zshrc, sshd/10-hardening.conf, ufw.sh, ssh_co
                 claude-settings.json, statusline-command.sh, bashrc.d/{agents-env,mise,tmux-autoattach}.sh
 systemd/        agent@.service, agent-worker.service, agent-<job>.timer templates
 docker/         Dockerfile.agent-sandbox
-docs/           this plan, setup-from-scratch.md (ordered runbook), mac-client-setup.md,
+docs/           this plan,
                 operations runbook for phase 5 (attach/steer/kill/clean, to be written)
 env.example     variable names only
 install-as1.sh  idempotent: symlinks configs, installs bin/, enables units, prints manual sudo steps

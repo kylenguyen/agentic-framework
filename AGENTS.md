@@ -16,8 +16,8 @@ pull request, never a merge.
 
 Everything an agent needs to install, configure or verify as1 and the Macs lives here: scripts,
 configs, and the phase-by-phase plan. `docs/remote-agent-host-plan.md` is the authoritative design;
-`docs/mac-client-setup.md` is the Mac companion; `docs/setup-from-scratch.md` is the ordered runbook
-from bare machines to the working setup, and lists every value the repo hardcodes. When code and docs
+`README.md` is the ordered runbook from bare machines to the working setup, with the verify block for
+each script, the joint checkpoints, Mac rollback, and every value the repo hardcodes. When code and docs
 disagree, fix one to match the other in the same change.
 
 ## Status
@@ -59,7 +59,8 @@ When you implement part of phase 5 or 6, update this table and section 8 of the 
 | `config/statusline-command.sh` | Claude Code status line, two lines: dir, branch, model, effort; context tokens and 5h/7d rate limits. Needs jq (root script) | `~/.claude/statusline-command.sh` (symlink) |
 | `config/workspace/CLAUDE.md` | house rules for all repos under `~/workspace`; one file linked under both names | `~/workspace/CLAUDE.md` and `~/workspace/AGENTS.md` (symlinks) |
 | `env.example` | secret variable names only | copied to `~/.config/agents/env` once, mode 600 |
-| `docs/` | `setup-from-scratch.md` (ordered runbook, parameters), `mac-client-setup.md`, `remote-agent-host-plan.md`; operations runbook for phase 5 to be written | read only |
+| `README.md` | ordered runbook: prerequisites, the three scripts with verify blocks, logins, joint checkpoints, rollback, parameters table | read only |
+| `docs/` | `remote-agent-host-plan.md` (design, per-phase tests); operations runbook for phase 5 to be written | read only |
 
 Planned but absent: `bin/agent`, `bin/agent-worker`, `systemd/`, `docker/`, `docs/runbook.md`.
 
@@ -94,8 +95,8 @@ mechanisms rather than inventing new ones:
 - Secrets never enter the repo. `env.example` carries names only. `.gitignore` excludes `env`,
   `.env` and `*.local`; if you add a file that can hold a value, add it there too.
 - Docs move with code. A change to a script or config updates the matching phase in
-  `docs/remote-agent-host-plan.md` or `docs/mac-client-setup.md`, including the test commands, and the
-  matching part of `docs/setup-from-scratch.md` (what the script does, its verify block, the parameters table).
+  `docs/remote-agent-host-plan.md`, including the test commands, and the matching section of `README.md`
+  (what the script does, its verify block, the parameters table).
 - Keep the two Macs interchangeable. Nothing may depend on `macbook` specifically; the spool holds
   whatever the last Mac pushed and nothing identifies a client.
 - Claude Code specifics belong in `config/claude-settings.json`; cross-harness rules belong in
