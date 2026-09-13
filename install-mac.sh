@@ -7,6 +7,7 @@ REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 MACUSER=$(id -un)
 say()  { printf '\033[1;34m==> %s\033[0m\n' "$*"; }
 note() { printf '    %s\n' "$*"; }
+fail() { printf '\033[1;31m!!  %s\033[0m\n' "$*"; }
 
 # block <file> <marker> <content>: append or replace a marked block (same markers as install-as1.sh).
 # The content goes through a file, not awk -v: BSD awk on macOS rejects a -v value that contains newlines.
@@ -41,18 +42,52 @@ block "$HOME/.ssh/config" as1 "$(grep -v '^#' "$REPO/config/ssh_config.mac")"
 say "Phase 2: WezTerm"
 install -d "$HOME/.config/wezterm"
 cp "$REPO/config/wezterm-as1.lua" "$HOME/.config/wezterm/wezterm-as1.lua"
-WEZ="$HOME/.config/wezterm/wezterm.lua"
-if [ ! -f "$WEZ" ]; then
-  # No config yet: write the minimal one from README.md, section 2. An existing file is the user's; never edit it.
-  cat > "$WEZ" <<'EOF'
+# The include line must be in the config WezTerm actually loads, or Cmd+V stays a plain paste and images never reach
+# as1. WezTerm reads, in order: $WEZTERM_CONFIG_FILE, ~/.config/wezterm/wezterm.lua, ~/.wezterm.lua. Creating the
+# second while only the third exists would shadow the user's config, so an existing file wins here too.
+# ~/.config/wezterm is on WezTerm's package.path whichever file is loaded, so the require resolves from all three.
+if [ -n "${WEZTERM_CONFIG_FILE:-}" ] && [ -f "$WEZTERM_CONFIG_FILE" ]; then WEZ=$WEZTERM_CONFIG_FILE
+elif [ -f "$HOME/.config/wezterm/wezterm.lua" ] || [ ! -f "$HOME/.wezterm.lua" ]; then WEZ="$HOME/.config/wezterm/wezterm.lua"
+else WEZ="$HOME/.wezterm.lua"; fi
+WEZ_OK=1
+# wez_include <file>: make sure the config includes wezterm-as1. A missing file gets the minimal config from
+# README.md, section 2. An existing file is edited in place, once: the require line goes in just before the final
+# `return <config>` line, whatever the variable is called, and the original is kept next to it as <file>.before-as1.
+# A config that ends some other way (returns a table literal, builds the config in another module) cannot be edited
+# safely; the line to add is printed instead and the script exits 1 at the end so the gap is not missed.
+wez_include() {
+  local file=$1 var
+  if [ ! -f "$file" ]; then
+    cat > "$file" <<'EOF'
 local wezterm = require("wezterm")
 local config = wezterm.config_builder()
 require("wezterm-as1").apply(config)
 return config
 EOF
-  note "created $WEZ (minimal, includes wezterm-as1)"
-elif grep -q 'wezterm-as1' "$WEZ"; then note "ok   wezterm.lua includes wezterm-as1"
-else note 'ADD to ~/.config/wezterm/wezterm.lua before `return config`:  require("wezterm-as1").apply(config)'; fi
+    note "created ${file/#$HOME/~} (minimal, includes wezterm-as1)"; return 0
+  fi
+  if grep -q 'wezterm-as1' "$file"; then note "ok   ${file/#$HOME/~} includes wezterm-as1"; return 0; fi
+  # Last `return <identifier>` line, ignoring trailing spaces and a trailing comment.
+  var=$(awk '{ l=$0; sub(/--.*/, "", l) }
+             l ~ /^[[:space:]]*return[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*$/ { v=l; sub(/^[[:space:]]*return[[:space:]]+/, "", v); sub(/[[:space:]]*$/, "", v) }
+             END { if (v != "") print v }' "$file")
+  if [ -z "$var" ]; then
+    fail "${file/#$HOME/~} exists but does not end with \`return <config>\`, so it was left alone."
+    note 'ADD before the line that returns your config:  require("wezterm-as1").apply(<your config variable>)'
+    return 1
+  fi
+  [ -e "$file.before-as1" ] || cp -p "$file" "$file.before-as1"
+  local tmp; tmp=$(mktemp)
+  awk -v var="$var" '
+    { lines[NR]=$0; l=$0; sub(/--.*/, "", l)
+      if (l ~ /^[[:space:]]*return[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*$/) last=NR }
+    END { for (i=1; i<=NR; i++) {
+            if (i==last) { ind=lines[i]; sub(/[^[:space:]].*$/, "", ind); print ind "require(\"wezterm-as1\").apply(" var ")" }
+            print lines[i] } }' "$file" > "$tmp"
+  cat "$tmp" > "$file"; rm -f "$tmp"
+  note "upd  ${file/#$HOME/~}: added require(\"wezterm-as1\").apply($var) before \`return $var\` (original: ${file/#$HOME/~}.before-as1)"
+}
+wez_include "$WEZ" || WEZ_OK=0
 note "reload WezTerm (Cmd+Shift+R) so Cmd+V pushes images to as1"
 
 say "Phase 4: clipboard push (clip-push, run by WezTerm on Cmd+V)"
@@ -76,7 +111,6 @@ say "Phase 1, continued: key login to as1 (asks for kyle's password on as1 once,
 # Goal: `ssh as1 true` runs with no prompt of any kind. mosh, the clipboard push and every `ssh as1 <cmd>`
 # depend on it. Never deletes anything: a stored host key that no longer matches is for a human to judge.
 PUB="$HOME/.ssh/id_ed25519.pub"
-fail() { printf '\033[1;31m!!  %s\033[0m\n' "$*"; }
 key_ok() { ssh -o BatchMode=yes -o ConnectTimeout=5 as1 true 2>/dev/null; }
 # probe <key>: can this key alone log in? Host key deliberately ignored and not recorded: authentication only.
 probe() {
@@ -149,9 +183,11 @@ setup_as1_login() {
   fail "ssh as1 still prompts. Diagnose with:  ssh -v as1 true"; return 1
 }
 
-if setup_as1_login; then
+LOGIN_OK=1; setup_as1_login || LOGIN_OK=0
+if [ "$LOGIN_OK" = 1 ] && [ "$WEZ_OK" = 1 ]; then
   say "Done. Open a new shell, reload WezTerm (Cmd+Shift+R), then verify with README.md, sections 2 and 6"
 else
-  say "Done, but ssh as1 is not keyless yet (see above). Fix that, then re-run ./install-mac.sh"
+  [ "$LOGIN_OK" = 1 ] || say "Done, but ssh as1 is not keyless yet (see above). Fix that, then re-run ./install-mac.sh"
+  [ "$WEZ_OK" = 1 ] || say "Done, but ${WEZ/#$HOME/~} does not include wezterm-as1 (see above): Cmd+V will not paste images into as1"
   exit 1
 fi

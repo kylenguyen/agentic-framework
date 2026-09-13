@@ -66,7 +66,8 @@ mac$ cd ~/workspace/agentic-framework && ./install-mac.sh
 
 Run it in a terminal, not from a pipe. It installs mosh and pngpaste, writes the `as1`, `as1-lan` and
 `as1-clip` blocks into `~/.ssh/config`, generates `~/.ssh/id_ed25519` if absent, installs the WezTerm include
-(writes a minimal `wezterm.lua` if you have none, otherwise prints the one line to add), installs `clip-push`,
+(writes a minimal `wezterm.lua` if you have none, otherwise adds the one `require("wezterm-as1")` line before your
+`return config`, keeping the original as `wezterm.lua.before-as1`), installs `clip-push`,
 puts `~/.local/bin` on PATH via `~/.zshrc`, and finally makes `ssh as1` log in by key with no prompt. On
 first contact it stores as1's host key; if as1 trusts no local key it runs `ssh-copy-id` and asks for kyle's
 password once. It ends with `ok   ssh as1 logs in by key`.
@@ -183,7 +184,7 @@ If image paste fails: `mac$ clip-push` in a local terminal prints the ssh error;
 
 - Clipboard push: `rm ~/.local/bin/clip-push`, delete the `Host as1-clip` block from `~/.ssh/config` (inside the
   `agentic-framework:as1` markers), reload WezTerm. On as1: `rm ~/.local/bin/clip-put ~/.local/bin/xclip && rm -rf ~/.clip`.
-- WezTerm include: delete the `require("wezterm-as1")` line from `wezterm.lua`.
+- WezTerm include: delete the `require("wezterm-as1")` line from `wezterm.lua`, or restore `wezterm.lua.before-as1` if the script edited it.
 - ssh config: delete the block between the `agentic-framework:as1` markers; PATH: the `agentic-framework:path` block in `~/.zshrc`.
 - Old pull design (as1 SSHing into the Mac), if `install-mac.sh` reports its leftovers: `sudo systemsetup -setremotelogin off`,
   `sudo rm /etc/ssh/sshd_config.d/100-tailnet.conf /usr/local/bin/clip-client`, remove the `kyle@as1` line from
