@@ -134,6 +134,7 @@ echo "# Mac templates: ssh config, clip-push, install-mac.sh entry"
   check "sshcfg: box-clip -> batchmode" yes "$(g box-clip batchmode)"
   check "sshcfg: box-clip -> controlmaster" auto "$(g box-clip controlmaster)"
   check "sshcfg: box-clip -> connecttimeout" 3 "$(g box-clip connecttimeout)"
+  # shellcheck disable=SC2088
   check "sshcfg: box-clip -> controlpath keeps ssh tokens" '~/.ssh/cm-%r@%h:%p' "$(grep ControlPath "$T/sshcfg" | awk '{print $2}')"
   check "sshcfg: three Host paragraphs" 3 "$(grep -c '^Host ' "$T/sshcfg")"
   AGENT_HOST_LAN_IP=; params_ssh_config_text > "$T/sshcfg2" || bad "sshcfg: renders without LAN" "$?"
@@ -159,6 +160,46 @@ echo "# Mac templates: ssh config, clip-push, install-mac.sh entry"
   case "$out" in *"box-lan"*) bad "install-mac: no -lan alias without a LAN address" "$out";; *) ok "install-mac: no -lan alias without a LAN address";; esac
   printf 'AGENT_HOST_USER=bad user\n' > "$T/repo/.env"
   HOME=$T/home bash "$T/repo/install-mac.sh" </dev/null >/dev/null 2>&1; check "install-mac: malformed .env -> exit 1" 1 "$?"
+)
+
+echo "# WezTerm module and a Linux dry run of install-mac.sh"
+( fresh; AGENT_HOST=box; AGENT_HOST_ADDRESS=box.tail.ts.net; AGENT_HOST_USER=alice
+  params_render "$REPO/config/wezterm-agent-host.lua.in" "$T/wez.lua" || bad "wezterm: renders" "$?"
+  check "wezterm: HOST constant" 'local HOST = "box"' "$(grep '^local HOST' "$T/wez.lua")"
+  check "wezterm: remote_address" 1 "$(grep -c 'remote_address = "box.tail.ts.net"' "$T/wez.lua")"
+  check "wezterm: username" 1 "$(grep -c 'username = "alice"' "$T/wez.lua")"
+  grep -q 'wezterm-as1\|"as1"\|kyle' "$T/wez.lua" && bad "wezterm: no old literals" "$(grep -n 'as1\|kyle' "$T/wez.lua")" || ok "wezterm: no old literals"
+  check "wezterm: balanced function/end" "$(grep -c '^end$' "$T/wez.lua")" "$(grep -c '^\(local \)\?function ' "$T/wez.lua")"
+)
+( # Everything in install-mac.sh up to the ssh probes runs on Linux against a throwaway HOME once brew is stubbed;
+  # the probes then fail (box does not resolve) and the script exits 1. Legacy files are seeded to test migration.
+  mkdir -p "$T/mac/repo" "$T/mac/home/.ssh" "$T/mac/home/.config/wezterm" "$T/mac/bin"
+  cp -R "$REPO/install-mac.sh" "$REPO/lib" "$REPO/config" "$REPO/bin" "$T/mac/repo/"
+  printf 'AGENT_HOST=box\nAGENT_HOST_ADDRESS=box.invalid\nAGENT_HOST_USER=alice\nAGENT_HOST_LAN_IP=10.0.0.5\n' > "$T/mac/repo/.env"
+  printf '#!/bin/sh\nexit 0\n' > "$T/mac/bin/brew"; chmod +x "$T/mac/bin/brew"
+  printf 'Host other\n  User me\n\n# >>> agentic-framework:as1 >>>\nHost as1\n  User kyle\n# <<< agentic-framework:as1 <<<\n' > "$T/mac/home/.ssh/config"
+  printf 'local wezterm = require("wezterm")\nlocal cfg = wezterm.config_builder()\nrequire("wezterm-as1").apply(cfg)\nreturn cfg\n' > "$T/mac/home/.config/wezterm/wezterm.lua"
+  : > "$T/mac/home/.config/wezterm/wezterm-as1.lua"
+  out=$(HOME=$T/mac/home PATH="$T/mac/bin:$PATH" bash "$T/mac/repo/install-mac.sh" </dev/null 2>&1); rc=$?
+  check "dry run: exits 1 at the unreachable host, not earlier" 1 "$rc"
+  case "$out" in *"box (box.invalid) is not reachable"*) ok "dry run: reached the login phase";; *) bad "dry run: reached the login phase" "$out";; esac
+  cfg=$T/mac/home/.ssh/config
+  grep -q 'agentic-framework:as1' "$cfg" && bad "dry run: legacy as1 block removed" || ok "dry run: legacy as1 block removed"
+  check "dry run: one agent-host block" 1 "$(grep -c '^# >>> agentic-framework:agent-host >>>$' "$cfg")"
+  check "dry run: user's own Host kept" 1 "$(grep -c '^Host other$' "$cfg")"
+  check "dry run: ssh -G box -> alice@box.invalid" "box.invalid alice" "$(ssh -G -F "$cfg" box 2>/dev/null | awk '/^hostname /{h=$2} /^user /{u=$2} END{print h, u}')"
+  check "dry run: ssh -G box-lan -> LAN address" 10.0.0.5 "$(ssh -G -F "$cfg" box-lan 2>/dev/null | awk '/^hostname /{print $2}')"
+  wez=$T/mac/home/.config/wezterm
+  [ -e "$wez/wezterm-as1.lua" ] && bad "dry run: old module copy removed" || ok "dry run: old module copy removed"
+  check "dry run: new module rendered with the alias" 'local HOST = "box"' "$(grep '^local HOST' "$wez/wezterm-agent-host.lua")"
+  check "dry run: require line migrated" 'require("wezterm-agent-host").apply(cfg)' "$(grep require\(\"wezterm- "$wez/wezterm.lua")"
+  [ -e "$wez/wezterm.lua.before-agent-host" ] && ok "dry run: backup kept" || bad "dry run: backup kept"
+  grep -q 'host=${CLIP_PUSH_HOST:-box-clip}' "$T/mac/home/.local/bin/clip-push" && ok "dry run: clip-push installed and rendered" || bad "dry run: clip-push" "$(ls -la "$T/mac/home/.local/bin" 2>&1)"
+  [ -x "$T/mac/home/.local/bin/clip-push" ] && ok "dry run: clip-push executable" || bad "dry run: clip-push executable"
+  [ -f "$T/mac/home/.ssh/id_ed25519" ] && ok "dry run: key generated" || bad "dry run: key generated"
+  out2=$(HOME=$T/mac/home PATH="$T/mac/bin:$PATH" bash "$T/mac/repo/install-mac.sh" </dev/null 2>&1 || true)
+  check "dry run: second run leaves one agent-host block" 1 "$(grep -c 'agentic-framework:agent-host >>>' "$cfg")"
+  case "$out2" in *"wezterm.lua includes wezterm-agent-host"*) ok "dry run: second run sees the include";; *) bad "dry run: second run sees the include" "$out2";; esac
 )
 
 pass=$(grep -c '^ok$' "$T/results"); fail=$(grep -c '^FAIL$' "$T/results")

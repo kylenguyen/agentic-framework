@@ -67,18 +67,22 @@ block "$HOME/.ssh/config" agent-host "$SSH_BLOCK"
 
 say "Phase 2: WezTerm"
 install -d "$HOME/.config/wezterm"
-cp "$REPO/config/wezterm-as1.lua" "$HOME/.config/wezterm/wezterm-as1.lua"
+WEZ_MOD=wezterm-agent-host                       # module name; the file is rendered from config/$WEZ_MOD.lua.in
+params_render "$REPO/config/$WEZ_MOD.lua.in" "$HOME/.config/wezterm/$WEZ_MOD.lua" || { fail "config/$WEZ_MOD.lua.in did not render"; exit 1; }
+# Before the rename the module was wezterm-as1; the copy is ours to remove and the require line is fixed in wez_include.
+[ ! -e "$HOME/.config/wezterm/wezterm-as1.lua" ] || { rm -f "$HOME/.config/wezterm/wezterm-as1.lua"; note "rm   ~/.config/wezterm/wezterm-as1.lua (now $WEZ_MOD.lua)"; }
 # The include line must be in the config WezTerm actually loads, or Cmd+V stays a plain paste and images never reach
-# as1. WezTerm reads, in order: $WEZTERM_CONFIG_FILE, ~/.config/wezterm/wezterm.lua, ~/.wezterm.lua. Creating the
+# the host. WezTerm reads, in order: $WEZTERM_CONFIG_FILE, ~/.config/wezterm/wezterm.lua, ~/.wezterm.lua. Creating the
 # second while only the third exists would shadow the user's config, so an existing file wins here too.
 # ~/.config/wezterm is on WezTerm's package.path whichever file is loaded, so the require resolves from all three.
 if [ -n "${WEZTERM_CONFIG_FILE:-}" ] && [ -f "$WEZTERM_CONFIG_FILE" ]; then WEZ=$WEZTERM_CONFIG_FILE
 elif [ -f "$HOME/.config/wezterm/wezterm.lua" ] || [ ! -f "$HOME/.wezterm.lua" ]; then WEZ="$HOME/.config/wezterm/wezterm.lua"
 else WEZ="$HOME/.wezterm.lua"; fi
 WEZ_OK=1
-# wez_include <file>: make sure the config includes wezterm-as1. A missing file gets the minimal config from
+# wez_include <file>: make sure the config includes $WEZ_MOD. A missing file gets the minimal config from
 # README.md, section 2. An existing file is edited in place, once: the require line goes in just before the final
-# `return <config>` line, whatever the variable is called, and the original is kept next to it as <file>.before-as1.
+# `return <config>` line, whatever the variable is called, and the original is kept next to it as <file>.before-agent-host.
+# A file that still requires the old module name has that one token rewritten, with the same backup.
 # A config that ends some other way (returns a table literal, builds the config in another module) cannot be edited
 # safely; the line to add is printed instead and the script exits 1 at the end so the gap is not missed.
 wez_include() {
@@ -87,34 +91,39 @@ wez_include() {
     cat > "$file" <<'EOF'
 local wezterm = require("wezterm")
 local config = wezterm.config_builder()
-require("wezterm-as1").apply(config)
+require("wezterm-agent-host").apply(config)
 return config
 EOF
-    note "created ${file/#$HOME/~} (minimal, includes wezterm-as1)"; return 0
+    note "created ${file/#$HOME/~} (minimal, includes $WEZ_MOD)"; return 0
   fi
-  if grep -q 'wezterm-as1' "$file"; then note "ok   ${file/#$HOME/~} includes wezterm-as1"; return 0; fi
+  if grep -q "$WEZ_MOD" "$file"; then note "ok   ${file/#$HOME/~} includes $WEZ_MOD"; return 0; fi
+  if grep -q 'wezterm-as1' "$file"; then
+    [ -e "$file.before-agent-host" ] || cp -p "$file" "$file.before-agent-host"
+    local tmp; tmp=$(mktemp); sed 's/wezterm-as1/wezterm-agent-host/g' "$file" > "$tmp"; cat "$tmp" > "$file"; rm -f "$tmp"
+    note "upd  ${file/#$HOME/~}: require(\"wezterm-as1\") is now require(\"$WEZ_MOD\") (original: ${file/#$HOME/~}.before-agent-host)"; return 0
+  fi
   # Last `return <identifier>` line, ignoring trailing spaces and a trailing comment.
   var=$(awk '{ l=$0; sub(/--.*/, "", l) }
              l ~ /^[[:space:]]*return[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*$/ { v=l; sub(/^[[:space:]]*return[[:space:]]+/, "", v); sub(/[[:space:]]*$/, "", v) }
              END { if (v != "") print v }' "$file")
   if [ -z "$var" ]; then
     fail "${file/#$HOME/~} exists but does not end with \`return <config>\`, so it was left alone."
-    note 'ADD before the line that returns your config:  require("wezterm-as1").apply(<your config variable>)'
+    note "ADD before the line that returns your config:  require(\"$WEZ_MOD\").apply(<your config variable>)"
     return 1
   fi
-  [ -e "$file.before-as1" ] || cp -p "$file" "$file.before-as1"
+  [ -e "$file.before-agent-host" ] || cp -p "$file" "$file.before-agent-host"
   local tmp; tmp=$(mktemp)
-  awk -v var="$var" '
+  awk -v var="$var" -v mod="$WEZ_MOD" '
     { lines[NR]=$0; l=$0; sub(/--.*/, "", l)
       if (l ~ /^[[:space:]]*return[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*$/) last=NR }
     END { for (i=1; i<=NR; i++) {
-            if (i==last) { ind=lines[i]; sub(/[^[:space:]].*$/, "", ind); print ind "require(\"wezterm-as1\").apply(" var ")" }
+            if (i==last) { ind=lines[i]; sub(/[^[:space:]].*$/, "", ind); print ind "require(\"" mod "\").apply(" var ")" }
             print lines[i] } }' "$file" > "$tmp"
   cat "$tmp" > "$file"; rm -f "$tmp"
-  note "upd  ${file/#$HOME/~}: added require(\"wezterm-as1\").apply($var) before \`return $var\` (original: ${file/#$HOME/~}.before-as1)"
+  note "upd  ${file/#$HOME/~}: added require(\"$WEZ_MOD\").apply($var) before \`return $var\` (original: ${file/#$HOME/~}.before-agent-host)"
 }
 wez_include "$WEZ" || WEZ_OK=0
-note "reload WezTerm (Cmd+Shift+R) so Cmd+V pushes images to as1"
+note "reload WezTerm (Cmd+Shift+R) so Cmd+V pushes images to $H"
 
 say "Phase 4: clipboard push (clip-push, run by WezTerm on Cmd+V)"
 install -d "$HOME/.local/bin"
@@ -215,6 +224,6 @@ if [ "$LOGIN_OK" = 1 ] && [ "$WEZ_OK" = 1 ]; then
   say "Done. Open a new shell, reload WezTerm (Cmd+Shift+R), then verify with README.md, sections 2 and 6"
 else
   [ "$LOGIN_OK" = 1 ] || say "Done, but ssh $H is not keyless yet (see above). Fix that, then re-run ./install-mac.sh"
-  [ "$WEZ_OK" = 1 ] || say "Done, but ${WEZ/#$HOME/~} does not include wezterm-as1 (see above): Cmd+V will not paste images into as1"
+  [ "$WEZ_OK" = 1 ] || say "Done, but ${WEZ/#$HOME/~} does not include $WEZ_MOD (see above): Cmd+V will not paste images into $H"
   exit 1
 fi
