@@ -1,0 +1,19 @@
+# e2e "host": what install-as1.sh expects of a fresh Ubuntu Server, minus systemd, ufw and tailscale, which a
+# container cannot run; tests/e2e/shims/host stands in for them and logs every call to /var/log/e2e-shims.log.
+# The phase 1 apt packages are preinstalled so the run needs no network. Login and password come from run.sh.
+FROM ubuntu:24.04
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      openssh-server sudo iproute2 passwd ca-certificates \
+      tmux mosh gh zsh git curl file jq unattended-upgrades \
+    && rm -rf /var/lib/apt/lists/*
+COPY shims/host/ /usr/local/sbin/
+RUN chmod 755 /usr/local/sbin/* && touch /var/log/e2e-shims.log && chmod 666 /var/log/e2e-shims.log \
+    && mkdir -p /run/sshd && ssh-keygen -A \
+    && printf 'PasswordAuthentication yes\n' > /etc/ssh/sshd_config.d/50-cloud-init.conf
+ARG LOGIN=alice
+ARG PASSWORD=alice-pw
+RUN useradd -m -s /bin/bash "$LOGIN" && echo "$LOGIN:$PASSWORD" | chpasswd \
+    && echo "$LOGIN ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/e2e && chmod 440 /etc/sudoers.d/e2e
+EXPOSE 22
+CMD ["/usr/sbin/sshd", "-D", "-e"]

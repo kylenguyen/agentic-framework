@@ -1,0 +1,13 @@
+# e2e "Mac": a Linux stand-in for the macOS client. install-mac.sh needs ssh, ssh-copy-id, ssh-keyscan, awk, sed,
+# hostname and brew; brew, osascript, pbpaste and pngpaste are stubs in tests/e2e/shims/mac (the clipboard is
+# /tmp/clipboard.kind, .txt and .png). askpass feeds the host password to ssh-copy-id so the password path runs
+# without a human. Not covered here: BSD awk, /bin/bash 3.2 and WezTerm itself.
+FROM ubuntu:24.04
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends openssh-client ca-certificates file \
+    && rm -rf /var/lib/apt/lists/*
+COPY shims/mac/ /usr/local/bin/
+RUN chmod 755 /usr/local/bin/* && useradd -m -s /bin/bash macuser
+USER macuser
+WORKDIR /home/macuser
+CMD ["sleep", "infinity"]

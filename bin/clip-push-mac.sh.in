@@ -1,17 +1,17 @@
 #!/bin/bash
-# clip-push: send the Mac clipboard to as1 so Claude Code there can paste it.
-# WezTerm runs `clip-push --if-image` on Cmd+V in a pane connected to as1 (config/wezterm-as1.lua): an image is
-# pushed and WezTerm then sends Ctrl+V to Claude Code; text is reported only and WezTerm pastes it natively.
-# Install: install -m 755 bin/clip-push-mac.sh ~/.local/bin/clip-push   (install-mac.sh; no sudo)
+# clip-push: send the Mac clipboard to the agent host so Claude Code there can paste it.
+# WezTerm runs `clip-push --if-image` on Cmd+V in a pane connected to the host (config/wezterm-agent-host.lua.in): an
+# image is pushed and WezTerm then sends Ctrl+V to Claude Code; text is reported only and WezTerm pastes it natively.
+# TEMPLATE: install-mac.sh renders @AGENT_HOST@ from .env and installs the result as ~/.local/bin/clip-push (no sudo).
 # Usage:   clip-push              push the clipboard (image or text); prints image/png or text/plain
 #          clip-push --if-image   push only if the clipboard holds an image; prints the type either way
-#          clip-push --clear      delete the copy held on as1
+#          clip-push --clear      delete the copy held on the host
 # The type is printed before the push so the caller can tell what failed.
-# CLIP_PUSH_HOST overrides the ssh destination; default as1-clip (config/ssh_config.mac), use as1-lan off the tailnet.
+# CLIP_PUSH_HOST overrides the ssh destination; default <alias>-clip (config/ssh_config.mac.in); <alias>-lan works off the tailnet.
 # WezTerm starts child processes with a minimal environment, so PATH is spelled out (Homebrew for pngpaste).
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 set -euo pipefail
-host=${CLIP_PUSH_HOST:-as1-clip}
+host=${CLIP_PUSH_HOST:-@AGENT_HOST@-clip}
 remote() { ssh -o BatchMode=yes -o ConnectTimeout=3 "$host" "~/.local/bin/clip-put $*"; }
 
 if_image=0

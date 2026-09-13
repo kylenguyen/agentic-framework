@@ -1,0 +1,3 @@
+#!/bin/sh
+# pngpaste stub: `pngpaste -` writes the fixture PNG.
+cat /tmp/clipboard.png

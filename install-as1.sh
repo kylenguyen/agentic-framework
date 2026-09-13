@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Idempotent as1 setup, phases 1 to 4 in one script. Safe to re-run. Run as kyle, never with sudo.
+# Idempotent host setup, phases 1 to 4 in one script. Safe to re-run. Run as the login the host is for, never with sudo.
 # Usage: ./install-as1.sh [--no-tools] [--no-root]
 #   --no-tools   skip network installs (oh-my-zsh, mise toolchains, uv, harnesses)
 #   --no-root    skip phase 1 (the steps that need sudo)
@@ -8,6 +8,9 @@
 # not already in the wanted state. sudo asks for your password the first time a root step is actually
 # needed; a host that is already configured never prompts. Everything else runs as you.
 # Keep an existing SSH session open while this runs: the sshd step reloads sshd.
+# Parameters (lib/params.sh): the login is the one running the script; host name, address, LAN address and LAN range
+# come from the system, or from .env when set there. .env is written from the derived values on the first run and
+# its contents printed at the end for the Macs. Password prompts aside, nothing is interactive.
 set -euo pipefail
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 TOOLS=1; ROOT=1
@@ -18,12 +21,19 @@ for arg in "$@"; do
     *) echo "usage: $0 [--no-tools] [--no-root]" >&2; exit 2 ;;
   esac
 done
-USER_NAME=$(id -un)
 [ "$(id -u)" != 0 ] || { echo "run as your own user, not root or sudo: the script calls sudo itself for phase 1" >&2; exit 1; }
 
 say()  { printf '\033[1;34m==> %s\033[0m\n' "$*"; }
 note() { printf '    %s\n' "$*"; }
 fail() { printf '\033[1;31m!!  %s\033[0m\n' "$*" >&2; exit 1; }
+
+. "$REPO/lib/params.sh"
+params_load || exit 1
+LAN_CIDR_FROM_ENV=${AGENT_HOST_LAN_CIDR:-}          # an explicit range is trusted; a derived one must be private
+params_derive_host || exit 1
+USER_NAME=$AGENT_HOST_USER
+say "Parameters: host $AGENT_HOST ($AGENT_HOST_ADDRESS), login $USER_NAME, LAN ${AGENT_HOST_LAN_IP:-?} in ${AGENT_HOST_LAN_CIDR:-?}"
+if [ -f "$REPO/.env" ]; then note "ok   .env"; else params_env_text > "$REPO/.env"; note "wrote .env from the values above (edit to override, then re-run)"; fi
 
 # as_root <cmd...>: run one command with sudo. The first call explains the password prompt; sudo caches
 # the credential for the rest of the run, so later calls are silent.
@@ -86,14 +96,20 @@ if [ "$ROOT" = 1 ]; then
     *) fail "$USER_NAME has no usable password; run: sudo passwd $USER_NAME, then re-run this script" ;;
   esac
   SSHD_CONF=/etc/ssh/sshd_config.d/10-hardening.conf
-  if cmp -s "$REPO/config/sshd/10-hardening.conf" "$SSHD_CONF"; then
+  # Rendered from the template with the login running this script. Compared on directives only, so a comment edit
+  # in the template does not reload sshd. The installed file is world-readable, so no sudo for the check.
+  SSHD_TMP=$(mktemp); params_render "$REPO/config/sshd/10-hardening.conf.in" "$SSHD_TMP" || fail "sshd template did not render"
+  grep -qx "AllowUsers $USER_NAME" "$SSHD_TMP" || fail "rendered sshd config does not allow $USER_NAME; refusing to install it"
+  directives() { grep -v '^[[:space:]]*#' "$1" | sed '/^[[:space:]]*$/d'; }
+  if [ -r "$SSHD_CONF" ] && [ "$(directives "$SSHD_TMP")" = "$(directives "$SSHD_CONF")" ]; then
     note "ok   $SSHD_CONF"
   else
     echo "--- current /etc/ssh/sshd_config.d/50-cloud-init.conf:"; as_root cat /etc/ssh/sshd_config.d/50-cloud-init.conf || true
-    as_root install -m 644 "$REPO/config/sshd/10-hardening.conf" "$SSHD_CONF"
+    as_root install -m 644 "$SSHD_TMP" "$SSHD_CONF"
     as_root sshd -t && as_root systemctl reload ssh
     as_root sshd -T | grep -iE '^(passwordauthentication|permitemptypasswords|maxauthtries|permitrootlogin|allowusers|kbdinteractiveauthentication|x11forwarding) '
   fi
+  rm -f "$SSHD_TMP"
 
   say "Phase 1: packages: tmux mosh gh zsh, plus git curl file jq unattended-upgrades"
   # tmux is the whole of phase 2; the rest are what the later phases, the shim tests and the status line call.
@@ -114,13 +130,17 @@ if [ "$ROOT" = 1 ]; then
     getent passwd "$USER_NAME" | cut -d: -f7
   fi
 
-  say "Phase 1: firewall"
+  say "Phase 1: firewall (ssh from LAN ${AGENT_HOST_LAN_CIDR:-?}, everything else tailnet only)"
   # Rule state is root-only; ufw.conf is readable and says whether the firewall is on. If it is, the rules
-  # were applied by an earlier run. To re-apply after editing config/ufw.sh: sudo bash config/ufw.sh
+  # were applied by an earlier run. To re-apply after editing config/ufw.sh: sudo bash config/ufw.sh <lan-cidr>
   if grep -qx 'ENABLED=yes' /etc/ufw/ufw.conf 2>/dev/null; then
-    note "ok   ufw enabled (re-apply rules with: sudo bash $REPO/config/ufw.sh)"
+    note "ok   ufw enabled (re-apply rules with: sudo bash $REPO/config/ufw.sh ${AGENT_HOST_LAN_CIDR:-<lan-cidr>})"
   else
-    as_root bash "$REPO/config/ufw.sh"
+    [ -n "${AGENT_HOST_LAN_CIDR:-}" ] || fail "no LAN range: no IPv4 default route to derive it from; set AGENT_HOST_LAN_CIDR in .env"
+    if [ -z "$LAN_CIDR_FROM_ENV" ] && ! params_is_private_cidr "$AGENT_HOST_LAN_CIDR"; then
+      fail "derived LAN range $AGENT_HOST_LAN_CIDR is not private (RFC 1918); set AGENT_HOST_LAN_CIDR in .env to open ssh to it on purpose"
+    fi
+    as_root bash "$REPO/config/ufw.sh" "$AGENT_HOST_LAN_CIDR"
   fi
 
   say "Phase 1: linger for $USER_NAME (user systemd units + tmux survive logout)"
@@ -169,7 +189,7 @@ block "$HOME/.bashrc" interactive bottom \
 say "Phase 3: secrets file, shared agent context, Claude settings"
 install -d -m 700 "$HOME/.config/agents"
 if [ ! -f "$HOME/.config/agents/env" ]; then
-  install -m 600 "$REPO/env.example" "$HOME/.config/agents/env"; note "created ~/.config/agents/env (fill in keys)"
+  install -m 600 "$REPO/secrets.env.example" "$HOME/.config/agents/env"; note "created ~/.config/agents/env (fill in keys)"
 else
   chmod 600 "$HOME/.config/agents/env"; note "ok   ~/.config/agents/env"
 fi
@@ -185,7 +205,7 @@ say "Phase 4: clipboard bridge (clip-put writes the spool, the xclip shim serves
 install -d "$HOME/.local/bin"
 link "$REPO/bin/xclip" "$HOME/.local/bin/xclip"
 link "$REPO/bin/clip-put" "$HOME/.local/bin/clip-put"
-# The first design had as1 SSH into the Macs; drop the ~/.ssh/config block it left behind.
+# The first design had the host SSH into the Macs; drop the ~/.ssh/config block it left behind.
 if [ -f "$HOME/.ssh/config" ]; then unblock "$HOME/.ssh/config" clip-bridge; fi
 
 if [ "$TOOLS" = 1 ]; then
@@ -218,4 +238,6 @@ if [ "$TOOLS" = 1 ]; then
   note "first-time logins are manual: claude (OAuth) or ANTHROPIC_API_KEY in ~/.config/agents/env; gh auth login"
 fi
 
+say "Parameters for the Macs: put these lines in .env in the agentic-framework checkout there (README.md, section 2)"
+params_env_text | grep -v '^#'
 say "Done. Next: log out and back in, then one-time logins (README.md, section 4)."
