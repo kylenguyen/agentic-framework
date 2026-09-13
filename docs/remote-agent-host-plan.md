@@ -1,7 +1,7 @@
 # as1: remote coding-agent host — setup plan
 
 Date: 12 Sep 2026. Host: `as1` (Ubuntu 26.04 LTS, 12 cores, 14 GB RAM, headless, Tailscale `as1.manee-goby.ts.net`, 100.112.145.54).
-The names, addresses and login in this document are this deployment's; since 13 Sep 2026 the scripts take them from `.env` or the system (`lib/params.sh`, README "Parameters"), and the repo carries none of them outside examples.
+The names, addresses and login in this document are this deployment's; the scripts take them from `.env` or the system (`lib/params.sh`, README "Parameters"), and the repo carries none of them outside examples.
 Clients in scope: macOS only for now — `macbook` (100.93.240.89) and `mini` (100.84.188.45), both on the tailnet, both running WezTerm. Windows (kylepc) and phone are deferred; the design does not block them.
 
 Each phase below has four parts: what to set up on as1, what to set up on the Mac, how to test as1 on its own, how to test the Mac on its own. A final joint checkpoint closes the phase. This document explains the design and the per-phase tests; the ordered from-nothing procedure, including the steps before phase 1 (OS install, Tailscale join, key provisioning), is the README.
@@ -153,7 +153,7 @@ From the Mac: `ssh as1 true` succeeds without a prompt (key path); `ssh -o Prefe
 
 ### On the Mac
 
-1. WezTerm config `~/.config/wezterm/wezterm.lua` (repo: `config/wezterm-as1.lua`, include it from your main config):
+1. WezTerm config `~/.config/wezterm/wezterm.lua` (repo: `config/wezterm-agent-host.lua.in`, rendered by `install-mac.sh` and included from your main config):
    ```lua
    config.ssh_domains = {
      { name = "as1", remote_address = "as1", username = "kyle", multiplexing = "None" },
@@ -210,7 +210,7 @@ From the Mac `ssh as1` lands in tmux session `main`. Open a second Mac terminal,
    OPENROUTER_API_KEY=...
    GH_TOKEN=...
    ```
-   Shell profile sources it with `set -a; . ~/.config/agents/env; set +a`. systemd units use `EnvironmentFile=%h/.config/agents/env`. Repo carries `env.example` with names only and `.gitignore` excludes `env`.
+   Shell profile sources it with `set -a; . ~/.config/agents/env; set +a`. systemd units use `EnvironmentFile=%h/.config/agents/env`. Repo carries `secrets.env.example` with names only and `.gitignore` excludes `env`.
 4. Shared agent context: `~/workspace/CLAUDE.md` and `~/workspace/AGENTS.md` (house rules: branch naming `agent/<slug>`, commit style, never force-push, never touch `~/.config/agents`). Claude Code user settings `~/.claude/settings.json` → symlink to `config/claude-settings.json` with the Bash allowlist and hooks from phase 5; its status line command `~/.claude/statusline-command.sh` → symlink to `config/statusline-command.sh`.
 
 ### On the Mac
@@ -261,9 +261,9 @@ Design: push, not pull. Cmd+V in WezTerm runs `clip-push --if-image` on the Mac.
 ### On the Mac
 
 1. `brew install pngpaste` (turns whatever image class the clipboard holds into PNG on stdout).
-2. `bin/clip-push-mac.sh` installed to `~/.local/bin/clip-push`, no sudo. `osascript -e 'clipboard info'` decides image or text and the type is printed first; `pngpaste -` or `pbpaste` is piped to `ssh as1-clip '~/.local/bin/clip-put'`. With `--if-image` text is reported but not pushed. WezTerm starts it with a minimal environment, so the script sets its own PATH. `CLIP_PUSH_HOST=as1-lan` when off the tailnet.
-3. `Host as1-clip` in `~/.ssh/config` (repo `config/ssh_config.mac`): same key as `as1`, `BatchMode yes`, `ConnectTimeout 3`, `ControlMaster auto` with `ControlPersist 10m` so every push after the first takes milliseconds. Separate from `Host as1` so interactive sessions and mosh keep their own settings.
-4. `config/wezterm-as1.lua` binds Cmd+V: if the pane is the `as1` SSH domain, or a local pane whose foreground process is `ssh` or `mosh-client`, run `clip-push --if-image` synchronously (`wezterm.run_child_process`). Type `text/plain`: ordinary `PasteFrom Clipboard`. Type `image/png` and the push succeeded: send Ctrl+V to the pane. Push failed: a toast shows the error and no key is sent, so a stale image is never pasted. Any other pane gets the ordinary paste. Ctrl+V is left unbound.
+2. `bin/clip-push-mac.sh.in`, rendered and installed to `~/.local/bin/clip-push`, no sudo. `osascript -e 'clipboard info'` decides image or text and the type is printed first; `pngpaste -` or `pbpaste` is piped to `ssh as1-clip '~/.local/bin/clip-put'`. With `--if-image` text is reported but not pushed. WezTerm starts it with a minimal environment, so the script sets its own PATH. `CLIP_PUSH_HOST=as1-lan` when off the tailnet.
+3. `Host as1-clip` in `~/.ssh/config` (repo `config/ssh_config.mac.in`): same key as `as1`, `BatchMode yes`, `ConnectTimeout 3`, `ControlMaster auto` with `ControlPersist 10m` so every push after the first takes milliseconds. Separate from `Host as1` so interactive sessions and mosh keep their own settings.
+4. `config/wezterm-agent-host.lua.in` binds Cmd+V: if the pane is the `as1` SSH domain, or a local pane whose foreground process is `ssh` or `mosh-client`, run `clip-push --if-image` synchronously (`wezterm.run_child_process`). Type `text/plain`: ordinary `PasteFrom Clipboard`. Type `image/png` and the push succeeded: send Ctrl+V to the pane. Push failed: a toast shows the error and no key is sent, so a stale image is never pasted. Any other pane gets the ordinary paste. Ctrl+V is left unbound.
 
 ### Test as1 alone
 

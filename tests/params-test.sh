@@ -168,31 +168,30 @@ echo "# WezTerm module and a Linux dry run of install-mac.sh"
   check "wezterm: HOST constant" 'local HOST = "box"' "$(grep '^local HOST' "$T/wez.lua")"
   check "wezterm: remote_address" 1 "$(grep -c 'remote_address = "box.tail.ts.net"' "$T/wez.lua")"
   check "wezterm: username" 1 "$(grep -c 'username = "alice"' "$T/wez.lua")"
-  grep -q 'wezterm-as1\|"as1"\|kyle' "$T/wez.lua" && bad "wezterm: no old literals" "$(grep -n 'as1\|kyle' "$T/wez.lua")" || ok "wezterm: no old literals"
+  grep -q '"as1"\|kyle' "$T/wez.lua" && bad "wezterm: no example literals" "$(grep -n 'as1\|kyle' "$T/wez.lua")" || ok "wezterm: no example literals"
   check "wezterm: balanced function/end" "$(grep -c '^end$' "$T/wez.lua")" "$(grep -c '^\(local \)\?function ' "$T/wez.lua")"
 )
 ( # Everything in install-mac.sh up to the ssh probes runs on Linux against a throwaway HOME once brew is stubbed;
-  # the probes then fail (box does not resolve) and the script exits 1. Legacy files are seeded to test migration.
+  # the probes then fail (box does not resolve) and the script exits 1. HOME starts with a user's own ssh config and a
+  # wezterm.lua without the include, so the block-append and insert-before-return paths are exercised.
   mkdir -p "$T/mac/repo" "$T/mac/home/.ssh" "$T/mac/home/.config/wezterm" "$T/mac/bin"
   cp -R "$REPO/install-mac.sh" "$REPO/lib" "$REPO/config" "$REPO/bin" "$T/mac/repo/"
   printf 'AGENT_HOST=aftest.invalid\nAGENT_HOST_ADDRESS=box.invalid\nAGENT_HOST_USER=alice\nAGENT_HOST_LAN_IP=10.0.0.5\n' > "$T/mac/repo/.env"
   printf '#!/bin/sh\nexit 0\n' > "$T/mac/bin/brew"; chmod +x "$T/mac/bin/brew"
-  printf 'Host other\n  User me\n\n# >>> agentic-framework:as1 >>>\nHost as1\n  User kyle\n# <<< agentic-framework:as1 <<<\n' > "$T/mac/home/.ssh/config"
-  printf 'local wezterm = require("wezterm")\nlocal cfg = wezterm.config_builder()\nrequire("wezterm-as1").apply(cfg)\nreturn cfg\n' > "$T/mac/home/.config/wezterm/wezterm.lua"
-  : > "$T/mac/home/.config/wezterm/wezterm-as1.lua"
+  printf 'Host other\n  User me\n' > "$T/mac/home/.ssh/config"
+  printf 'local wezterm = require("wezterm")\nlocal cfg = wezterm.config_builder()\nreturn cfg\n' > "$T/mac/home/.config/wezterm/wezterm.lua"
   out=$(HOME=$T/mac/home PATH="$T/mac/bin:$PATH" bash "$T/mac/repo/install-mac.sh" </dev/null 2>&1); rc=$?
   check "dry run: exits 1 at the unreachable host, not earlier" 1 "$rc"
   case "$out" in *"aftest.invalid (box.invalid) is not reachable"*) ok "dry run: reached the login phase";; *) bad "dry run: reached the login phase" "$out";; esac
   cfg=$T/mac/home/.ssh/config
-  grep -q 'agentic-framework:as1' "$cfg" && bad "dry run: legacy as1 block removed" || ok "dry run: legacy as1 block removed"
   check "dry run: one agent-host block" 1 "$(grep -c '^# >>> agentic-framework:agent-host >>>$' "$cfg")"
   check "dry run: user's own Host kept" 1 "$(grep -c '^Host other$' "$cfg")"
   check "dry run: ssh -G aftest.invalid -> alice@box.invalid" "box.invalid alice" "$(ssh -G -F "$cfg" aftest.invalid 2>/dev/null | awk '/^hostname /{h=$2} /^user /{u=$2} END{print h, u}')"
   check "dry run: ssh -G aftest.invalid-lan -> LAN address" 10.0.0.5 "$(ssh -G -F "$cfg" aftest.invalid-lan 2>/dev/null | awk '/^hostname /{print $2}')"
   wez=$T/mac/home/.config/wezterm
-  [ -e "$wez/wezterm-as1.lua" ] && bad "dry run: old module copy removed" || ok "dry run: old module copy removed"
-  check "dry run: new module rendered with the alias" 'local HOST = "aftest.invalid"' "$(grep '^local HOST' "$wez/wezterm-agent-host.lua")"
-  check "dry run: require line migrated" 'require("wezterm-agent-host").apply(cfg)' "$(grep require\(\"wezterm- "$wez/wezterm.lua")"
+  check "dry run: module rendered with the alias" 'local HOST = "aftest.invalid"' "$(grep '^local HOST' "$wez/wezterm-agent-host.lua")"
+  check "dry run: require line inserted before return" 'require("wezterm-agent-host").apply(cfg)' "$(grep require\(\"wezterm- "$wez/wezterm.lua")"
+  check "dry run: require line sits right before the return" 'return cfg' "$(grep -A1 require\(\"wezterm- "$wez/wezterm.lua" | tail -1)"
   [ -e "$wez/wezterm.lua.before-agent-host" ] && ok "dry run: backup kept" || bad "dry run: backup kept"
   grep -q 'host=${CLIP_PUSH_HOST:-aftest.invalid-clip}' "$T/mac/home/.local/bin/clip-push" && ok "dry run: clip-push installed and rendered" || bad "dry run: clip-push" "$(ls -la "$T/mac/home/.local/bin" 2>&1)"
   [ -x "$T/mac/home/.local/bin/clip-push" ] && ok "dry run: clip-push executable" || bad "dry run: clip-push executable"
@@ -203,18 +202,15 @@ echo "# WezTerm module and a Linux dry run of install-mac.sh"
 )
 
 echo "# no host, login or address literals outside comments"
-( # Comment lines (# and --) are stripped, then the example values must not appear. The only tolerated lines are the
-  # migrations in install-mac.sh (the old marker and module name) and the script's own file name.
+( # Comment lines (# and --) are stripped, then the example values must not appear. The only tolerated occurrence
+  # is the host script's own file name.
   cd "$REPO" || exit 1
   hits=$(grep -rn --exclude-dir=workspace . install-as1.sh install-mac.sh bin config lib \
-          | sed 's/install-as1//g' | grep -v ':[[:space:]]*\(#\|--\)' | grep -v 'unblock\|wezterm-as1' \
+          | sed 's/install-as1//g' | grep -v ':[[:space:]]*\(#\|--\)' \
           | grep -wE 'as1|kyle|192\.168\.10' || true)
   [ -z "$hits" ] && ok "scan: no literals in scripts, templates or configs" || bad "scan: literals found" "$hits"
-  left=$(grep -rln '@AGENT_[A-Z_]*@' bin config lib install-as1.sh install-mac.sh | grep -v '\.in$\|^lib/' || true)
+  left=$(grep -rln '@AGENT_[A-Z_]*@' bin config lib install-as1.sh install-mac.sh | grep -v -e '\.in$' -e '^lib/' || true)   # two -e: BSD grep misreads $\|
   [ -z "$left" ] && ok "scan: placeholders only in .in templates and lib" || bad "scan: placeholders outside templates" "$left"
-  for f in config/sshd/10-hardening.conf config/ssh_config.mac config/wezterm-as1.lua bin/clip-push-mac.sh config/workspace/AGENTS.md env.example; do
-    [ -e "$f" ] && bad "scan: $f should be gone" || ok "scan: $f gone"
-  done
 )
 
 pass=$(grep -c '^ok$' "$T/results"); fail=$(grep -c '^FAIL$' "$T/results")

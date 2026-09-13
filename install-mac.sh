@@ -25,7 +25,6 @@ H=$AGENT_HOST; ADDR=$AGENT_HOST_ADDRESS; RUSER=$AGENT_HOST_USER; LAN=${AGENT_HOS
 say "Parameters: \`ssh $H\` is $RUSER@$ADDR${LAN:+, \`ssh $H-lan\` is $RUSER@$LAN}"
 
 # block <file> <marker> <content>: append or replace a marked block (same markers as install-as1.sh).
-# unblock <file> <marker>: remove a block an earlier version of this script left behind.
 # The content goes through a file, not awk -v: BSD awk on macOS rejects a -v value that contains newlines.
 block() {
   local file=$1 marker=$2 content=$3 begin end tmp ctmp
@@ -42,14 +41,6 @@ block() {
   fi
   cat "$tmp" > "$file"; rm -f "$tmp" "$ctmp"
 }
-unblock() {
-  local file=$1 marker=$2 begin end tmp
-  begin="# >>> agentic-framework:$marker >>>"; end="# <<< agentic-framework:$marker <<<"
-  grep -qF "$begin" "$file" 2>/dev/null || return 0
-  tmp=$(mktemp)
-  awk -v b="$begin" -v e="$end" '$0==b {skip=1; next} $0==e {skip=0; next} !skip' "$file" > "$tmp"
-  cat "$tmp" > "$file"; rm -f "$tmp"; note "rm   $file [$marker]"
-}
 
 say "Phase 1: brew packages, ssh config"
 command -v brew >/dev/null || { echo "Homebrew missing: https://brew.sh"; exit 1; }
@@ -61,7 +52,6 @@ brew list gh >/dev/null 2>&1 || note "optional: brew install gh"
 [ -d /Applications/Tailscale.app ] || note "Tailscale app not found: https://tailscale.com/download/mac (sign in to the tailnet, start at login)"
 install -d -m 700 "$HOME/.ssh"; touch "$HOME/.ssh/config"; chmod 600 "$HOME/.ssh/config"
 SSH_BLOCK=$(params_ssh_config_text) || { fail "config/ssh_config.mac.in did not render"; exit 1; }
-unblock "$HOME/.ssh/config" as1                    # marker name before the block was parameterised
 block "$HOME/.ssh/config" agent-host "$SSH_BLOCK"
 [ -f "$HOME/.ssh/id_ed25519" ] || { note "no ~/.ssh/id_ed25519; generating"; ssh-keygen -t ed25519 -f "$HOME/.ssh/id_ed25519" -N '' -C "$MACUSER@$(hostname -s)"; }
 
@@ -69,8 +59,6 @@ say "Phase 2: WezTerm"
 install -d "$HOME/.config/wezterm"
 WEZ_MOD=wezterm-agent-host                       # module name; the file is rendered from config/$WEZ_MOD.lua.in
 params_render "$REPO/config/$WEZ_MOD.lua.in" "$HOME/.config/wezterm/$WEZ_MOD.lua" || { fail "config/$WEZ_MOD.lua.in did not render"; exit 1; }
-# Before the rename the module was wezterm-as1; the copy is ours to remove and the require line is fixed in wez_include.
-[ ! -e "$HOME/.config/wezterm/wezterm-as1.lua" ] || { rm -f "$HOME/.config/wezterm/wezterm-as1.lua"; note "rm   ~/.config/wezterm/wezterm-as1.lua (now $WEZ_MOD.lua)"; }
 # The include line must be in the config WezTerm actually loads, or Cmd+V stays a plain paste and images never reach
 # the host. WezTerm reads, in order: $WEZTERM_CONFIG_FILE, ~/.config/wezterm/wezterm.lua, ~/.wezterm.lua. Creating the
 # second while only the third exists would shadow the user's config, so an existing file wins here too.
@@ -82,7 +70,6 @@ WEZ_OK=1
 # wez_include <file>: make sure the config includes $WEZ_MOD. A missing file gets the minimal config from
 # README.md, section 2. An existing file is edited in place, once: the require line goes in just before the final
 # `return <config>` line, whatever the variable is called, and the original is kept next to it as <file>.before-agent-host.
-# A file that still requires the old module name has that one token rewritten, with the same backup.
 # A config that ends some other way (returns a table literal, builds the config in another module) cannot be edited
 # safely; the line to add is printed instead and the script exits 1 at the end so the gap is not missed.
 wez_include() {
@@ -97,11 +84,6 @@ EOF
     note "created ${file/#$HOME/\~} (minimal, includes $WEZ_MOD)"; return 0
   fi
   if grep -q "$WEZ_MOD" "$file"; then note "ok   ${file/#$HOME/\~} includes $WEZ_MOD"; return 0; fi
-  if grep -q 'wezterm-as1' "$file"; then
-    [ -e "$file.before-agent-host" ] || cp -p "$file" "$file.before-agent-host"
-    local tmp; tmp=$(mktemp); sed 's/wezterm-as1/wezterm-agent-host/g' "$file" > "$tmp"; cat "$tmp" > "$file"; rm -f "$tmp"
-    note "upd  ${file/#$HOME/\~}: require(\"wezterm-as1\") is now require(\"$WEZ_MOD\") (original: ${file/#$HOME/\~}.before-agent-host)"; return 0
-  fi
   # Last `return <identifier>` line, ignoring trailing spaces and a trailing comment.
   var=$(awk '{ l=$0; sub(/--.*/, "", l) }
              l ~ /^[[:space:]]*return[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*$/ { v=l; sub(/^[[:space:]]*return[[:space:]]+/, "", v); sub(/[[:space:]]*$/, "", v) }
@@ -135,13 +117,6 @@ note "installed ~/.local/bin/clip-push (pushes to $H-clip)"
 touch "$HOME/.zshrc"
 block "$HOME/.zshrc" path 'case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) export PATH="$HOME/.local/bin:$PATH" ;; esac'
 case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) note "open a new shell so clip-push is on PATH" ;; esac
-# The first design had the host SSH into the Mac. Its leftovers need sudo to remove; point at the doc instead.
-for f in /usr/local/bin/clip-client /etc/ssh/sshd_config.d/100-tailnet.conf; do
-  if [ -e "$f" ]; then note "old pull-bridge file present: $f (remove per README.md, Rollback)"; fi
-done
-if grep -qs "@$H\$" "$HOME/.ssh/authorized_keys"; then
-  note "$H's key is still in ~/.ssh/authorized_keys; it is no longer needed (README.md, Rollback)"
-fi
 
 say "Phase 1, continued: key login to $H (asks for $RUSER's password on $H once, only if it has to)"
 # Goal: `ssh $H true` runs with no prompt of any kind. mosh, the clipboard push and every `ssh $H <cmd>`
@@ -221,7 +196,7 @@ setup_host_login() {
 
 LOGIN_OK=1; setup_host_login || LOGIN_OK=0
 if [ "$LOGIN_OK" = 1 ] && [ "$WEZ_OK" = 1 ]; then
-  say "Done. Open a new shell, reload WezTerm (Cmd+Shift+R), then verify with README.md, sections 2 and 6"
+  say "Done. Open a new shell, reload WezTerm (Cmd+Shift+R), then verify with README.md, sections 2 and 5"
 else
   [ "$LOGIN_OK" = 1 ] || say "Done, but ssh $H is not keyless yet (see above). Fix that, then re-run ./install-mac.sh"
   [ "$WEZ_OK" = 1 ] || say "Done, but ${WEZ/#$HOME/\~} does not include $WEZ_MOD (see above): Cmd+V will not paste images into $H"

@@ -18,7 +18,7 @@ pull request, never a merge.
 Everything an agent needs to install, configure or verify as1 and the Macs lives here: scripts,
 configs, and the phase-by-phase plan. `docs/remote-agent-host-plan.md` is the authoritative design;
 `README.md` is the ordered runbook from bare machines to the working setup, with the verify block for
-each script, the joint checkpoints, Mac rollback, and every value the repo hardcodes. When code and docs
+each script, the joint checkpoints, Mac rollback, and the parameters table. When code and docs
 disagree, fix one to match the other in the same change.
 
 ## Status
@@ -46,7 +46,7 @@ When you implement part of phase 5 or 6, update this table and section 8 of the 
 | `tests/params-test.sh` | unit tests for the library, every rendered template checked with real tools (`ssh -G`, `bash -n`), a Linux dry run of `install-mac.sh` against a throwaway HOME, and the literal scan | run anywhere, no sudo, no network |
 | `tests/e2e/` | two Docker containers, a host (`box`, real sshd, login `alice`, systemd/ufw/tailscale shimmed and logged) and a Mac stand-in (brew, osascript, pbpaste, pngpaste stubbed): both install scripts run twice against each other, password path, key login, clipboard bridge and idempotency are checked with non-default values | `bash tests/e2e/run.sh`; needs docker without sudo, network for the image builds only |
 | `install-as1.sh` | idempotent host setup, phases 1 to 4, run as the host login. Loads `.env`, derives the rest, writes `.env` when absent and prints it for the Macs at the end. Phase 1 (password check, sshd rendered from the template for that login and compared on directives, apt tmux mosh gh zsh git curl file jq unattended-upgrades, chsh to zsh, ufw with the LAN range, linger, tailscale auto-update, unattended-upgrades) goes through the `as_root` helper one `sudo` command at a time, each behind a no-sudo state check, so a configured host never prompts; `--no-root` skips it. Phases 2 to 4 symlink configs, then oh-my-zsh, toolchains and harnesses (Claude Code via the native installer when absent) behind `--no-tools` | run in place |
-| `install-mac.sh` | idempotent Mac client setup, phases 1, 2 and 4; no sudo; settles its parameters first (`.env`, a prompt on a terminal, or exit 2); renders the ssh config block (`agent-host` marker, the old `as1` block removed) and `clip-push`; writes a minimal `wezterm.lua` when none exists, otherwise inserts the `wezterm-agent-host` require before the final `return <config>` (backup `.before-agent-host`; an old `wezterm-as1` require is rewritten; exits 1 with the line to add when the file ends some other way); `path` marker block in `~/.zshrc`; ends by making `ssh <alias>` keyless: stores the host key on first contact (fingerprint printed), installs the repo key over an already-trusted key with `ssh-copy-id -f`, or runs `ssh-copy-id` and asks for the host password once; never deletes a stored host key or edits `authorized_keys` directly; exits 1 with the fix when it cannot finish | run on the Mac |
+| `install-mac.sh` | idempotent Mac client setup, phases 1, 2 and 4; no sudo; settles its parameters first (`.env`, a prompt on a terminal, or exit 2); renders the ssh config block (`agent-host` marker) and `clip-push`; writes a minimal `wezterm.lua` when none exists, otherwise inserts the `wezterm-agent-host` require before the final `return <config>` (backup `.before-agent-host`; exits 1 with the line to add when the file ends some other way); `path` marker block in `~/.zshrc`; ends by making `ssh <alias>` keyless: stores the host key on first contact (fingerprint printed), installs the repo key over an already-trusted key with `ssh-copy-id -f`, or runs `ssh-copy-id` and asks for the host password once; never deletes a stored host key or edits `authorized_keys` directly; exits 1 with the fix when it cannot finish | run on the Mac |
 | `bin/xclip` | clipboard shim; serves the spool the Mac pushed (`~/.clip/latest`) to Claude Code, copies go back via OSC 52 | `~/.local/bin/xclip` on the host |
 | `bin/clip-put` | stdin to the spool, atomic, mode 600; `--clear` | `~/.local/bin/clip-put` on the host |
 | `bin/clip-push-mac.sh.in` | template: pngpaste or pbpaste piped over `ssh <alias>-clip` into `clip-put`, prints the type; WezTerm runs `--if-image` on Cmd+V | rendered to `~/.local/bin/clip-push` on the Mac |
@@ -82,8 +82,8 @@ mechanisms rather than inventing new ones:
 - **Symlinks, not copies**, for configs on the host. `install-as1.sh` has a `link` helper that backs up
   a real file in the way and is a no-op when the link already points at the repo. Edit configs in
   the repo, never the installed copy.
-- **Marker blocks** for files the scripts share with the user, such as `~/.bashrc` and
-  `~/.ssh/config` on the host, and `~/.ssh/config` and `~/.zshrc` on the Mac. The `block` helper wraps content in `# >>> agentic-framework:<marker> >>>` and
+- **Marker blocks** for files the scripts share with the user, such as `~/.bashrc` on the host,
+  and `~/.ssh/config` and `~/.zshrc` on the Mac. The `block` helper wraps content in `# >>> agentic-framework:<marker> >>>` and
   `# <<< agentic-framework:<marker> <<<` and replaces the block in place on re-run. Use a new
   marker name for new content; never append unmarked lines.
 - **No Mac login names anywhere.** Nothing on as1 needs to know who is at the Mac; the push is
@@ -139,7 +139,7 @@ python3 -m json.tool config/claude-settings.json >/dev/null
 ```
 
 `./install-as1.sh --no-tools --no-root` is safe to re-run on the host and is the real idempotency test, but it
-rewrites `~/.bashrc`, `~/.ssh/config`, `~/.zshrc`, `~/.zshenv`, `~/.claude/settings.json` and `~/.claude/statusline-command.sh` on this host, and
+rewrites `~/.bashrc`, `~/.zshrc`, `~/.zshenv`, `~/.claude/settings.json` and `~/.claude/statusline-command.sh` on this host, and
 it points every symlink at the checkout it runs from: never run it from a worktree, only from `~/workspace/agentic-framework`.
 Run it only when your change touches those paths and say so in the PR.
 

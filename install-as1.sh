@@ -77,16 +77,6 @@ block() {
   cat "$tmp" > "$file"; rm -f "$tmp"
 }
 
-# unblock <file> <marker>: remove a marked block left by an earlier version of this script, if present.
-unblock() {
-  local file=$1 marker=$2 begin end tmp
-  begin="# >>> agentic-framework:$marker >>>"; end="# <<< agentic-framework:$marker <<<"
-  grep -qF "$begin" "$file" 2>/dev/null || return 0
-  tmp=$(mktemp)
-  awk -v b="$begin" -v e="$end" '$0==b {skip=1; next} $0==e {skip=0; next} !skip' "$file" > "$tmp"
-  cat "$tmp" > "$file"; rm -f "$tmp"; note "rm   $file [$marker]"
-}
-
 if [ "$ROOT" = 1 ]; then
   say "Phase 1: sshd hardening (key or password for $USER_NAME, no root, tailnet/LAN only via ufw)"
   # Password login is only useful, and only safe, if the account has a real password. passwd -S prints
@@ -205,8 +195,6 @@ say "Phase 4: clipboard bridge (clip-put writes the spool, the xclip shim serves
 install -d "$HOME/.local/bin"
 link "$REPO/bin/xclip" "$HOME/.local/bin/xclip"
 link "$REPO/bin/clip-put" "$HOME/.local/bin/clip-put"
-# The first design had the host SSH into the Macs; drop the ~/.ssh/config block it left behind.
-if [ -f "$HOME/.ssh/config" ]; then unblock "$HOME/.ssh/config" clip-bridge; fi
 
 if [ "$TOOLS" = 1 ]; then
   say "Phase 2: oh-my-zsh"

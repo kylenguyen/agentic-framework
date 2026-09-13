@@ -198,25 +198,16 @@ If image paste fails: `mac$ clip-push` in a local terminal prints the ssh error;
   network decide; on the Mac, `.env` does.
 - Config change in the repo: `git pull` and re-run `./install-as1.sh --no-tools` or `./install-mac.sh`. Phase 1
   skips every step that is already in place and asks for `sudo` only if, say, `config/sshd` changed.
-  Symlinked configs pick up the change without a re-run.
-- Upgrading an install made before parameters existed (Sep 2026): on the host, `git pull` then
-  `./install-as1.sh --no-tools --no-root` from `~/workspace/agentic-framework` (never from a worktree: the symlinks
-  follow the checkout the script runs from); it writes `.env` and prints it, and the next full run changes nothing
-  because the rendered sshd drop-in equals the installed one. On each Mac, `git pull`, create `.env` from the printed
-  lines, re-run `./install-mac.sh`: it replaces the old `agentic-framework:as1` block in `~/.ssh/config` with the
-  `agent-host` one, rewrites `require("wezterm-as1")` to `wezterm-agent-host` (backup `.before-agent-host`), removes
-  the old module copy and reinstalls `clip-push`. Reload WezTerm afterwards.
+  Symlinked configs pick up the change without a re-run. Run the host script from `~/workspace/agentic-framework`,
+  never from a worktree: the symlinks follow the checkout it runs from.
 
 ## Rollback (Mac)
 
 - Clipboard push: `rm ~/.local/bin/clip-push`, delete the `Host as1-clip` block from `~/.ssh/config` (inside the
   `agentic-framework:agent-host` markers), reload WezTerm. On the host: `rm ~/.local/bin/clip-put ~/.local/bin/xclip && rm -rf ~/.clip`.
 - WezTerm include: delete the `require("wezterm-agent-host")` line from `wezterm.lua`, or restore `wezterm.lua.before-agent-host`
-  (or the older `wezterm.lua.before-as1`) if the script edited it; `rm ~/.config/wezterm/wezterm-agent-host.lua`.
+  if the script edited it; `rm ~/.config/wezterm/wezterm-agent-host.lua`.
 - ssh config: delete the block between the `agentic-framework:agent-host` markers; PATH: the `agentic-framework:path` block in `~/.zshrc`.
-- Old pull design (the host SSHing into the Mac), if `install-mac.sh` reports its leftovers: `sudo systemsetup -setremotelogin off`,
-  `sudo rm /etc/ssh/sshd_config.d/100-tailnet.conf /usr/local/bin/clip-client`, remove the `kyle@as1` line from
-  `~/.ssh/authorized_keys`. On the host, `install-as1.sh` already removes the old `Host macbook mini` block from `~/.ssh/config`.
 
 ## More
 
