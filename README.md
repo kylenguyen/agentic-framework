@@ -1,7 +1,7 @@
 # agentic-framework
 
 Source of truth for `as1`, a headless Ubuntu box on a Tailscale tailnet that runs coding agents
-(Claude Code, OpenCode, Aider, Oh My Pi), and for the Macs that reach it from WezTerm over SSH or mosh.
+(Claude Code, OpenCode, Oh My Pi), and for the Macs that reach it from WezTerm over SSH or mosh.
 Scripts, configs and docs for both sides live here; nothing is configured by hand on either machine.
 
 ## Start here
@@ -18,7 +18,7 @@ Scripts, configs and docs for both sides live here; nothing is configured by han
 | Script | Runs on | As | Does |
 |---|---|---|---|
 | `install-as1-root.sh` | as1 | root, by a human | sshd hardening, ufw, apt packages, zsh as login shell, linger, Tailscale auto-update |
-| `install-as1.sh` | as1 | `kyle` | symlinks configs, secrets file skeleton, `xclip` shim, and with network: oh-my-zsh, mise toolchains, uv, the four harnesses |
+| `install-as1.sh` | as1 | `kyle` | symlinks configs, secrets file skeleton, `xclip` shim, and with network: oh-my-zsh, mise toolchains, uv, the three harnesses |
 | `install-mac.sh` | Mac | you, no sudo | mosh, pngpaste, `~/.ssh/config` block, SSH key, WezTerm include, `clip-push` |
 
 All three are idempotent. Configs on as1 are symlinks into this checkout, so edit here, never the installed copy.

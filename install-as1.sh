@@ -112,7 +112,6 @@ if [ "$TOOLS" = 1 ]; then
     curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path      # installs to ~/.opencode/bin
     ln -sfn "$HOME/.opencode/bin/opencode" "$HOME/.local/bin/opencode"
   fi
-  command -v aider >/dev/null || uv tool install --force --python python3.12 --with pip aider-chat@latest
   command -v omp >/dev/null || npm install -g @oh-my-pi/pi-coding-agent
   mise reshim
   # Native installer, not npm: it puts a self-updating binary in ~/.local/bin and needs no toolchain.

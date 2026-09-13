@@ -1,6 +1,6 @@
 # AGENTS.md: working on agentic-framework
 
-Instructions for any coding agent (Claude Code, OpenCode, Aider, Oh My Pi) that edits this repo.
+Instructions for any coding agent (Claude Code, OpenCode, Oh My Pi) that edits this repo.
 The house rules in `~/workspace/CLAUDE.md` / `~/workspace/AGENTS.md` (kept here as
 `config/workspace/CLAUDE.md`) apply first; this file adds what is specific to this repo.
 
@@ -28,7 +28,7 @@ Do not assume something exists because the plan describes it. Check this table a
 |---|---|---|
 | 1 access | sshd hardening, ufw, apt (tmux mosh gh zsh git curl file jq unattended-upgrades), zsh + chsh, linger | scripted (`install-as1-root.sh`, `config/sshd`, `config/ufw.sh`) |
 | 2 sessions | tmux, auto-attach, zsh + oh-my-zsh, WezTerm domain | scripted (`config/tmux.conf`, `config/zshenv`, `config/zshrc`, `config/bashrc.d`, `config/wezterm-as1.lua`) |
-| 3 harnesses | mise, uv, gh, four harnesses, secrets file, shared rules, Claude settings | scripted (`install-as1.sh`) |
+| 3 harnesses | mise, uv, gh, three harnesses, secrets file, shared rules, Claude settings | scripted (`install-as1.sh`) |
 | 4 clipboard bridge | Mac pushes images on Cmd+V; `clip-put` spool and `xclip` shim on as1 | scripted (`bin/xclip`, `bin/clip-put`, `bin/clip-push-mac.sh`, Cmd+V in `config/wezterm-as1.lua`) |
 | 5 automation | `agent` CLI, `agent-worker`, systemd units, GitHub runner workflow | planned, not started |
 | 6 isolation | `docker/Dockerfile.agent-sandbox`, `agent run --sandbox` | planned, not started |
@@ -148,7 +148,7 @@ In addition to the workspace house rules:
 Phase 5 and 6 work should fit this shape, taken from the plan doc, so that every device gets the
 same interface regardless of harness:
 
-- `agent run <repo> "<task>" [--harness claude|opencode|aider|omp] [--interactive] [--budget N] [--sandbox]`
+- `agent run <repo> "<task>" [--harness claude|opencode|omp] [--interactive] [--budget N] [--sandbox]`
   creates `~/workspace/<repo>.wt/<slug>` on branch `agent/<slug>`, opens window `<slug>` in tmux
   session `agents`, runs the harness headless with a budget cap, logs to `~/agents/logs/<slug>.jsonl`,
   then commits, pushes and runs `gh pr create`, printing the PR URL to stdout and `~/agents/logs/<slug>.url`.

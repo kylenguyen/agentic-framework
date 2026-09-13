@@ -10,7 +10,7 @@ Each phase below has four parts: what to set up on as1, what to set up on the Ma
 Decided:
 
 - Terminal over SSH only. No IDE remote, no remote desktop.
-- Harnesses: Claude Code (primary), OpenCode, Aider, Oh My Pi. API keys only, no local models.
+- Harnesses: Claude Code (primary), OpenCode, Oh My Pi. API keys only, no local models.
 - Automation: on-demand from other PCs, scheduled runs, git-event triggers, long-running loops.
 
 Assumed (correct me if wrong):
@@ -38,7 +38,7 @@ Verified on as1 while planning:
   │ as1                                                │
   │  sshd key or password (kyle only) + mosh-server    │
   │  tmux: one session per repo, "agents" for jobs     │
-  │  harnesses: claude, opencode, aider, omp           │
+  │  harnesses: claude, opencode, omp                  │
   │  clipboard: Mac push → clip-put spool → xclip shim │
   │  automation: agent CLI, systemd timers,            │
   │              GitHub runner, queue worker           │
@@ -200,7 +200,6 @@ From the Mac `ssh as1` lands in tmux session `main`. Open a second Mac terminal,
    |---|---|---|
    | Claude Code | native installer `curl -fsSL https://claude.ai/install.sh \| bash` when absent (to `~/.local/bin`), then `claude update` | `claude doctor` |
    | OpenCode | `curl -fsSL https://opencode.ai/install \| bash` (or `npm i -g opencode-ai`) | `opencode --version` |
-   | Aider | `uv tool install --force --python python3.12 --with pip aider-chat@latest` | `aider --version` |
    | Oh My Pi | `curl -fsSL https://omp.sh/install \| sh` (or `npm i -g @oh-my-pi/pi-coding-agent`) | binary name per install output, expected `omp` |
 
 3. Secrets file `~/.config/agents/env`, mode 600, owner kyle:
@@ -224,7 +223,6 @@ mise doctor; node -v; bun -v; python3.12 --version; uv --version; gh auth status
 stat -c '%a %U' ~/.config/agents/env          # 600 kyle
 claude --bare -p 'reply with the single word ok'      # uses ANTHROPIC_API_KEY only, no OAuth
 opencode run 'reply with the single word ok'
-aider --yes --no-git --message 'reply with the single word ok'
 omp --help                                     # then one trivial prompt with the flags it documents
 git -C ~/workspace/agentic-framework check-ignore -q env && echo 'env ignored'
 ```
@@ -303,14 +301,14 @@ Fallbacks that always work: `tailscale file cp shot.png as1:` then `tailscale fi
 ### On as1
 
 1. `bin/agent` CLI (installed to `~/.local/bin/agent`):
-   - `agent run <repo> "<task>" [--harness claude|opencode|aider|omp] [--interactive] [--budget 5]`
+   - `agent run <repo> "<task>" [--harness claude|opencode|omp] [--interactive] [--budget 5]`
      - `git -C ~/workspace/<repo> worktree add ../<repo>.wt/<slug> -b agent/<slug>`
      - new window `<slug>` in tmux session `agents`
      - headless: `claude -p "<task>" --permission-mode acceptEdits --max-budget-usd <budget> --output-format stream-json | tee ~/agents/logs/<slug>.jsonl`
      - on exit: commit, push, `gh pr create --fill --head agent/<slug>`, print PR URL to stdout and to `~/agents/logs/<slug>.url`
      - `--interactive`: run the harness normally in the window so any PC can `tmux attach -t agents` and steer
    - `agent ls | attach <slug> | logs <slug> | stop <slug> | clean <slug>` wrap tmux and worktree removal.
-   - Claude Code's own `--bg`, `claude agents`, `claude attach` are equivalent for Claude only; the wrapper gives one interface across the four harnesses.
+   - Claude Code's own `--bg`, `claude agents`, `claude attach` are equivalent for Claude only; the wrapper gives one interface across the three harnesses.
 2. Scheduled jobs: `systemd/agent@.service` template plus per-job timers, e.g. `agent-deps-review.timer` (Mon 03:00) → `ExecStart=%h/.local/bin/agent run <repo> --prompt-file %h/agents/prompts/deps-review.md`. `EnvironmentFile=%h/.config/agents/env`. Install with `systemctl --user enable --now agent-deps-review.timer`.
 3. Git events (GitHub): self-hosted Actions runner on as1 as a systemd service, label `as1`. Repo workflow `.github/workflows/agent.yml` on `issue_comment` starting with `/agent ` and on `pull_request` labelled `agent-review`, running `agent run` with the comment body. The runner long-polls GitHub, so no inbound port. Use a dedicated runner user only if repos are untrusted; otherwise run as kyle.
 4. Long-running loop: `systemd/agent-worker.service` runs `bin/agent-worker`: watches `~/agents/queue/*.md`, takes the oldest, runs `agent run` with the file as prompt and a budget cap, moves it to `done/` or `failed/` with the log, posts the summary line to an ntfy topic (or PR comment). `MAX_PARALLEL=2`; RAM is the limit at 14 GB.
@@ -349,7 +347,7 @@ From the Mac: `agent run ezbus "add a README badge"` prints a PR URL within a fe
 
 ### On as1
 
-1. `docker/Dockerfile.agent-sandbox`: Ubuntu 26.04 + mise toolchains + the four harnesses + gh. Build once, tag `agent-sandbox`.
+1. `docker/Dockerfile.agent-sandbox`: Ubuntu 26.04 + mise toolchains + the three harnesses + gh. Build once, tag `agent-sandbox`.
 2. `agent run --sandbox`: `docker run --rm -v <worktree>:/work -v ~/.claude:/root/.claude --env-file ~/.config/agents/env --network bridge agent-sandbox claude -p ... --dangerously-skip-permissions`. Only sandbox runs may skip permissions.
 3. One worktree per concurrent agent; never two agents in one checkout.
 4. GitHub token for agents scoped to contents:write and pull_requests:write on named repos only.
@@ -408,5 +406,4 @@ install-mac.sh  idempotent, no sudo: brew installs, clip-push, ssh config block,
 ## Sources
 
 - OpenCode install: https://opencode.ai/docs/
-- Aider install via uv: https://aider.chat/docs/install.html
 - Oh My Pi: https://github.com/can1357/oh-my-pi , https://www.npmjs.com/package/@oh-my-pi/pi-coding-agent

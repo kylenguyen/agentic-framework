@@ -1,7 +1,7 @@
 # Setting up as1 and a Mac from scratch
 
 One ordered checklist from a bare Ubuntu box and a bare Mac to the working setup: SSH or mosh from WezTerm
-into tmux on as1, the four harnesses, and image paste into Claude Code. It says what to do, in what order,
+into tmux on as1, the three harnesses, and image paste into Claude Code. It says what to do, in what order,
 on which machine, and how to know each step worked. The reasoning behind each choice is in
 `remote-agent-host-plan.md`; the Mac steps in full detail, with rollback, are in `mac-client-setup.md`.
 
@@ -201,7 +201,7 @@ mac$ ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no kyle@as
 ## E. as1 user steps
 
 **script**. Run as `kyle`, no sudo. With network: clones oh-my-zsh, installs mise with Node, Bun and
-Python 3.12, uv, OpenCode, Aider, Oh My Pi and Claude Code. `--no-tools` skips all downloads and only
+Python 3.12, uv, OpenCode, Oh My Pi and Claude Code. `--no-tools` skips all downloads and only
 renders configs.
 
 ```
@@ -219,7 +219,7 @@ If a `main` session from before the root script is still running it keeps bash: 
 Verify E:
 ```
 as1$ echo $ZSH_THEME $TMUX | cut -c1-40           # robbyrussell /tmp/tmux-...
-as1$ for c in mise node bun python3.12 uv claude opencode aider omp; do printf '%-10s %s\n' $c "$(command -v $c || echo MISSING)"; done
+as1$ for c in mise node bun python3.12 uv claude opencode omp; do printf '%-10s %s\n' $c "$(command -v $c || echo MISSING)"; done
 as1$ command -v xclip                             # ~/.local/bin/xclip, not /usr/bin
 as1$ stat -c '%a' ~/.config/agents/env            # 600
 as1$ readlink ~/workspace/AGENTS.md               # .../config/workspace/CLAUDE.md
@@ -243,8 +243,8 @@ in the Mac's browser and enter the code, and the CLI on as1 completes on its own
 3. Secrets file: `as1$ $EDITOR ~/.config/agents/env`, uncomment and fill the keys you use. It is sourced
    by every shell, including `ssh as1 <cmd>`, and by the future systemd units. Claude Code is denied read
    access to it by `config/claude-settings.json`.
-4. Optional, other harnesses: OpenCode and Aider read `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or
-   `OPENROUTER_API_KEY` from the environment, so the same file covers them.
+4. Optional, other harnesses: OpenCode reads `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or
+   `OPENROUTER_API_KEY` from the environment, so the same file covers it.
 
 Verify F:
 ```
