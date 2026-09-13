@@ -1,7 +1,9 @@
-# as1 sshd hardening. Installed to /etc/ssh/sshd_config.d/10-hardening.conf by install-as1.sh (phase 1).
+# Host sshd hardening. TEMPLATE: install-as1.sh (phase 1) renders @AGENT_HOST_USER@ to the login it runs as and
+# installs the result to /etc/ssh/sshd_config.d/10-hardening.conf. Never install this file as is: an unrendered
+# AllowUsers line matches nobody and locks every account out.
 # sshd_config.d files are read in lexical order and the first value wins, so 10- beats 50-cloud-init.conf.
 #
-# Password login is allowed so a device without a provisioned key can still reach as1.
+# Password login is allowed so a device without a provisioned key can still reach the host.
 # Exposure is bounded by ufw (config/ufw.sh): inbound only on tailscale0 and from the LAN /24, never the
 # internet. AllowUsers and PermitEmptyPasswords keep the guessable surface to one account with a real password.
 PasswordAuthentication yes
@@ -9,7 +11,7 @@ PermitEmptyPasswords no
 MaxAuthTries 4
 KbdInteractiveAuthentication no
 PermitRootLogin no
-AllowUsers kyle
+AllowUsers @AGENT_HOST_USER@
 ClientAliveInterval 30
 ClientAliveCountMax 4
 X11Forwarding no

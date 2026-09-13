@@ -97,6 +97,29 @@ echo "# params_derive_host"
 ( fresh; AGENT_HOST_LAN_CIDR=10.9.0.0/16; AGENT_HOST=custom; params_derive_host >/dev/null 2>&1
   check "derive: .env cidr override wins" 10.9.0.0/16 "$AGENT_HOST_LAN_CIDR"; check "derive: .env alias wins" custom "$AGENT_HOST" )
 
+echo "# host templates: sshd, ufw"
+( fresh; AGENT_HOST_USER=alice
+  params_render "$REPO/config/sshd/10-hardening.conf.in" "$T/sshd" || bad "sshd: renders" "$?"
+  check "sshd: exactly one AllowUsers line" 1 "$(grep -c '^AllowUsers ' "$T/sshd")"
+  check "sshd: AllowUsers is the given login" "AllowUsers alice" "$(grep '^AllowUsers ' "$T/sshd")"
+  grep -q '@' "$T/sshd" && bad "sshd: no @ left (sshd reads user@host in AllowUsers)" || ok "sshd: no @ left in the rendered file"
+  installed=/etc/ssh/sshd_config.d/10-hardening.conf
+  if [ -r "$installed" ]; then   # on a configured host the template must reproduce what is installed, directives only
+    ( fresh; params_derive_host >/dev/null 2>&1; params_render "$REPO/config/sshd/10-hardening.conf.in" "$T/sshd2"
+      d() { grep -v '^[[:space:]]*#' "$1" | sed '/^[[:space:]]*$/d'; }
+      check "sshd: rendered for $(id -un) matches the installed drop-in" "$(d "$installed")" "$(d "$T/sshd2")" )
+  else echo "skip sshd: no installed drop-in to compare with"; fi
+)
+( fresh
+  out=$(bash "$REPO/config/ufw.sh" 2>&1); rc=$?
+  check "ufw: no argument exits 2 before touching ufw" 2 "$rc"; case "$out" in usage:*) ok "ufw: prints usage";; *) bad "ufw: prints usage" "$out";; esac
+  out=$(bash "$REPO/config/ufw.sh" --dry-run 10.0.0.0 2>&1); check "ufw: rejects a bare address" 2 "$?"
+  out=$(bash "$REPO/config/ufw.sh" --dry-run 10.1.2.0/24 2>&1) || bad "ufw: dry run exits 0" "$out"
+  check "ufw: dry run prints six commands" 6 "$(printf '%s\n' "$out" | grep -c '^ufw ')"
+  check "ufw: LAN rule carries the given range" 1 "$(printf '%s\n' "$out" | grep -c "^ufw allow from 10.1.2.0/24 to any port 22 proto tcp")"
+  printf '%s\n' "$out" | grep -q '^ufw --force enable$' && ok "ufw: enables" || bad "ufw: enables" "$out"
+)
+
 pass=$(grep -c '^ok$' "$T/results"); fail=$(grep -c '^FAIL$' "$T/results")
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" = 0 ]
