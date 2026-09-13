@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# Idempotent macOS client setup for as1 (phases 1 to 4, including putting the Mac key on as1). Run on the Mac from a
-# clone of this repo. No sudo. Asks for kyle's password on as1 once, only when no local key is trusted there.
+# Idempotent macOS client setup for the agent host (phases 1 to 4, including putting the Mac key on the host). Run on
+# the Mac from a clone of this repo. No sudo. Asks for the host password once, only when no local key is trusted there.
 # Usage: ./install-mac.sh
+# Parameters (lib/params.sh): .env in this checkout names the host (AGENT_HOST, the ssh alias), its address, the login
+# and, optionally, its LAN address. With no .env and a terminal, the script asks and writes .env; without a terminal
+# it exits 2 before touching anything.
 set -euo pipefail
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 MACUSER=$(id -un)
@@ -9,7 +12,20 @@ say()  { printf '\033[1;34m==> %s\033[0m\n' "$*"; }
 note() { printf '    %s\n' "$*"; }
 fail() { printf '\033[1;31m!!  %s\033[0m\n' "$*"; }
 
+. "$REPO/lib/params.sh"
+params_load || exit 1
+if [ -z "${AGENT_HOST:-}" ] || [ -z "${AGENT_HOST_USER:-}" ]; then
+  if [ -f "$REPO/.env" ] || [ ! -t 0 ]; then params_require AGENT_HOST AGENT_HOST_USER || exit 2; fi
+  params_prompt || exit 2
+  params_env_text install-mac.sh > "$REPO/.env"; note "wrote .env"
+fi
+: "${AGENT_HOST_ADDRESS:=$AGENT_HOST}"
+params_validate || exit 1
+H=$AGENT_HOST; ADDR=$AGENT_HOST_ADDRESS; RUSER=$AGENT_HOST_USER; LAN=${AGENT_HOST_LAN_IP:-}
+say "Parameters: \`ssh $H\` is $RUSER@$ADDR${LAN:+, \`ssh $H-lan\` is $RUSER@$LAN}"
+
 # block <file> <marker> <content>: append or replace a marked block (same markers as install-as1.sh).
+# unblock <file> <marker>: remove a block an earlier version of this script left behind.
 # The content goes through a file, not awk -v: BSD awk on macOS rejects a -v value that contains newlines.
 block() {
   local file=$1 marker=$2 content=$3 begin end tmp ctmp
@@ -26,6 +42,14 @@ block() {
   fi
   cat "$tmp" > "$file"; rm -f "$tmp" "$ctmp"
 }
+unblock() {
+  local file=$1 marker=$2 begin end tmp
+  begin="# >>> agentic-framework:$marker >>>"; end="# <<< agentic-framework:$marker <<<"
+  grep -qF "$begin" "$file" 2>/dev/null || return 0
+  tmp=$(mktemp)
+  awk -v b="$begin" -v e="$end" '$0==b {skip=1; next} $0==e {skip=0; next} !skip' "$file" > "$tmp"
+  cat "$tmp" > "$file"; rm -f "$tmp"; note "rm   $file [$marker]"
+}
 
 say "Phase 1: brew packages, ssh config"
 command -v brew >/dev/null || { echo "Homebrew missing: https://brew.sh"; exit 1; }
@@ -36,7 +60,9 @@ brew list gh >/dev/null 2>&1 || note "optional: brew install gh"
 [ -d /Applications/WezTerm.app ] || command -v wezterm >/dev/null || note "WezTerm not found: brew install --cask wezterm"
 [ -d /Applications/Tailscale.app ] || note "Tailscale app not found: https://tailscale.com/download/mac (sign in to the tailnet, start at login)"
 install -d -m 700 "$HOME/.ssh"; touch "$HOME/.ssh/config"; chmod 600 "$HOME/.ssh/config"
-block "$HOME/.ssh/config" as1 "$(grep -v '^#' "$REPO/config/ssh_config.mac")"
+SSH_BLOCK=$(params_ssh_config_text) || { fail "config/ssh_config.mac.in did not render"; exit 1; }
+unblock "$HOME/.ssh/config" as1                    # marker name before the block was parameterised
+block "$HOME/.ssh/config" agent-host "$SSH_BLOCK"
 [ -f "$HOME/.ssh/id_ed25519" ] || { note "no ~/.ssh/id_ed25519; generating"; ssh-keygen -t ed25519 -f "$HOME/.ssh/id_ed25519" -N '' -C "$MACUSER@$(hostname -s)"; }
 
 say "Phase 2: WezTerm"
@@ -92,66 +118,67 @@ note "reload WezTerm (Cmd+Shift+R) so Cmd+V pushes images to as1"
 
 say "Phase 4: clipboard push (clip-push, run by WezTerm on Cmd+V)"
 install -d "$HOME/.local/bin"
-install -m 755 "$REPO/bin/clip-push-mac.sh" "$HOME/.local/bin/clip-push"
-note "installed ~/.local/bin/clip-push"
+CLIP_TMP=$(mktemp); params_render "$REPO/bin/clip-push-mac.sh.in" "$CLIP_TMP" || { fail "bin/clip-push-mac.sh.in did not render"; exit 1; }
+install -m 755 "$CLIP_TMP" "$HOME/.local/bin/clip-push"; rm -f "$CLIP_TMP"
+note "installed ~/.local/bin/clip-push (pushes to $H-clip)"
 # A fresh Mac has no ~/.local/bin on PATH. WezTerm calls clip-push by absolute path, but the verify commands in the
 # docs, and the phase 5 `agent` alias, are typed in a shell. Same marker mechanism as ~/.ssh/config.
 touch "$HOME/.zshrc"
 block "$HOME/.zshrc" path 'case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) export PATH="$HOME/.local/bin:$PATH" ;; esac'
 case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) note "open a new shell so clip-push is on PATH" ;; esac
-# The first design had as1 SSH into the Mac. Its leftovers need sudo to remove; point at the doc instead.
+# The first design had the host SSH into the Mac. Its leftovers need sudo to remove; point at the doc instead.
 for f in /usr/local/bin/clip-client /etc/ssh/sshd_config.d/100-tailnet.conf; do
   if [ -e "$f" ]; then note "old pull-bridge file present: $f (remove per README.md, Rollback)"; fi
 done
-if grep -qs '@as1$' "$HOME/.ssh/authorized_keys"; then
-  note "as1's key is still in ~/.ssh/authorized_keys; it is no longer needed (README.md, Rollback)"
+if grep -qs "@$H\$" "$HOME/.ssh/authorized_keys"; then
+  note "$H's key is still in ~/.ssh/authorized_keys; it is no longer needed (README.md, Rollback)"
 fi
 
-say "Phase 1, continued: key login to as1 (asks for kyle's password on as1 once, only if it has to)"
-# Goal: `ssh as1 true` runs with no prompt of any kind. mosh, the clipboard push and every `ssh as1 <cmd>`
+say "Phase 1, continued: key login to $H (asks for $RUSER's password on $H once, only if it has to)"
+# Goal: `ssh $H true` runs with no prompt of any kind. mosh, the clipboard push and every `ssh $H <cmd>`
 # depend on it. Never deletes anything: a stored host key that no longer matches is for a human to judge.
 PUB="$HOME/.ssh/id_ed25519.pub"
-key_ok() { ssh -o BatchMode=yes -o ConnectTimeout=5 as1 true 2>/dev/null; }
+key_ok() { ssh -o BatchMode=yes -o ConnectTimeout=5 "$H" true 2>/dev/null; }
 # probe <key>: can this key alone log in? Host key deliberately ignored and not recorded: authentication only.
 probe() {
   ssh -o BatchMode=yes -o ConnectTimeout=5 -o IdentitiesOnly=yes -i "$1" \
-      -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR as1 true 2>/dev/null
+      -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "$H" true 2>/dev/null
 }
 # sshd's reply to a connection that offers no authentication: "Permission denied (publickey,password)" when
-# reachable, and the list says whether password login is on. Anything else means as1 did not answer.
+# reachable, and the list says whether password login is on. Anything else means the host did not answer.
 auth_reply() {
   ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-      -o PreferredAuthentications=none -o LogLevel=ERROR as1 true 2>&1 || true
+      -o PreferredAuthentications=none -o LogLevel=ERROR "$H" true 2>&1 || true
 }
 
-setup_as1_login() {
-  local k trusted= auth reply
-  if key_ok; then note "ok   ssh as1 logs in by key"; return 0; fi
+setup_host_login() {
+  local k trusted='' auth reply
+  if key_ok; then note "ok   ssh $H logs in by key"; return 0; fi
 
   auth=$(auth_reply)
   case "$auth" in
     *"Permission denied"*) ;;
-    *) fail "as1 is not reachable over ssh: $auth"
-       note "check the Tailscale menu bar icon and that as1 is online, then re-run ./install-mac.sh"; return 1 ;;
+    *) fail "$H ($ADDR) is not reachable over ssh: $auth"
+       note "check the Tailscale menu bar icon and that $H is online, then re-run ./install-mac.sh"; return 1 ;;
   esac
 
   # Host key. BatchMode refuses an unknown host, so store it now (trust on first use, fingerprint shown for the
   # record). A stored key that no longer matches is never replaced here.
-  reply=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -o PreferredAuthentications=none -o LogLevel=ERROR as1 true 2>&1 || true)
+  reply=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -o PreferredAuthentications=none -o LogLevel=ERROR "$H" true 2>&1 || true)
   if [[ $reply != *"Permission denied"* ]]; then
-    if ssh-keygen -F as1 >/dev/null 2>&1; then
-      fail "as1's host key does not match the one stored in ~/.ssh/known_hosts."
-      note "if as1 was reinstalled:  ssh-keygen -R as1; ssh-keygen -R 192.168.10.2   then re-run ./install-mac.sh"
+    if ssh-keygen -F "$ADDR" >/dev/null 2>&1; then
+      fail "$H's host key does not match the one stored in ~/.ssh/known_hosts."
+      note "if $H was reinstalled:  ssh-keygen -R $ADDR${LAN:+; ssh-keygen -R $LAN}   then re-run ./install-mac.sh"
       return 1
     fi
-    note "first connection: storing as1's host key in ~/.ssh/known_hosts"
-    ssh-keyscan -T 5 -t ed25519 as1 2>/dev/null | ssh-keygen -lf - 2>/dev/null | sed 's/^/      /' || true
+    note "first connection: storing $H's host key in ~/.ssh/known_hosts"
+    ssh-keyscan -T 5 -t ed25519 "$ADDR" 2>/dev/null | ssh-keygen -lf - 2>/dev/null | sed 's/^/      /' || true
     ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new -o PreferredAuthentications=none \
-        -o LogLevel=ERROR as1 true 2>/dev/null || true
-    if key_ok; then note "ok   ssh as1 logs in by key (as1 already trusted the repo key)"; return 0; fi
+        -o LogLevel=ERROR "$H" true 2>/dev/null || true
+    if key_ok; then note "ok   ssh $H logs in by key ($H already trusted the repo key)"; return 0; fi
   fi
 
-  # A key provisioned before this repo may already be trusted by as1. If so, install the repo key over it, without
+  # A key provisioned before this repo may already be trusted by the host. If so, install the repo key over it, without
   # a password. -f is required: ssh-copy-id first logs in with every explicit identity to skip keys it thinks are
   # already installed, and the -o IdentityFile option makes that probe succeed with the old key, so without -f it
   # skips the new one and reports "All keys were skipped".
@@ -161,33 +188,33 @@ setup_as1_login() {
     if probe "$k"; then trusted=$k; break; fi
   done
   if [ -n "$trusted" ]; then
-    note "as1 trusts ${trusted/#$HOME/~} but not ~/.ssh/id_ed25519; installing the repo key over it (no password)"
-    ssh-copy-id -f -i "$PUB" -o IdentityFile="$trusted" as1 >/dev/null 2>&1 || fail "ssh-copy-id via ${trusted/#$HOME/~} failed"
+    note "$H trusts ${trusted/#$HOME/~} but not ~/.ssh/id_ed25519; installing the repo key over it (no password)"
+    ssh-copy-id -f -i "$PUB" -o IdentityFile="$trusted" "$H" >/dev/null 2>&1 || fail "ssh-copy-id via ${trusted/#$HOME/~} failed"
   else
     case "$auth" in
       *password*) ;;
-      *) fail "as1 does not trust any local key and has password login off (a key was imported at install)."
-         note "either run ./install-as1.sh on as1 (README.md, section 3) and re-run this script, or"
-         note "at the as1 console:  mkdir -p -m 700 ~/.ssh && echo '$(cat "$PUB")' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
+      *) fail "$H does not trust any local key and has password login off (a key was imported at install)."
+         note "either run ./install-as1.sh on $H (README.md, section 3) and re-run this script, or"
+         note "at the $H console:  mkdir -p -m 700 ~/.ssh && echo '$(cat "$PUB")' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
          return 1 ;;
     esac
     if [ ! -t 0 ]; then
-      fail "as1 does not trust ~/.ssh/id_ed25519 and there is no terminal to ask for a password."
-      note "run in a terminal:  ssh-copy-id -i ~/.ssh/id_ed25519.pub as1"; return 1
+      fail "$H does not trust ~/.ssh/id_ed25519 and there is no terminal to ask for a password."
+      note "run in a terminal:  ssh-copy-id -i ~/.ssh/id_ed25519.pub $H"; return 1
     fi
-    note "as1 does not trust ~/.ssh/id_ed25519 yet. Enter kyle's password on as1 when asked; it is needed once."
-    ssh-copy-id -i "$PUB" as1 || fail "ssh-copy-id failed (wrong password, or as1 refused)"
+    note "$H does not trust ~/.ssh/id_ed25519 yet. Enter $RUSER's password on $H when asked; it is needed once."
+    ssh-copy-id -i "$PUB" "$H" || fail "ssh-copy-id failed (wrong password, or $H refused)"
   fi
 
-  if key_ok; then note "ok   ssh as1 logs in by key"; return 0; fi
-  fail "ssh as1 still prompts. Diagnose with:  ssh -v as1 true"; return 1
+  if key_ok; then note "ok   ssh $H logs in by key"; return 0; fi
+  fail "ssh $H still prompts. Diagnose with:  ssh -v $H true"; return 1
 }
 
-LOGIN_OK=1; setup_as1_login || LOGIN_OK=0
+LOGIN_OK=1; setup_host_login || LOGIN_OK=0
 if [ "$LOGIN_OK" = 1 ] && [ "$WEZ_OK" = 1 ]; then
   say "Done. Open a new shell, reload WezTerm (Cmd+Shift+R), then verify with README.md, sections 2 and 6"
 else
-  [ "$LOGIN_OK" = 1 ] || say "Done, but ssh as1 is not keyless yet (see above). Fix that, then re-run ./install-mac.sh"
+  [ "$LOGIN_OK" = 1 ] || say "Done, but ssh $H is not keyless yet (see above). Fix that, then re-run ./install-mac.sh"
   [ "$WEZ_OK" = 1 ] || say "Done, but ${WEZ/#$HOME/~} does not include wezterm-as1 (see above): Cmd+V will not paste images into as1"
   exit 1
 fi

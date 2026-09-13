@@ -120,6 +120,47 @@ echo "# host templates: sshd, ufw"
   printf '%s\n' "$out" | grep -q '^ufw --force enable$' && ok "ufw: enables" || bad "ufw: enables" "$out"
 )
 
+echo "# Mac templates: ssh config, clip-push, install-mac.sh entry"
+( fresh; AGENT_HOST=box; AGENT_HOST_ADDRESS=box.tail.ts.net; AGENT_HOST_USER=alice; AGENT_HOST_LAN_IP=10.0.0.5
+  params_ssh_config_text > "$T/sshcfg" || bad "sshcfg: renders" "$?"
+  grep -q '^#' "$T/sshcfg" && bad "sshcfg: comments stripped" || ok "sshcfg: comments stripped"
+  g() { ssh -G -F "$T/sshcfg" "$1" 2>/dev/null | grep -E "^$2 " | cut -d' ' -f2-; }
+  check "sshcfg: ssh box -> hostname" box.tail.ts.net "$(g box hostname)"
+  check "sshcfg: ssh box -> user" alice "$(g box user)"
+  check "sshcfg: ssh box -> forwardagent off" no "$(g box forwardagent)"
+  check "sshcfg: box-lan -> hostname is the LAN address" 10.0.0.5 "$(g box-lan hostname)"
+  check "sshcfg: box-lan -> user" alice "$(g box-lan user)"
+  check "sshcfg: box-clip -> hostname" box.tail.ts.net "$(g box-clip hostname)"
+  check "sshcfg: box-clip -> batchmode" yes "$(g box-clip batchmode)"
+  check "sshcfg: box-clip -> controlmaster" auto "$(g box-clip controlmaster)"
+  check "sshcfg: box-clip -> connecttimeout" 3 "$(g box-clip connecttimeout)"
+  check "sshcfg: box-clip -> controlpath keeps ssh tokens" '~/.ssh/cm-%r@%h:%p' "$(grep ControlPath "$T/sshcfg" | awk '{print $2}')"
+  check "sshcfg: three Host paragraphs" 3 "$(grep -c '^Host ' "$T/sshcfg")"
+  AGENT_HOST_LAN_IP=; params_ssh_config_text > "$T/sshcfg2" || bad "sshcfg: renders without LAN" "$?"
+  check "sshcfg: no LAN address -> two Host paragraphs" 2 "$(grep -c '^Host ' "$T/sshcfg2")"
+  grep -q 'box-lan' "$T/sshcfg2" && bad "sshcfg: no LAN -> -lan paragraph gone" || ok "sshcfg: no LAN -> -lan paragraph gone"
+  check "sshcfg: no LAN -> box still resolves" box.tail.ts.net "$(ssh -G -F "$T/sshcfg2" box 2>/dev/null | awk '/^hostname /{print $2}')"
+)
+( fresh; AGENT_HOST=box
+  params_render "$REPO/bin/clip-push-mac.sh.in" "$T/clip-push" || bad "clip-push: renders" "$?"
+  bash -n "$T/clip-push" && ok "clip-push: bash -n on the rendered script" || bad "clip-push: bash -n"
+  grep -q 'host=${CLIP_PUSH_HOST:-box-clip}' "$T/clip-push" && ok "clip-push: default destination is <alias>-clip" || bad "clip-push: default destination" "$(grep 'host=' "$T/clip-push")"
+)
+( # install-mac.sh must settle its parameters before it touches anything, so its entry is testable anywhere.
+  mkdir -p "$T/repo" "$T/home"; cp -R "$REPO/install-mac.sh" "$REPO/lib" "$REPO/config" "$REPO/bin" "$T/repo/"; rm -f "$T/repo/.env"
+  out=$(HOME=$T/home bash "$T/repo/install-mac.sh" </dev/null 2>&1); rc=$?
+  check "install-mac: no .env and no terminal -> exit 2" 2 "$rc"
+  case "$out" in *"AGENT_HOST is not set"*) ok "install-mac: says what is missing";; *) bad "install-mac: says what is missing" "$out";; esac
+  check "install-mac: wrote nothing to HOME" "" "$(ls -A "$T/home")"
+  [ -e "$T/repo/.env" ] && bad "install-mac: did not write .env" || ok "install-mac: did not write .env"
+  printf 'AGENT_HOST=box\nAGENT_HOST_USER=alice\n' > "$T/repo/.env"
+  out=$(HOME=$T/home PATH=/usr/bin:/bin bash "$T/repo/install-mac.sh" </dev/null 2>&1 || true)
+  case "$out" in *'Parameters: `ssh box` is alice@box'*) ok "install-mac: .env read, address defaults to the alias";; *) bad "install-mac: .env read" "$out";; esac
+  case "$out" in *"box-lan"*) bad "install-mac: no -lan alias without a LAN address" "$out";; *) ok "install-mac: no -lan alias without a LAN address";; esac
+  printf 'AGENT_HOST_USER=bad user\n' > "$T/repo/.env"
+  HOME=$T/home bash "$T/repo/install-mac.sh" </dev/null >/dev/null 2>&1; check "install-mac: malformed .env -> exit 1" 1 "$?"
+)
+
 pass=$(grep -c '^ok$' "$T/results"); fail=$(grep -c '^FAIL$' "$T/results")
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" = 0 ]

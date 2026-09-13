@@ -1,0 +1,33 @@
+# Mac -> host. TEMPLATE: install-mac.sh fills the @AGENT_...@ placeholders from .env (lib/params.sh) and writes the
+# result, minus comments, into a marker block in ~/.ssh/config on the Mac. Without AGENT_HOST_LAN_IP the -lan
+# paragraph is left out.
+Host @AGENT_HOST@
+  HostName @AGENT_HOST_ADDRESS@
+  User @AGENT_HOST_USER@
+  IdentityFile ~/.ssh/id_ed25519
+  ServerAliveInterval 30
+  ServerAliveCountMax 4
+  ForwardAgent no
+
+Host @AGENT_HOST@-lan
+  HostName @AGENT_HOST_LAN_IP@
+  User @AGENT_HOST_USER@
+  IdentityFile ~/.ssh/id_ed25519
+  ServerAliveInterval 30
+  ForwardAgent no
+
+# Used by clip-push when Cmd+V pastes an image into the host. Kept apart from the main Host so interactive sessions and mosh are
+# untouched: BatchMode never prompts, ConnectTimeout keeps a failed push short, ControlMaster reuses one
+# connection for 10 minutes so pushes after the first take milliseconds.
+Host @AGENT_HOST@-clip
+  HostName @AGENT_HOST_ADDRESS@
+  User @AGENT_HOST_USER@
+  IdentityFile ~/.ssh/id_ed25519
+  IdentitiesOnly yes
+  BatchMode yes
+  ConnectTimeout 3
+  ControlMaster auto
+  ControlPath ~/.ssh/cm-%r@%h:%p
+  ControlPersist 10m
+  ForwardAgent no
+  LogLevel ERROR
