@@ -39,14 +39,14 @@ When you implement part of phase 5 or 6, update this table and section 8 of the 
 | Path | What it is | Installed to |
 |---|---|---|
 | `install-as1.sh` | idempotent user-level setup on as1, phases 2 to 4, plus toolchains and harnesses | run in place |
-| `install-as1-root.sh` | phase 1 root steps: sshd, ufw, apt, linger, tailscale | run by a human with sudo |
+| `install-as1-root.sh` | phase 1 root steps: password check, sshd, ufw, apt, linger, tailscale | run by a human with sudo |
 | `install-mac.sh` | idempotent Mac client setup, phases 1 to 4 | run on the Mac |
 | `bin/xclip` | clipboard shim; serves the attached Mac's clipboard to Claude Code | `~/.local/bin/xclip` on as1 |
 | `bin/clip-client-mac.sh` | `targets`/`image`/`text`/`copy` over pbpaste, pngpaste, pbcopy | `/usr/local/bin/clip-client` on the Mac |
 | `config/tmux.conf` | OSC 52 passthrough, mouse, history, SSH_CONNECTION refresh | `~/.tmux.conf` (symlink) |
 | `config/bashrc.d/agents-env.sh` | PATH and secrets for every shell, including non-interactive SSH | sourced at top of `~/.bashrc` |
 | `config/bashrc.d/mise.sh`, `tmux-autoattach.sh` | interactive-only shell bits | sourced at bottom of `~/.bashrc` |
-| `config/sshd/10-hardening.conf` | key-only, no root, `AllowUsers kyle` | `/etc/ssh/sshd_config.d/` (root script) |
+| `config/sshd/10-hardening.conf` | key or password for `kyle` (no empty passwords, `MaxAuthTries 4`), no root, `AllowUsers kyle` | `/etc/ssh/sshd_config.d/` (root script) |
 | `config/ufw.sh` | tailnet-only inbound, LAN SSH fallback | run by root script |
 | `config/ssh_config.as1` | as1 to Mac SSH block for the shim; `__MACUSER__` placeholder | marker block in `~/.ssh/config` on as1 |
 | `config/ssh_config.mac` | `Host as1` and `as1-lan` | marker block in `~/.ssh/config` on the Mac |

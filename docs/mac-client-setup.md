@@ -66,12 +66,12 @@ mosh --version | head -1
 
 ```
 ssh as1 true && echo key-login-ok
-ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no kyle@as1   # expect: Permission denied (publickey)
+ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no kyle@as1 true && echo password-login-ok   # prompts for kyle's password
 ssh as1-lan true && echo lan-ok            # only while on the 192.168.10.0/24 LAN
 mosh as1                                   # lands in tmux "main"; toggle Wi-Fi off/on, session survives
 ```
 
-If the password test does not say "Permission denied", the root script on as1 has not run yet.
+`ssh as1 true` must not prompt: the Mac's key is the everyday path, and mosh, the clipboard bridge and `ssh as1 agent` all depend on it. The password test is the fallback for a device without a provisioned key; if it says "Permission denied (publickey)" the root script on as1 has not run yet.
 
 ## Phase 2: terminal
 

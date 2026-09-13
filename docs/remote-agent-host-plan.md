@@ -19,11 +19,12 @@ Assumed (correct me if wrong):
 - Repos live under `~/workspace/<repo>`. This repo (`agentic-framework`) holds all scripts, configs and docs from this plan.
 - Git hosting is GitHub.
 - Both Macs may run the built-in SSH server (Remote Login) restricted to the tailnet. This is what the clipboard bridge relies on.
+- as1 sshd accepts key or password for `kyle`. Password login exists so a device without a provisioned key can still get in; ufw limits who can even reach port 22 (tailnet and home LAN only), and `AllowUsers` plus `PermitEmptyPasswords no` limit what a guess can hit. Keys stay the default for the Macs and for everything non-interactive (mosh, the clipboard bridge, `ssh as1 agent`).
 
 Verified on as1 while planning:
 
 - tmux 3.6, Docker, Tailscale, OpenSSH 10.2 present and active. ufw installed but state unknown (needs sudo). mosh, mise, gh, Node, xclip absent.
-- sshd: `KbdInteractiveAuthentication no` in the main config; `/etc/ssh/sshd_config.d/50-cloud-init.conf` exists and is root-only, so `PasswordAuthentication` is unconfirmed. Phase 1 test settles it.
+- sshd: `KbdInteractiveAuthentication no` in the main config; `/etc/ssh/sshd_config.d/50-cloud-init.conf` exists and is root-only. Phase 1 sets `PasswordAuthentication yes` explicitly in `10-hardening.conf` so the cloud-init value no longer matters.
 - Claude Code 2.1.269 has `--print`, `--output-format stream-json`, `--permission-mode`, `--max-budget-usd`, `--worktree`, `--tmux=classic`, `--bg` / `claude agents|attach|logs`, `--remote-control`.
 - Claude Code on Linux reads clipboard images by running `xclip -selection clipboard -t TARGETS -o`, then `xclip -selection clipboard -t image/png -o`, with `wl-paste` as fallback. Text via `xclip -selection clipboard -t text/plain -o`. Copy-out uses `xclip`/`xsel`/`wl-copy` or OSC 52. The clipboard bridge (phase 4) hooks exactly these calls.
 
@@ -35,7 +36,7 @@ Verified on as1 while planning:
         │        Tailscale only (100.64.0.0/10), LAN fallback for ssh
   ┌─────▼──────────────────────────────────────────────┐
   │ as1                                                │
-  │  sshd key-only + mosh-server                       │
+  │  sshd key or password (kyle only) + mosh-server    │
   │  tmux: one session per repo, "agents" for jobs     │
   │  harnesses: claude, opencode, aider, omp           │
   │  clipboard bridge: xclip shim → ssh <mac> pbpaste  │
@@ -55,9 +56,12 @@ Image paste: Claude Code calls `xclip`; the shim on as1 fetches the PNG from the
 ### On as1
 
 1. Confirm your key already works from the Mac before changing anything (`ssh as1 true` from the Mac). Keep that session open while editing sshd.
-2. Create `/etc/ssh/sshd_config.d/10-hardening.conf` (kept in this repo at `config/sshd/10-hardening.conf`):
+2. Confirm `kyle` has a real password: `passwd -S kyle` must show `P` in the second field. If it shows `NP` or `L`, run `sudo passwd kyle` first. `install-as1-root.sh` refuses to continue otherwise: with no password set, `PermitEmptyPasswords no` would silently refuse every password attempt and the fallback path would not exist.
+3. Create `/etc/ssh/sshd_config.d/10-hardening.conf` (kept in this repo at `config/sshd/10-hardening.conf`):
    ```
-   PasswordAuthentication no
+   PasswordAuthentication yes
+   PermitEmptyPasswords no
+   MaxAuthTries 4
    KbdInteractiveAuthentication no
    PermitRootLogin no
    AllowUsers kyle
@@ -66,8 +70,9 @@ Image paste: Claude Code calls `xclip`; the shim on as1 fetches the PNG from the
    X11Forwarding no
    ```
    Files in `sshd_config.d` are read in lexical order and the first value wins, so `10-` beats `50-cloud-init.conf`. Check that file anyway: `sudo cat /etc/ssh/sshd_config.d/50-cloud-init.conf`.
-3. `sudo sshd -t && sudo systemctl reload ssh`.
-4. Firewall (`config/ufw.sh`):
+   Password login is deliberate (see section 0). The firewall in the next step is what keeps it off the internet; do not enable password login without it.
+4. `sudo sshd -t && sudo systemctl reload ssh`.
+5. Firewall (`config/ufw.sh`):
    ```
    sudo ufw default deny incoming
    sudo ufw default allow outgoing
@@ -76,10 +81,10 @@ Image paste: Claude Code calls `xclip`; the shim on as1 fetches the PNG from the
    sudo ufw enable
    ```
    Docker publishes ports around ufw; do not rely on ufw for containers.
-5. `sudo apt install mosh` (UDP 60000–61000 is covered by the tailscale0 allow rule).
-6. `loginctl enable-linger kyle` so user systemd units and tmux survive logout.
-7. `sudo tailscale set --auto-update` and confirm unattended-upgrades is enabled: `systemctl status unattended-upgrades`.
-8. Optional: `sudo tailscale up --ssh` for identity-based SSH via Tailscale ACLs. Keep OpenSSH as well; mosh and the clipboard bridge use plain sshd.
+6. `sudo apt install mosh` (UDP 60000–61000 is covered by the tailscale0 allow rule).
+7. `loginctl enable-linger kyle` so user systemd units and tmux survive logout.
+8. `sudo tailscale set --auto-update` and confirm unattended-upgrades is enabled: `systemctl status unattended-upgrades`.
+9. Optional: `sudo tailscale up --ssh` for identity-based SSH via Tailscale ACLs. Keep OpenSSH as well; mosh and the clipboard bridge use plain sshd.
 
 ### On the Mac
 
@@ -99,11 +104,13 @@ Image paste: Claude Code calls `xclip`; the shim on as1 fetches the PNG from the
 ### Test as1 alone
 
 ```
-sudo sshd -T | grep -iE '^(passwordauthentication|permitrootlogin|allowusers|kbdinteractive)'
+sudo sshd -T | grep -iE '^(passwordauthentication|permitemptypasswords|maxauthtries|permitrootlogin|allowusers|kbdinteractive)'
 sudo ufw status verbose
 sudo ss -lntup | grep -E ':22 |mosh'    # sshd listening; mosh-server appears only when a client connects
 loginctl show-user kyle | grep Linger    # Linger=yes
-ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no kyle@localhost   # expect: Permission denied
+passwd -S kyle                           # field 2 is P
+ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no kyle@localhost true   # expect: password prompt, then success
+ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no root@localhost true   # expect: Permission denied even with the right password (PermitRootLogin no)
 ```
 
 ### Test the Mac alone
@@ -117,7 +124,7 @@ mosh --version
 
 ### Joint checkpoint
 
-From the Mac: `ssh as1 true` succeeds; `ssh -o PreferredAuthentications=password kyle@as1` is refused; `mosh as1` connects and survives toggling Wi-Fi off and on; `ssh as1-lan true` works on the home LAN.
+From the Mac: `ssh as1 true` succeeds without a prompt (key path); `ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no kyle@as1 true` asks for the password and then succeeds (password path); `mosh as1` connects and survives toggling Wi-Fi off and on; `ssh as1-lan true` works on the home LAN.
 
 ## 3. Phase 2: sessions and terminal
 
