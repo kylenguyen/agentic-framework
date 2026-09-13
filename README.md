@@ -209,6 +209,8 @@ If image paste fails: `mac$ clip-push` in a local terminal prints the ssh error;
 
 - [docs/remote-agent-host-plan.md](docs/remote-agent-host-plan.md): design, per-phase tests, and what is still planned.
 - [AGENTS.md](AGENTS.md): status table, layout, install contract, boundaries for humans and agents.
+- `tests/params-test.sh` runs anywhere without sudo or network; `tests/e2e/run.sh` runs both install scripts against
+  each other in two Docker containers (host `box`, login `alice`) and is the check to run before changing either script.
 
 Phases 1 to 4 (access, sessions, harnesses, clipboard bridge) are scripted and in use. Phases 5 and 6
 (automation, sandbox) are designed and not yet built.

@@ -94,20 +94,20 @@ local config = wezterm.config_builder()
 require("wezterm-agent-host").apply(config)
 return config
 EOF
-    note "created ${file/#$HOME/~} (minimal, includes $WEZ_MOD)"; return 0
+    note "created ${file/#$HOME/\~} (minimal, includes $WEZ_MOD)"; return 0
   fi
-  if grep -q "$WEZ_MOD" "$file"; then note "ok   ${file/#$HOME/~} includes $WEZ_MOD"; return 0; fi
+  if grep -q "$WEZ_MOD" "$file"; then note "ok   ${file/#$HOME/\~} includes $WEZ_MOD"; return 0; fi
   if grep -q 'wezterm-as1' "$file"; then
     [ -e "$file.before-agent-host" ] || cp -p "$file" "$file.before-agent-host"
     local tmp; tmp=$(mktemp); sed 's/wezterm-as1/wezterm-agent-host/g' "$file" > "$tmp"; cat "$tmp" > "$file"; rm -f "$tmp"
-    note "upd  ${file/#$HOME/~}: require(\"wezterm-as1\") is now require(\"$WEZ_MOD\") (original: ${file/#$HOME/~}.before-agent-host)"; return 0
+    note "upd  ${file/#$HOME/\~}: require(\"wezterm-as1\") is now require(\"$WEZ_MOD\") (original: ${file/#$HOME/\~}.before-agent-host)"; return 0
   fi
   # Last `return <identifier>` line, ignoring trailing spaces and a trailing comment.
   var=$(awk '{ l=$0; sub(/--.*/, "", l) }
              l ~ /^[[:space:]]*return[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*$/ { v=l; sub(/^[[:space:]]*return[[:space:]]+/, "", v); sub(/[[:space:]]*$/, "", v) }
              END { if (v != "") print v }' "$file")
   if [ -z "$var" ]; then
-    fail "${file/#$HOME/~} exists but does not end with \`return <config>\`, so it was left alone."
+    fail "${file/#$HOME/\~} exists but does not end with \`return <config>\`, so it was left alone."
     note "ADD before the line that returns your config:  require(\"$WEZ_MOD\").apply(<your config variable>)"
     return 1
   fi
@@ -120,7 +120,7 @@ EOF
             if (i==last) { ind=lines[i]; sub(/[^[:space:]].*$/, "", ind); print ind "require(\"" mod "\").apply(" var ")" }
             print lines[i] } }' "$file" > "$tmp"
   cat "$tmp" > "$file"; rm -f "$tmp"
-  note "upd  ${file/#$HOME/~}: added require(\"$WEZ_MOD\").apply($var) before \`return $var\` (original: ${file/#$HOME/~}.before-agent-host)"
+  note "upd  ${file/#$HOME/\~}: added require(\"$WEZ_MOD\").apply($var) before \`return $var\` (original: ${file/#$HOME/\~}.before-agent-host)"
 }
 wez_include "$WEZ" || WEZ_OK=0
 note "reload WezTerm (Cmd+Shift+R) so Cmd+V pushes images to $H"
@@ -197,8 +197,8 @@ setup_host_login() {
     if probe "$k"; then trusted=$k; break; fi
   done
   if [ -n "$trusted" ]; then
-    note "$H trusts ${trusted/#$HOME/~} but not ~/.ssh/id_ed25519; installing the repo key over it (no password)"
-    ssh-copy-id -f -i "$PUB" -o IdentityFile="$trusted" "$H" >/dev/null 2>&1 || fail "ssh-copy-id via ${trusted/#$HOME/~} failed"
+    note "$H trusts ${trusted/#$HOME/\~} but not ~/.ssh/id_ed25519; installing the repo key over it (no password)"
+    ssh-copy-id -f -i "$PUB" -o IdentityFile="$trusted" "$H" >/dev/null 2>&1 || fail "ssh-copy-id via ${trusted/#$HOME/\~} failed"
   else
     case "$auth" in
       *password*) ;;
@@ -224,6 +224,6 @@ if [ "$LOGIN_OK" = 1 ] && [ "$WEZ_OK" = 1 ]; then
   say "Done. Open a new shell, reload WezTerm (Cmd+Shift+R), then verify with README.md, sections 2 and 6"
 else
   [ "$LOGIN_OK" = 1 ] || say "Done, but ssh $H is not keyless yet (see above). Fix that, then re-run ./install-mac.sh"
-  [ "$WEZ_OK" = 1 ] || say "Done, but ${WEZ/#$HOME/~} does not include $WEZ_MOD (see above): Cmd+V will not paste images into $H"
+  [ "$WEZ_OK" = 1 ] || say "Done, but ${WEZ/#$HOME/\~} does not include $WEZ_MOD (see above): Cmd+V will not paste images into $H"
   exit 1
 fi

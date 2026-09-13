@@ -1,0 +1,8 @@
+#!/bin/sh
+# loginctl shim: enable-linger creates the file install-as1.sh checks on re-run, as systemd would.
+echo "loginctl $*" >> /var/log/e2e-shims.log
+case "$1" in
+  enable-linger) mkdir -p /var/lib/systemd/linger && touch "/var/lib/systemd/linger/$2" ;;
+  show-user)     echo "Linger=yes" ;;
+esac
+exit 0

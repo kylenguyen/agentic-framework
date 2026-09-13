@@ -175,26 +175,26 @@ echo "# WezTerm module and a Linux dry run of install-mac.sh"
   # the probes then fail (box does not resolve) and the script exits 1. Legacy files are seeded to test migration.
   mkdir -p "$T/mac/repo" "$T/mac/home/.ssh" "$T/mac/home/.config/wezterm" "$T/mac/bin"
   cp -R "$REPO/install-mac.sh" "$REPO/lib" "$REPO/config" "$REPO/bin" "$T/mac/repo/"
-  printf 'AGENT_HOST=box\nAGENT_HOST_ADDRESS=box.invalid\nAGENT_HOST_USER=alice\nAGENT_HOST_LAN_IP=10.0.0.5\n' > "$T/mac/repo/.env"
+  printf 'AGENT_HOST=aftest.invalid\nAGENT_HOST_ADDRESS=box.invalid\nAGENT_HOST_USER=alice\nAGENT_HOST_LAN_IP=10.0.0.5\n' > "$T/mac/repo/.env"
   printf '#!/bin/sh\nexit 0\n' > "$T/mac/bin/brew"; chmod +x "$T/mac/bin/brew"
   printf 'Host other\n  User me\n\n# >>> agentic-framework:as1 >>>\nHost as1\n  User kyle\n# <<< agentic-framework:as1 <<<\n' > "$T/mac/home/.ssh/config"
   printf 'local wezterm = require("wezterm")\nlocal cfg = wezterm.config_builder()\nrequire("wezterm-as1").apply(cfg)\nreturn cfg\n' > "$T/mac/home/.config/wezterm/wezterm.lua"
   : > "$T/mac/home/.config/wezterm/wezterm-as1.lua"
   out=$(HOME=$T/mac/home PATH="$T/mac/bin:$PATH" bash "$T/mac/repo/install-mac.sh" </dev/null 2>&1); rc=$?
   check "dry run: exits 1 at the unreachable host, not earlier" 1 "$rc"
-  case "$out" in *"box (box.invalid) is not reachable"*) ok "dry run: reached the login phase";; *) bad "dry run: reached the login phase" "$out";; esac
+  case "$out" in *"aftest.invalid (box.invalid) is not reachable"*) ok "dry run: reached the login phase";; *) bad "dry run: reached the login phase" "$out";; esac
   cfg=$T/mac/home/.ssh/config
   grep -q 'agentic-framework:as1' "$cfg" && bad "dry run: legacy as1 block removed" || ok "dry run: legacy as1 block removed"
   check "dry run: one agent-host block" 1 "$(grep -c '^# >>> agentic-framework:agent-host >>>$' "$cfg")"
   check "dry run: user's own Host kept" 1 "$(grep -c '^Host other$' "$cfg")"
-  check "dry run: ssh -G box -> alice@box.invalid" "box.invalid alice" "$(ssh -G -F "$cfg" box 2>/dev/null | awk '/^hostname /{h=$2} /^user /{u=$2} END{print h, u}')"
-  check "dry run: ssh -G box-lan -> LAN address" 10.0.0.5 "$(ssh -G -F "$cfg" box-lan 2>/dev/null | awk '/^hostname /{print $2}')"
+  check "dry run: ssh -G aftest.invalid -> alice@box.invalid" "box.invalid alice" "$(ssh -G -F "$cfg" aftest.invalid 2>/dev/null | awk '/^hostname /{h=$2} /^user /{u=$2} END{print h, u}')"
+  check "dry run: ssh -G aftest.invalid-lan -> LAN address" 10.0.0.5 "$(ssh -G -F "$cfg" aftest.invalid-lan 2>/dev/null | awk '/^hostname /{print $2}')"
   wez=$T/mac/home/.config/wezterm
   [ -e "$wez/wezterm-as1.lua" ] && bad "dry run: old module copy removed" || ok "dry run: old module copy removed"
-  check "dry run: new module rendered with the alias" 'local HOST = "box"' "$(grep '^local HOST' "$wez/wezterm-agent-host.lua")"
+  check "dry run: new module rendered with the alias" 'local HOST = "aftest.invalid"' "$(grep '^local HOST' "$wez/wezterm-agent-host.lua")"
   check "dry run: require line migrated" 'require("wezterm-agent-host").apply(cfg)' "$(grep require\(\"wezterm- "$wez/wezterm.lua")"
   [ -e "$wez/wezterm.lua.before-agent-host" ] && ok "dry run: backup kept" || bad "dry run: backup kept"
-  grep -q 'host=${CLIP_PUSH_HOST:-box-clip}' "$T/mac/home/.local/bin/clip-push" && ok "dry run: clip-push installed and rendered" || bad "dry run: clip-push" "$(ls -la "$T/mac/home/.local/bin" 2>&1)"
+  grep -q 'host=${CLIP_PUSH_HOST:-aftest.invalid-clip}' "$T/mac/home/.local/bin/clip-push" && ok "dry run: clip-push installed and rendered" || bad "dry run: clip-push" "$(ls -la "$T/mac/home/.local/bin" 2>&1)"
   [ -x "$T/mac/home/.local/bin/clip-push" ] && ok "dry run: clip-push executable" || bad "dry run: clip-push executable"
   [ -f "$T/mac/home/.ssh/id_ed25519" ] && ok "dry run: key generated" || bad "dry run: key generated"
   out2=$(HOME=$T/mac/home PATH="$T/mac/bin:$PATH" bash "$T/mac/repo/install-mac.sh" </dev/null 2>&1 || true)
