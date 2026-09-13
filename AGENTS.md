@@ -56,7 +56,7 @@ When you implement part of phase 5 or 6, update this table and section 8 of the 
 | `config/ssh_config.mac` | `Host as1`, `as1-lan`, and `as1-clip` (BatchMode, ControlMaster) for the push | marker block in `~/.ssh/config` on the Mac |
 | `config/wezterm-as1.lua` | SSH domain `as1`, Cmd+Shift+A tab, Cmd+V image push | `~/.config/wezterm/wezterm-as1.lua` |
 | `config/claude-settings.json` | Claude Code allow and deny lists, model, status line command | `~/.claude/settings.json` (symlink) |
-| `config/statusline-command.sh` | Claude Code status line: model, cwd, branch; jq optional | `~/.claude/statusline-command.sh` (symlink) |
+| `config/statusline-command.sh` | Claude Code status line, two lines: dir, branch, model, effort; context tokens and 5h/7d rate limits. Needs jq (root script) | `~/.claude/statusline-command.sh` (symlink) |
 | `config/workspace/CLAUDE.md` | house rules for all repos under `~/workspace`; one file linked under both names | `~/workspace/CLAUDE.md` and `~/workspace/AGENTS.md` (symlinks) |
 | `env.example` | secret variable names only | copied to `~/.config/agents/env` once, mode 600 |
 | `docs/` | `setup-from-scratch.md` (ordered runbook, parameters), `mac-client-setup.md`, `remote-agent-host-plan.md`; operations runbook for phase 5 to be written | read only |
@@ -109,7 +109,7 @@ Run these on as1 without sudo before you open a PR. `shellcheck` is not installe
 ```
 shellcheck install-as1.sh install-mac.sh install-as1-root.sh bin/xclip bin/clip-put bin/clip-push-mac.sh config/ufw.sh config/statusline-command.sh config/bashrc.d/*.sh
 bash -n install-as1.sh install-mac.sh install-as1-root.sh bin/xclip bin/clip-put bin/clip-push-mac.sh config/statusline-command.sh
-printf '{"model":{"display_name":"M"},"workspace":{"current_dir":"%s"}}' "$PWD" | bash config/statusline-command.sh   # M | ~/workspace/agentic-framework (branch)
+printf '{"model":{"display_name":"M"},"workspace":{"current_dir":"%s"}}' "$PWD" | bash config/statusline-command.sh   # two lines: ➜ agentic-framework git:(branch) [M], then ctx —
 zsh -n config/zshenv config/zshrc config/bashrc.d/*.sh
 NO_TMUX=1 zsh -ic 'echo $ZSH_THEME; type omz; command -v mise'   # robbyrussell, function, mise path
 tmux -f config/tmux.conf new -d -s check && tmux show -s set-clipboard && tmux kill-session -t check
