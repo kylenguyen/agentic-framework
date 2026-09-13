@@ -75,10 +75,13 @@ if [ ! -f "$HOME/.config/agents/env" ]; then
 else
   chmod 600 "$HOME/.config/agents/env"; note "ok   ~/.config/agents/env"
 fi
+# One file, two names: Claude Code reads CLAUDE.md, the other harnesses read AGENTS.md.
+install -d "$HOME/workspace"
 link "$REPO/config/workspace/CLAUDE.md" "$HOME/workspace/CLAUDE.md"
-link "$REPO/config/workspace/AGENTS.md" "$HOME/workspace/AGENTS.md"
+link "$REPO/config/workspace/CLAUDE.md" "$HOME/workspace/AGENTS.md"
 install -d "$HOME/.claude"
 link "$REPO/config/claude-settings.json" "$HOME/.claude/settings.json"
+link "$REPO/config/statusline-command.sh" "$HOME/.claude/statusline-command.sh"
 
 say "Phase 4: clipboard bridge (clip-put writes the spool, the xclip shim serves it)"
 install -d "$HOME/.local/bin"
@@ -112,7 +115,10 @@ if [ "$TOOLS" = 1 ]; then
   command -v aider >/dev/null || uv tool install --force --python python3.12 --with pip aider-chat@latest
   command -v omp >/dev/null || npm install -g @oh-my-pi/pi-coding-agent
   mise reshim
+  # Native installer, not npm: it puts a self-updating binary in ~/.local/bin and needs no toolchain.
+  command -v claude >/dev/null || curl -fsSL https://claude.ai/install.sh | bash
   claude update || true
+  note "first-time logins are manual: claude (OAuth) or ANTHROPIC_API_KEY in ~/.config/agents/env; gh auth login"
 fi
 
-say "Done. Root steps: sudo bash $REPO/install-as1-root.sh"
+say "Done. Root steps: sudo bash $REPO/install-as1-root.sh. Full order of work: docs/setup-from-scratch.md"

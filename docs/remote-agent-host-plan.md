@@ -3,7 +3,7 @@
 Date: 12 Sep 2026. Host: `as1` (Ubuntu 26.04 LTS, 12 cores, 14 GB RAM, headless, Tailscale `as1.manee-goby.ts.net`, 100.112.145.54).
 Clients in scope: macOS only for now — `macbook` (100.93.240.89) and `mini` (100.84.188.45), both on the tailnet, both running WezTerm. Windows (kylepc) and phone are deferred; the design does not block them.
 
-Each phase below has four parts: what to set up on as1, what to set up on the Mac, how to test as1 on its own, how to test the Mac on its own. A final joint checkpoint closes the phase. Replace `<macuser>` with your macOS login name.
+Each phase below has four parts: what to set up on as1, what to set up on the Mac, how to test as1 on its own, how to test the Mac on its own. A final joint checkpoint closes the phase. This document explains the design and the per-phase tests; the ordered from-nothing procedure, including the steps before phase 1 (OS install, Tailscale join, key provisioning), is `setup-from-scratch.md`.
 
 ## 0. Decisions and assumptions
 
@@ -81,7 +81,7 @@ Image paste: Cmd+V in WezTerm runs `clip-push --if-image` on the Mac, which pipe
    sudo ufw enable
    ```
    Docker publishes ports around ufw; do not rely on ufw for containers.
-6. `sudo apt install mosh zsh` (UDP 60000–61000 is covered by the tailscale0 allow rule); `chsh -s /usr/bin/zsh kyle`. Shell config is phase 2.
+6. `sudo apt install tmux mosh gh zsh git curl file jq unattended-upgrades` (mosh UDP 60000–61000 is covered by the tailscale0 allow rule; tmux is not on a stock Ubuntu Server image, so the root script owns it); `chsh -s /usr/bin/zsh kyle`. Shell config is phase 2.
 7. `loginctl enable-linger kyle` so user systemd units and tmux survive logout.
 8. `sudo tailscale set --auto-update` and confirm unattended-upgrades is enabled: `systemctl status unattended-upgrades`.
 9. Optional: `sudo tailscale up --ssh` for identity-based SSH via Tailscale ACLs. Keep OpenSSH as well; mosh and the clipboard push use plain sshd.
@@ -198,7 +198,7 @@ From the Mac `ssh as1` lands in tmux session `main`. Open a second Mac terminal,
 
    | Harness | Install | Check |
    |---|---|---|
-   | Claude Code | already installed natively; `claude update` | `claude doctor` |
+   | Claude Code | native installer `curl -fsSL https://claude.ai/install.sh \| bash` when absent (to `~/.local/bin`), then `claude update` | `claude doctor` |
    | OpenCode | `curl -fsSL https://opencode.ai/install \| bash` (or `npm i -g opencode-ai`) | `opencode --version` |
    | Aider | `uv tool install --force --python python3.12 --with pip aider-chat@latest` | `aider --version` |
    | Oh My Pi | `curl -fsSL https://omp.sh/install \| sh` (or `npm i -g @oh-my-pi/pi-coding-agent`) | binary name per install output, expected `omp` |
@@ -211,7 +211,7 @@ From the Mac `ssh as1` lands in tmux session `main`. Open a second Mac terminal,
    GH_TOKEN=...
    ```
    Shell profile sources it with `set -a; . ~/.config/agents/env; set +a`. systemd units use `EnvironmentFile=%h/.config/agents/env`. Repo carries `env.example` with names only and `.gitignore` excludes `env`.
-4. Shared agent context: `~/workspace/CLAUDE.md` and `~/workspace/AGENTS.md` (house rules: branch naming `agent/<slug>`, commit style, never force-push, never touch `~/.config/agents`). Claude Code user settings `~/.claude/settings.json` → symlink to `config/claude-settings.json` with the Bash allowlist and hooks from phase 5.
+4. Shared agent context: `~/workspace/CLAUDE.md` and `~/workspace/AGENTS.md` (house rules: branch naming `agent/<slug>`, commit style, never force-push, never touch `~/.config/agents`). Claude Code user settings `~/.claude/settings.json` → symlink to `config/claude-settings.json` with the Bash allowlist and hooks from phase 5; its status line command `~/.claude/statusline-command.sh` → symlink to `config/statusline-command.sh`.
 
 ### On the Mac
 
@@ -373,12 +373,15 @@ A sandboxed run from the Mac completes with changes only inside the mounted work
 ## 8. Repo layout for agentic-framework
 
 ```
+README.md       which doc to read, what the three scripts do
+AGENTS.md       status table, layout, install contract and boundaries for agents editing this repo
 bin/            agent, agent-worker, xclip (shim), clip-put, clip-push-mac.sh
-config/         tmux.conf, zshenv, zshrc, sshd/10-hardening.conf, ufw.sh, ssh_config.mac,
-                wezterm-as1.lua, claude-settings.json, bashrc.d/{agents-env,mise,tmux-autoattach}.sh
+config/         tmux.conf, zshenv, zshrc, sshd/10-hardening.conf, ufw.sh, ssh_config.mac, wezterm-as1.lua,
+                claude-settings.json, statusline-command.sh, bashrc.d/{agents-env,mise,tmux-autoattach}.sh
 systemd/        agent@.service, agent-worker.service, agent-<job>.timer templates
 docker/         Dockerfile.agent-sandbox
-docs/           this plan, runbook (attach/steer/kill/clean), mac-client-setup.md
+docs/           this plan, setup-from-scratch.md (ordered runbook), mac-client-setup.md,
+                operations runbook for phase 5 (attach/steer/kill/clean, to be written)
 env.example     variable names only
 install-as1.sh  idempotent: symlinks configs, installs bin/, enables units, prints manual sudo steps
 install-mac.sh  idempotent, no sudo: brew installs, clip-push, ssh config block, WezTerm include

@@ -19,8 +19,9 @@ install -m 644 "$REPO/config/sshd/10-hardening.conf" /etc/ssh/sshd_config.d/10-h
 sshd -t && systemctl reload ssh
 sshd -T | grep -iE '^(passwordauthentication|permitemptypasswords|maxauthtries|permitrootlogin|allowusers|kbdinteractiveauthentication|x11forwarding) '
 
-echo "==> packages: mosh gh zsh"
-apt-get install -y -q mosh gh zsh
+echo "==> packages: tmux mosh gh zsh, plus git curl file jq unattended-upgrades"
+# tmux is the whole of phase 2; the rest are what install-as1.sh, the shim tests and the status line call.
+apt-get install -y -q tmux mosh gh zsh git curl file jq unattended-upgrades
 
 echo "==> login shell for $USER_NAME: zsh (oh-my-zsh config comes from install-as1.sh)"
 # Done here rather than in install-as1.sh because chsh asks the user for a password; root does not.
@@ -38,7 +39,9 @@ loginctl enable-linger "$USER_NAME"
 loginctl show-user "$USER_NAME" | grep Linger
 
 echo "==> tailscale auto-update, unattended-upgrades"
-tailscale set --auto-update || true
-systemctl is-enabled unattended-upgrades && systemctl is-active unattended-upgrades
+if command -v tailscale >/dev/null; then tailscale set --auto-update || true
+else echo "tailscale not installed: curl -fsSL https://tailscale.com/install.sh | sh && tailscale up  (docs/setup-from-scratch.md, part A)"; fi
+systemctl enable --now unattended-upgrades >/dev/null 2>&1 || true
+systemctl is-active unattended-upgrades || echo "unattended-upgrades is not active; check: systemctl status unattended-upgrades"
 
 echo "==> done. Optional: tailscale up --ssh (Tailscale SSH alongside OpenSSH)."

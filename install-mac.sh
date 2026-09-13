@@ -30,6 +30,9 @@ command -v brew >/dev/null || { echo "Homebrew missing: https://brew.sh"; exit 1
 brew list mosh >/dev/null 2>&1 || brew install mosh
 brew list pngpaste >/dev/null 2>&1 || brew install pngpaste
 brew list gh >/dev/null 2>&1 || note "optional: brew install gh"
+# GUI apps are not installed here: a managed Mac may get them from the App Store or an MDM catalogue.
+[ -d /Applications/WezTerm.app ] || command -v wezterm >/dev/null || note "WezTerm not found: brew install --cask wezterm"
+[ -d /Applications/Tailscale.app ] || note "Tailscale app not found: https://tailscale.com/download/mac (sign in to the tailnet, start at login)"
 install -d -m 700 "$HOME/.ssh"; touch "$HOME/.ssh/config"; chmod 600 "$HOME/.ssh/config"
 block "$HOME/.ssh/config" as1 "$(grep -v '^#' "$REPO/config/ssh_config.mac")"
 [ -f "$HOME/.ssh/id_ed25519" ] || { note "no ~/.ssh/id_ed25519; generating"; ssh-keygen -t ed25519 -f "$HOME/.ssh/id_ed25519" -N '' -C "$MACUSER@$(hostname -s)"; }
@@ -37,7 +40,17 @@ block "$HOME/.ssh/config" as1 "$(grep -v '^#' "$REPO/config/ssh_config.mac")"
 say "Phase 2: WezTerm"
 install -d "$HOME/.config/wezterm"
 cp "$REPO/config/wezterm-as1.lua" "$HOME/.config/wezterm/wezterm-as1.lua"
-if [ -f "$HOME/.config/wezterm/wezterm.lua" ] && grep -q 'wezterm-as1' "$HOME/.config/wezterm/wezterm.lua"; then note "ok   wezterm.lua includes wezterm-as1"
+WEZ="$HOME/.config/wezterm/wezterm.lua"
+if [ ! -f "$WEZ" ]; then
+  # No config yet: write the minimal one from docs/mac-client-setup.md 2.1. An existing file is the user's; never edit it.
+  cat > "$WEZ" <<'EOF'
+local wezterm = require("wezterm")
+local config = wezterm.config_builder()
+require("wezterm-as1").apply(config)
+return config
+EOF
+  note "created $WEZ (minimal, includes wezterm-as1)"
+elif grep -q 'wezterm-as1' "$WEZ"; then note "ok   wezterm.lua includes wezterm-as1"
 else note 'ADD to ~/.config/wezterm/wezterm.lua before `return config`:  require("wezterm-as1").apply(config)'; fi
 note "reload WezTerm (Cmd+Shift+R) so Cmd+V pushes images to as1"
 
@@ -45,6 +58,11 @@ say "Phase 4: clipboard push (clip-push, run by WezTerm on Cmd+V)"
 install -d "$HOME/.local/bin"
 install -m 755 "$REPO/bin/clip-push-mac.sh" "$HOME/.local/bin/clip-push"
 note "installed ~/.local/bin/clip-push"
+# A fresh Mac has no ~/.local/bin on PATH. WezTerm calls clip-push by absolute path, but the verify commands in the
+# docs, and the phase 5 `agent` alias, are typed in a shell. Same marker mechanism as ~/.ssh/config.
+touch "$HOME/.zshrc"
+block "$HOME/.zshrc" path 'case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) export PATH="$HOME/.local/bin:$PATH" ;; esac'
+case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) note "open a new shell so clip-push is on PATH" ;; esac
 # The first design had as1 SSH into the Mac. Its leftovers need sudo to remove; point at the doc instead.
 for f in /usr/local/bin/clip-client /etc/ssh/sshd_config.d/100-tailnet.conf; do
   if [ -e "$f" ]; then note "old pull-bridge file present: $f (remove per docs/mac-client-setup.md, Rollback)"; fi
@@ -53,4 +71,8 @@ if grep -qs '@as1$' "$HOME/.ssh/authorized_keys"; then
   note "as1's key is still in ~/.ssh/authorized_keys; it is no longer needed (docs/mac-client-setup.md, Rollback)"
 fi
 
-say "Done. Verify with docs/mac-client-setup.md"
+if ! ssh -o BatchMode=yes -o ConnectTimeout=5 as1 true 2>/dev/null; then
+  note "ssh as1 does not log in by key yet. Put the Mac key on as1 (docs/setup-from-scratch.md, part C):"
+  note "  ssh-copy-id -i ~/.ssh/id_ed25519.pub kyle@as1"
+fi
+say "Done. Verify with docs/mac-client-setup.md; first-time order of work in docs/setup-from-scratch.md"

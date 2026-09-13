@@ -4,15 +4,17 @@ Companion to `remote-agent-host-plan.md`. Do these steps on `macbook` first, the
 Everything here runs in a local terminal on the Mac unless it says "on as1". Nothing needs sudo.
 
 Prerequisites: Homebrew, the Tailscale app signed in to the same tailnet, WezTerm, and an
-`~/.ssh/id_ed25519` key whose public half is already in `~/.ssh/authorized_keys` on as1
-(it is; `ssh kyle@as1` already works from macbook).
+`~/.ssh/id_ed25519` key whose public half is in `~/.ssh/authorized_keys` on as1. On a brand-new Mac none
+of these exist yet: `setup-from-scratch.md` parts B and C get you to this point (the installer below
+generates the key; `ssh-copy-id kyle@as1` puts it on as1), and as1 itself must have been through parts A and D.
 
-Fast path: clone this repo on the Mac and run `./install-mac.sh`. It does steps 1.1, 1.2, 2.1, 4.1 and 4.2.
+Fast path: clone this repo on the Mac and run `./install-mac.sh`. It does steps 1.1, 1.2, 2.1 (including a
+minimal `wezterm.lua` when you have none), 4.1 and 4.2, and ends by reporting whether `ssh as1` logs in by key.
 Steps 1.3 and 2.2 are manual. The rest of this document is the same work step by step, plus the verification
 for each phase.
 
 ```
-git clone git@github.com:kylenguyen/agentic-framework.git ~/workspace/agentic-framework
+mkdir -p ~/workspace && git clone https://github.com/kylenguyen/agentic-framework.git ~/workspace/agentic-framework
 cd ~/workspace/agentic-framework && ./install-mac.sh
 ```
 
@@ -101,7 +103,8 @@ add this line before `return config`:
 require("wezterm-as1").apply(config)
 ```
 
-If you do not have a `wezterm.lua` yet, the minimal file is:
+If you do not have a `wezterm.lua` yet, `install-mac.sh` writes this minimal file for you (it never edits an
+existing one):
 
 ```lua
 local wezterm = require("wezterm")
@@ -182,7 +185,9 @@ install -d ~/.local/bin && install -m 755 bin/clip-push-mac.sh ~/.local/bin/clip
 ```
 
 WezTerm starts it with a minimal environment, so the script sets its own PATH (Homebrew for `pngpaste`) and the
-Lua config calls it by absolute path. `CLIP_PUSH_HOST=as1-lan clip-push` pushes over the LAN when off the tailnet.
+Lua config calls it by absolute path. For the commands below, typed in a shell, `~/.local/bin` must be on PATH:
+`install-mac.sh` adds a marker block (`agentic-framework:path`) to `~/.zshrc` for that; open a new shell after the
+first run. `CLIP_PUSH_HOST=as1-lan clip-push` pushes over the LAN when off the tailnet.
 
 ### 4.3 Reload WezTerm
 
