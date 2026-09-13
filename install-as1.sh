@@ -1,14 +1,41 @@
 #!/usr/bin/env bash
-# Idempotent user-level setup for as1 (phases 2-4). Safe to re-run.
-# Usage: ./install-as1.sh [--no-tools]
+# Idempotent as1 setup, phases 1 to 4 in one script. Safe to re-run. Run as kyle, never with sudo.
+# Usage: ./install-as1.sh [--no-tools] [--no-root]
 #   --no-tools   skip network installs (oh-my-zsh, mise toolchains, uv, harnesses)
-# Root-level steps (sshd, ufw, apt, chsh to zsh, linger, tailscale) live in install-as1-root.sh.
+#   --no-root    skip phase 1 (the steps that need sudo)
+# Phase 1 (sshd hardening, apt packages, zsh as login shell, ufw, linger, Tailscale auto-update,
+# unattended-upgrades) runs one command at a time through the as_root helper, and only when the host is
+# not already in the wanted state. sudo asks for your password the first time a root step is actually
+# needed; a host that is already configured never prompts. Everything else runs as you.
+# Keep an existing SSH session open while this runs: the sshd step reloads sshd.
 set -euo pipefail
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-TOOLS=1; [ "${1:-}" = "--no-tools" ] && TOOLS=0
+TOOLS=1; ROOT=1
+for arg in "$@"; do
+  case "$arg" in
+    --no-tools) TOOLS=0 ;;
+    --no-root)  ROOT=0 ;;
+    *) echo "usage: $0 [--no-tools] [--no-root]" >&2; exit 2 ;;
+  esac
+done
+USER_NAME=$(id -un)
+[ "$(id -u)" != 0 ] || { echo "run as your own user, not root or sudo: the script calls sudo itself for phase 1" >&2; exit 1; }
 
 say()  { printf '\033[1;34m==> %s\033[0m\n' "$*"; }
 note() { printf '    %s\n' "$*"; }
+fail() { printf '\033[1;31m!!  %s\033[0m\n' "$*" >&2; exit 1; }
+
+# as_root <cmd...>: run one command with sudo. The first call explains the password prompt; sudo caches
+# the credential for the rest of the run, so later calls are silent.
+SUDO_PRIMED=0
+as_root() {
+  if [ "$SUDO_PRIMED" = 0 ]; then
+    note "root needed for: $*"
+    note "sudo will ask for your password once"
+    sudo -v; SUDO_PRIMED=1
+  fi
+  sudo "$@"
+}
 
 link() { # link <target> <linkpath>: symlink, backing up a real file that is in the way
   local target=$1 linkpath=$2
@@ -50,15 +77,86 @@ unblock() {
   cat "$tmp" > "$file"; rm -f "$tmp"; note "rm   $file [$marker]"
 }
 
+if [ "$ROOT" = 1 ]; then
+  say "Phase 1: sshd hardening (key or password for $USER_NAME, no root, tailnet/LAN only via ufw)"
+  # Password login is only useful, and only safe, if the account has a real password. passwd -S prints
+  # P (set), NP (none) or L (locked) in field 2; refuse to continue on anything but P.
+  case "$(passwd -S | awk '{print $2}')" in
+    P) ;;
+    *) fail "$USER_NAME has no usable password; run: sudo passwd $USER_NAME, then re-run this script" ;;
+  esac
+  SSHD_CONF=/etc/ssh/sshd_config.d/10-hardening.conf
+  if cmp -s "$REPO/config/sshd/10-hardening.conf" "$SSHD_CONF"; then
+    note "ok   $SSHD_CONF"
+  else
+    echo "--- current /etc/ssh/sshd_config.d/50-cloud-init.conf:"; as_root cat /etc/ssh/sshd_config.d/50-cloud-init.conf || true
+    as_root install -m 644 "$REPO/config/sshd/10-hardening.conf" "$SSHD_CONF"
+    as_root sshd -t && as_root systemctl reload ssh
+    as_root sshd -T | grep -iE '^(passwordauthentication|permitemptypasswords|maxauthtries|permitrootlogin|allowusers|kbdinteractiveauthentication|x11forwarding) '
+  fi
+
+  say "Phase 1: packages: tmux mosh gh zsh, plus git curl file jq unattended-upgrades"
+  # tmux is the whole of phase 2; the rest are what the later phases, the shim tests and the status line call.
+  MISSING=()
+  for pkg in tmux mosh gh zsh git curl file jq unattended-upgrades; do
+    [ "$(dpkg-query -W -f='${db:Status-Status}' "$pkg" 2>/dev/null)" = installed ] || MISSING+=("$pkg")
+  done
+  if [ "${#MISSING[@]}" = 0 ]; then note "ok   all installed"
+  else as_root apt-get install -y -q "${MISSING[@]}"; fi
+
+  say "Phase 1: login shell for $USER_NAME: zsh (oh-my-zsh config comes in phase 2)"
+  # chsh run by the user asks for the password again; through sudo it reuses the cached credential.
+  ZSH_BIN=$(command -v zsh)
+  if [ "$(getent passwd "$USER_NAME" | cut -d: -f7)" = "$ZSH_BIN" ]; then
+    note "ok   $ZSH_BIN"
+  else
+    as_root chsh -s "$ZSH_BIN" "$USER_NAME"
+    getent passwd "$USER_NAME" | cut -d: -f7
+  fi
+
+  say "Phase 1: firewall"
+  # Rule state is root-only; ufw.conf is readable and says whether the firewall is on. If it is, the rules
+  # were applied by an earlier run. To re-apply after editing config/ufw.sh: sudo bash config/ufw.sh
+  if grep -qx 'ENABLED=yes' /etc/ufw/ufw.conf 2>/dev/null; then
+    note "ok   ufw enabled (re-apply rules with: sudo bash $REPO/config/ufw.sh)"
+  else
+    as_root bash "$REPO/config/ufw.sh"
+  fi
+
+  say "Phase 1: linger for $USER_NAME (user systemd units + tmux survive logout)"
+  if [ -e "/var/lib/systemd/linger/$USER_NAME" ]; then
+    note "ok   Linger=yes"
+  else
+    as_root loginctl enable-linger "$USER_NAME"
+    loginctl show-user "$USER_NAME" | grep Linger
+  fi
+
+  say "Phase 1: tailscale auto-update, unattended-upgrades"
+  if ! command -v tailscale >/dev/null; then
+    note "tailscale not installed: curl -fsSL https://tailscale.com/install.sh | sh && sudo tailscale up  (README.md, section 1)"
+  elif tailscale debug prefs 2>/dev/null | grep -A2 '"AutoUpdate"' | grep -qE '"Apply": *true'; then
+    note "ok   tailscale auto-update on"
+  else
+    as_root tailscale set --auto-update || true
+  fi
+  if [ "$(systemctl is-enabled unattended-upgrades 2>/dev/null)" = enabled ] && systemctl is-active --quiet unattended-upgrades; then
+    note "ok   unattended-upgrades enabled and active"
+  else
+    as_root systemctl enable --now unattended-upgrades >/dev/null 2>&1 || true
+    systemctl is-active unattended-upgrades || echo "unattended-upgrades is not active; check: systemctl status unattended-upgrades"
+  fi
+  note "optional: sudo tailscale up --ssh (Tailscale SSH alongside OpenSSH)"
+fi
+
 say "Phase 2: tmux + shell"
 link "$REPO/config/tmux.conf" "$HOME/.tmux.conf"
 link "$REPO/config/bashrc.d" "$HOME/.bashrc.d"
-# zsh is the login shell (chsh happens in the root script). Both shells share bashrc.d; bash
+# zsh is the login shell (chsh happens in phase 1). Both shells share bashrc.d; bash
 # stays fully configured as the escape hatch and for scripts.
 link "$REPO/config/zshenv" "$HOME/.zshenv"
 link "$REPO/config/zshrc" "$HOME/.zshrc"
-if [ "$(getent passwd "$USER" | cut -d: -f7)" != "$(command -v zsh || true)" ]; then
-  note "login shell is not zsh yet: run the root script, or: chsh -s $(command -v zsh || echo /usr/bin/zsh)"
+if [ "$(getent passwd "$USER_NAME" | cut -d: -f7)" != "$(command -v zsh || true)" ]; then
+  note "login shell is not zsh yet: re-run without --no-root, or: chsh -s $(command -v zsh || echo /usr/bin/zsh)"
 fi
 touch "$HOME/.bashrc"
 block "$HOME/.bashrc" env top \
@@ -120,4 +218,4 @@ if [ "$TOOLS" = 1 ]; then
   note "first-time logins are manual: claude (OAuth) or ANTHROPIC_API_KEY in ~/.config/agents/env; gh auth login"
 fi
 
-say "Done. Root steps: sudo bash $REPO/install-as1-root.sh. Full order of work: README.md"
+say "Done. Next: log out and back in, then one-time logins (README.md, section 4)."

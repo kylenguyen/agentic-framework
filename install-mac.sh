@@ -167,7 +167,7 @@ setup_as1_login() {
     case "$auth" in
       *password*) ;;
       *) fail "as1 does not trust any local key and has password login off (a key was imported at install)."
-         note "either run the root script on as1 (README.md, section 3) and re-run this script, or"
+         note "either run ./install-as1.sh on as1 (README.md, section 3) and re-run this script, or"
          note "at the as1 console:  mkdir -p -m 700 ~/.ssh && echo '$(cat "$PUB")' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
          return 1 ;;
     esac

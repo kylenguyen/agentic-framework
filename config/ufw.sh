@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# as1 firewall: tailnet-only inbound, LAN fallback for SSH. Run as root (called by install-as1-root.sh).
+# as1 firewall: tailnet-only inbound, LAN fallback for SSH. Run as root (called by install-as1.sh, phase 1, or by hand to re-apply rules).
 # Docker publishes ports around ufw; do not rely on ufw for containers.
 set -euo pipefail
 ufw default deny incoming
