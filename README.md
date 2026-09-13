@@ -85,7 +85,8 @@ writes the file), installs mosh and pngpaste, writes the `as1`, `as1-lan` and `a
 `~/.ssh/config` (the `agentic-framework:agent-host` marker block; no `as1-lan` without a LAN address), generates
 `~/.ssh/id_ed25519` if absent, renders and installs the WezTerm include (writes a minimal `wezterm.lua` if you have
 none, otherwise adds the one `require("wezterm-agent-host")` line before your `return config`, keeping the original
-as `wezterm.lua.before-agent-host`), installs `clip-push`, puts `~/.local/bin` on PATH via `~/.zshrc`, and finally
+as `wezterm.lua.before-agent-host`; the include also sets the shared colour scheme, Tokyo Night, unless your `wezterm.lua`
+sets `config.color_scheme` itself), installs `clip-push`, puts `~/.local/bin` on PATH via `~/.zshrc`, and finally
 makes `ssh as1` log in by key with no prompt. On first contact it stores the host key; if the host trusts no local
 key it runs `ssh-copy-id` and asks for the host password once. It ends with `ok   ssh as1 logs in by key`.
 

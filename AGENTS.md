@@ -58,7 +58,7 @@ When you implement part of phase 5 or 6, update this table and section 8 of the 
 | `config/sshd/10-hardening.conf.in` | template: key or password for `@AGENT_HOST_USER@` only (no empty passwords, `MaxAuthTries 4`), no root. Never install unrendered | rendered for the running login to `/etc/ssh/sshd_config.d/10-hardening.conf` (phase 1, via sudo) |
 | `config/ufw.sh` | tailnet-only inbound, LAN SSH fallback; `[--dry-run] <lan-cidr>` | run by phase 1 via sudo when ufw is not yet enabled; by hand to re-apply rules |
 | `config/ssh_config.mac.in` | template: `Host <alias>`, `<alias>-lan` (dropped without a LAN address), `<alias>-clip` (BatchMode, ControlMaster) for the push | `agent-host` marker block in `~/.ssh/config` on the Mac |
-| `config/wezterm-agent-host.lua.in` | template: SSH domain `<alias>`, Cmd+Shift+A tab, Cmd+V image push | `~/.config/wezterm/wezterm-agent-host.lua` |
+| `config/wezterm-agent-host.lua.in` | template: SSH domain `<alias>`, Cmd+Shift+A tab, Cmd+V image push, default `color_scheme` (Tokyo Night) | `~/.config/wezterm/wezterm-agent-host.lua` |
 | `config/claude-settings.json` | Claude Code allow and deny lists, model, status line command | `~/.claude/settings.json` (symlink) |
 | `config/statusline-command.sh` | Claude Code status line, two lines: dir, branch, model, effort; context tokens and 5h/7d rate limits. Needs jq (phase 1) | `~/.claude/statusline-command.sh` (symlink) |
 | `config/workspace/CLAUDE.md` | house rules for all repos under `~/workspace`; one file linked under both names | `~/workspace/CLAUDE.md` and `~/workspace/AGENTS.md` (symlinks) |
