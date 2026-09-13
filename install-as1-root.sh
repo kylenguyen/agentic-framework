@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Root-level as1 setup (phase 1). Run: sudo bash install-as1-root.sh
+# Root-level as1 setup (phase 1, plus the phase 2 chsh to zsh). Run: sudo bash install-as1-root.sh
 # Keep an existing SSH session open while this runs; it reloads sshd.
 # sshd accepts key or password for $USER_NAME; the account must already have a password set.
 set -euo pipefail
@@ -19,8 +19,16 @@ install -m 644 "$REPO/config/sshd/10-hardening.conf" /etc/ssh/sshd_config.d/10-h
 sshd -t && systemctl reload ssh
 sshd -T | grep -iE '^(passwordauthentication|permitemptypasswords|maxauthtries|permitrootlogin|allowusers|kbdinteractiveauthentication|x11forwarding) '
 
-echo "==> packages: mosh gh"
-apt-get install -y -q mosh gh
+echo "==> packages: mosh gh zsh"
+apt-get install -y -q mosh gh zsh
+
+echo "==> login shell for $USER_NAME: zsh (oh-my-zsh config comes from install-as1.sh)"
+# Done here rather than in install-as1.sh because chsh asks the user for a password; root does not.
+ZSH_BIN=$(command -v zsh)
+if [ "$(getent passwd "$USER_NAME" | cut -d: -f7)" != "$ZSH_BIN" ]; then
+  chsh -s "$ZSH_BIN" "$USER_NAME"
+fi
+getent passwd "$USER_NAME" | cut -d: -f7
 
 echo "==> firewall"
 bash "$REPO/config/ufw.sh"

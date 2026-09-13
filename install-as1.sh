@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Idempotent user-level setup for as1 (phases 1-4). Safe to re-run.
+# Idempotent user-level setup for as1 (phases 2-4). Safe to re-run.
 # Usage: MAC_USER=<macOS login> ./install-as1.sh [--no-tools]
-#   --no-tools   skip network installs (mise toolchains, uv, harnesses)
-# Root-level steps (sshd, ufw, apt, linger, tailscale) live in install-as1-root.sh.
+#   --no-tools   skip network installs (oh-my-zsh, mise toolchains, uv, harnesses)
+# Root-level steps (sshd, ufw, apt, chsh to zsh, linger, tailscale) live in install-as1-root.sh.
 set -euo pipefail
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 MAC_USER=${MAC_USER:-kyle}
@@ -44,6 +44,13 @@ block() {
 say "Phase 2: tmux + shell"
 link "$REPO/config/tmux.conf" "$HOME/.tmux.conf"
 link "$REPO/config/bashrc.d" "$HOME/.bashrc.d"
+# zsh is the login shell (chsh happens in the root script). Both shells share bashrc.d; bash
+# stays fully configured as the escape hatch and for scripts.
+link "$REPO/config/zshenv" "$HOME/.zshenv"
+link "$REPO/config/zshrc" "$HOME/.zshrc"
+if [ "$(getent passwd "$USER" | cut -d: -f7)" != "$(command -v zsh || true)" ]; then
+  note "login shell is not zsh yet: run the root script, or: chsh -s $(command -v zsh || echo /usr/bin/zsh)"
+fi
 touch "$HOME/.bashrc"
 block "$HOME/.bashrc" env top \
 '# All shells, incl. non-interactive ssh commands: PATH, mise shims, ~/.config/agents/env
@@ -72,6 +79,14 @@ block "$HOME/.ssh/config" clip-bridge bottom "$(sed "s/__MACUSER__/$MAC_USER/" "
 note "ssh config User for the Macs: $MAC_USER (override with MAC_USER=...)"
 
 if [ "$TOOLS" = 1 ]; then
+  say "Phase 2: oh-my-zsh"
+  # Plain clone instead of the upstream install.sh: no chsh, no generated ~/.zshrc (ours is a
+  # symlink into the repo), nothing to undo on re-run. Updates: `omz update`.
+  if [ ! -d "$HOME/.oh-my-zsh" ]; then
+    git clone --depth=1 https://github.com/ohmyzsh/ohmyzsh.git "$HOME/.oh-my-zsh"
+  else
+    note "ok   ~/.oh-my-zsh"
+  fi
   say "Phase 3: toolchains"
   export PATH="$HOME/.local/bin:$HOME/.local/share/mise/shims:$PATH"
   if ! command -v mise >/dev/null; then curl -fsSL https://mise.run | MISE_INSTALL_PATH="$HOME/.local/bin/mise" sh; fi
@@ -80,9 +95,10 @@ if [ "$TOOLS" = 1 ]; then
   command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | env UV_NO_MODIFY_PATH=1 sh
   say "Phase 3: harnesses"
   if ! command -v opencode >/dev/null; then
-    curl -fsSL https://opencode.ai/install | bash      # installs to ~/.opencode/bin and appends to ~/.bashrc
+    # --no-modify-path: the installer would otherwise append to the rc file of $SHELL, which for
+    # zsh is our repo-owned ~/.zshrc symlink. PATH is handled by agents-env.sh.
+    curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path      # installs to ~/.opencode/bin
     ln -sfn "$HOME/.opencode/bin/opencode" "$HOME/.local/bin/opencode"
-    sed -i '/^# opencode$/,/^export PATH=.*\.opencode\/bin/d' "$HOME/.bashrc"   # PATH handled by agents-env.sh
   fi
   command -v aider >/dev/null || uv tool install --force --python python3.12 --with pip aider-chat@latest
   command -v omp >/dev/null || npm install -g @oh-my-pi/pi-coding-agent
