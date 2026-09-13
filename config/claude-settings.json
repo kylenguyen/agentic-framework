@@ -29,7 +29,6 @@
       "Bash(sudo:*)",
       "Read(~/.config/agents/**)",
       "Edit(~/.config/agents/**)",
-      "Write(~/.config/agents/**)",
       "Read(~/.ssh/**)"
     ]
   }
