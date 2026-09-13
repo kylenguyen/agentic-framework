@@ -71,9 +71,14 @@ Prerequisites, manual: FileVault on (the SSH key has no passphrase), Homebrew, W
 
 ```
 mac$ mkdir -p ~/workspace && git clone https://github.com/kylenguyen/agentic-framework.git ~/workspace/agentic-framework
-mac$ cd ~/workspace/agentic-framework && cp .env.example .env && $EDITOR .env      # alias, address, login, LAN address
+mac$ cd ~/workspace/agentic-framework && cp .env.example .env && $EDITOR .env
 mac$ ./install-mac.sh
 ```
+
+`.env` on the Mac: `AGENT_HOST` is the hostname chosen in section 1 (it becomes `ssh <alias>` and the WezTerm domain),
+`AGENT_HOST_ADDRESS` the same name once MagicDNS is on (or the Tailscale IP from `tailscale ip -4`), `AGENT_HOST_USER`
+the login from section 1, `AGENT_HOST_LAN_IP` the reserved LAN address; `AGENT_HOST_LAN_CIDR` is ignored on a Mac. Once
+the host script has run it prints exactly these lines, so a second Mac can copy them.
 
 Run it in a terminal, not from a pipe. It prints the parameters it read (with no `.env` it asks for them and
 writes the file), installs mosh and pngpaste, writes the `as1`, `as1-lan` and `as1-clip` blocks into
@@ -193,6 +198,13 @@ If image paste fails: `mac$ clip-push` in a local terminal prints the ssh error;
 - Config change in the repo: `git pull` and re-run `./install-as1.sh --no-tools` or `./install-mac.sh`. Phase 1
   skips every step that is already in place and asks for `sudo` only if, say, `config/sshd` changed.
   Symlinked configs pick up the change without a re-run.
+- Upgrading an install made before parameters existed (Sep 2026): on the host, `git pull` then
+  `./install-as1.sh --no-tools --no-root` from `~/workspace/agentic-framework` (never from a worktree: the symlinks
+  follow the checkout the script runs from); it writes `.env` and prints it, and the next full run changes nothing
+  because the rendered sshd drop-in equals the installed one. On each Mac, `git pull`, create `.env` from the printed
+  lines, re-run `./install-mac.sh`: it replaces the old `agentic-framework:as1` block in `~/.ssh/config` with the
+  `agent-host` one, rewrites `require("wezterm-as1")` to `wezterm-agent-host` (backup `.before-agent-host`), removes
+  the old module copy and reinstalls `clip-push`. Reload WezTerm afterwards.
 
 ## Rollback (Mac)
 
