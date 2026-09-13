@@ -9,7 +9,8 @@ of these exist yet: `setup-from-scratch.md` parts B and C get you to this point 
 generates the key; `ssh-copy-id kyle@as1` puts it on as1), and as1 itself must have been through parts A and D.
 
 Fast path: clone this repo on the Mac and run `./install-mac.sh`. It does steps 1.1, 1.2, 2.1 (including a
-minimal `wezterm.lua` when you have none), 4.1 and 4.2, and ends by reporting whether `ssh as1` logs in by key.
+minimal `wezterm.lua` when you have none), 4.1 and 4.2, and ends by testing whether `ssh as1` logs in by key with
+no prompt, printing the `ssh-copy-id` command to run if not (`setup-from-scratch.md`, part C, lists the cases).
 Steps 1.3 and 2.2 are manual. The rest of this document is the same work step by step, plus the verification
 for each phase.
 
@@ -90,7 +91,7 @@ ssh as1-lan true && echo lan-ok            # only while on the 192.168.10.0/24 L
 mosh as1                                   # lands in tmux "main"; toggle Wi-Fi off/on, session survives
 ```
 
-`ssh as1 true` must not prompt: the Mac's key is the everyday path, and mosh, the clipboard push and `ssh as1 agent` all depend on it. The password test is the fallback for a device without a provisioned key; if it says "Permission denied (publickey)" the root script on as1 has not run yet.
+`ssh as1 true` must not prompt: the Mac's key is the everyday path, and mosh, the clipboard push and `ssh as1 agent` all depend on it. If it asks for a password, as1 does not trust `~/.ssh/id_ed25519`; re-run `./install-mac.sh` and use the `ssh-copy-id` command its last lines print (`-f` with `-o IdentityFile=<old key>` when as1 already trusts another key of yours). The password test is the fallback for a device without a provisioned key; if it says "Permission denied (publickey)" the root script on as1 has not run yet.
 
 ## Phase 2: terminal
 

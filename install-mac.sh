@@ -71,8 +71,47 @@ if grep -qs '@as1$' "$HOME/.ssh/authorized_keys"; then
   note "as1's key is still in ~/.ssh/authorized_keys; it is no longer needed (docs/mac-client-setup.md, Rollback)"
 fi
 
-if ! ssh -o BatchMode=yes -o ConnectTimeout=5 as1 true 2>/dev/null; then
-  note "ssh as1 does not log in by key yet. Put the Mac key on as1 (docs/setup-from-scratch.md, part C):"
-  note "  ssh-copy-id -i ~/.ssh/id_ed25519.pub kyle@as1"
-fi
+say "Check: does ssh as1 log in by key, with no prompt?"
+# Report only; never touch authorized_keys or known_hosts. Prints the one command that fits the situation.
+# probe <key>: can this key alone log in? Host key deliberately ignored and not recorded: this checks
+# authentication only, so it also works before the first interactive `ssh as1` has stored the host key.
+probe() {
+  ssh -o BatchMode=yes -o ConnectTimeout=5 -o IdentitiesOnly=yes -i "$1" \
+      -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR as1 true 2>/dev/null
+}
+check_as1_login() {
+  local k trusted= reply
+  if ssh -o BatchMode=yes -o ConnectTimeout=5 as1 true 2>/dev/null; then
+    note "ok   ssh as1 logs in by key"; return
+  fi
+  reply=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+              -o PreferredAuthentications=none -o LogLevel=ERROR as1 true 2>&1 || true)
+  case "$reply" in
+    *"Permission denied"*) ;;   # reachable: sshd answered
+    *) note "as1 is not reachable over ssh: $reply"; note "check the Tailscale menu bar icon and that as1 is online"; return ;;
+  esac
+  if probe "$HOME/.ssh/id_ed25519"; then
+    note "as1 trusts the repo key; only its host key is missing from ~/.ssh/known_hosts."
+    note "  run:  ssh as1      and answer yes once"
+    return
+  fi
+  ssh-keygen -F as1 >/dev/null 2>&1 || note "the first ssh to as1 will ask you to confirm its host key: answer yes"
+  # A key provisioned before this repo may already be trusted by as1. If so, install the repo key over it, without a
+  # password. -f is required: ssh-copy-id first logs in with every explicit identity to skip keys it thinks are already
+  # installed, and the -o IdentityFile option makes that probe succeed with the old key, so without -f it skips the new
+  # one and reports "All keys were skipped".
+  for k in "$HOME"/.ssh/id_*; do
+    case "$k" in *.pub|*-cert*|"$HOME/.ssh/id_ed25519") continue ;; esac
+    [ -f "$k" ] || continue
+    if probe "$k"; then trusted=$k; break; fi
+  done
+  if [ -n "$trusted" ]; then
+    note "as1 trusts ${trusted/#$HOME/~} but not the repo key ~/.ssh/id_ed25519. Install the repo key over the trusted one (no password):"
+    note "  ssh-copy-id -f -i ~/.ssh/id_ed25519.pub -o IdentityFile=${trusted/#$HOME/~} as1"
+  else
+    note "no local key logs in to as1. Install the repo key with kyle's password (docs/setup-from-scratch.md, part C):"
+    note "  ssh-copy-id -i ~/.ssh/id_ed25519.pub as1"
+  fi
+}
+check_as1_login
 say "Done. Verify with docs/mac-client-setup.md; first-time order of work in docs/setup-from-scratch.md"

@@ -119,8 +119,8 @@ as1$ ls ~/workspace/agentic-framework/install-as1.sh
    **script**: it installs mosh and pngpaste, writes the `as1`, `as1-lan` and `as1-clip` blocks into
    `~/.ssh/config`, generates `~/.ssh/id_ed25519` if you have none, writes `~/.config/wezterm/wezterm.lua` if
    you have none (otherwise tells you the one line to add), installs `clip-push`, and adds a marker block to
-   `~/.zshrc` that puts `~/.local/bin` on PATH. Its last lines tell you whether `ssh as1` already logs in by
-   key. On a new Mac with a new key it will not; that is part C.
+   `~/.zshrc` that puts `~/.local/bin` on PATH. Its last lines test whether `ssh as1` logs in by key with no
+   prompt and, if not, print the `ssh-copy-id` command for your situation. On a new Mac it will not; that is part C.
 6. Open a new shell (or a WezTerm window) so the PATH change applies.
 
 Verify B (Mac alone):
@@ -136,14 +136,29 @@ mac$ command -v clip-push && mosh --version | head -1            # ~/.local/bin/
 
 Until the root script runs, sshd on as1 is whatever the installer left (see A.1 and the last line of Verify A).
 
-The first connection is interactive on purpose: answer `yes` to the host-key prompt. That entry in
-`~/.ssh/known_hosts` is what later lets `as1-clip` run in BatchMode, which never prompts and fails silently
-without it.
+The last lines of `install-mac.sh` diagnose this step and print the one command that fits; the cases are
+spelled out here. The first connection is interactive on purpose: answer `yes` to the host-key prompt. That
+entry in `~/.ssh/known_hosts` is what later lets `as1-clip` run in BatchMode, which never prompts and fails
+silently without it. `Host as1` in `~/.ssh/config` supplies the user, so `as1` alone is the target.
 
+**Fresh Mac, no key on as1 yet** (the normal case):
 ```
-mac$ ssh-copy-id -i ~/.ssh/id_ed25519.pub kyle@as1      # host key: yes; then kyle's password, once
-mac$ ssh as1 true && echo key-login-ok                    # no prompt of any kind
+mac$ ssh-copy-id -i ~/.ssh/id_ed25519.pub as1      # host key: yes; then kyle's password, once
+mac$ ssh as1 true && echo key-login-ok               # no prompt of any kind
 ```
+The password prompt is expected here; it is the fallback the sshd config keeps for exactly this moment.
+
+**Mac that already has a different key as1 trusts** (a key provisioned before this repo, under another name
+such as `~/.ssh/id_rsa`). `ssh as1` then asks for a password, because `Host as1` offers only the repo key,
+and `as1-clip` fails outright. Install the repo key over the trusted one, no password:
+```
+mac$ ssh-copy-id -f -i ~/.ssh/id_ed25519.pub -o IdentityFile=~/.ssh/id_rsa as1
+```
+`-f` is required. Without it ssh-copy-id first logs in with every explicit identity to skip keys it believes
+are already installed; the `-o IdentityFile` makes that probe succeed with the old key, so it reports
+"All keys were skipped because they already exist" and installs nothing.
+
+**Repo key already trusted, only the host key missing**: `ssh as1`, answer `yes`, done.
 
 If `ssh-copy-id` is refused with "Permission denied (publickey)", password login is off because a key was
 imported in A.1. Then either:
@@ -266,6 +281,7 @@ Part C on the second Mac can use the password path, which D has enabled.
 - **as1 reinstalled, Macs unchanged**: A, then C (or the GitHub key import), D, E, F. On each Mac,
   remove the stale host key (`mac$ ssh-keygen -R as1; ssh-keygen -R 192.168.10.2`) before C.
 - **Mac reinstalled, as1 unchanged**: B, C, G. `ssh-copy-id` works over the password path.
+- **Mac that reached as1 before this repo**, with its own key: B, then the `-f` form in C, then G.
 - **Config change in the repo**: `git pull` on each machine and re-run `./install-as1.sh --no-tools`
   or `./install-mac.sh`. Symlinked configs pick up the change without a re-run.
 
