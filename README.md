@@ -2,25 +2,24 @@
 
 Source of truth for `as1`, a headless Ubuntu box on a Tailscale tailnet that runs coding agents
 (Claude Code, OpenCode, Oh My Pi), and for the Macs that reach it from WezTerm over SSH or mosh.
-Three idempotent scripts do all the configuration; configs on as1 are symlinks into this checkout,
+Two idempotent scripts do all the configuration; configs on as1 are symlinks into this checkout,
 so edit here, never the installed copy.
 
 | Script | Runs on | As | Does |
 |---|---|---|---|
-| `install-as1-root.sh` | as1 | root (`sudo`) | sshd hardening, ufw, apt packages, zsh as login shell, linger, Tailscale auto-update |
-| `install-as1.sh` | as1 | `kyle` | symlinked configs, secrets file skeleton, `xclip` shim, oh-my-zsh, mise toolchains, uv, the three harnesses |
+| `install-as1.sh` | as1 | `kyle`; `sudo` per command, only for phase 1 steps not yet done | phase 1: sshd hardening, apt packages, zsh as login shell, ufw, linger, Tailscale auto-update; then symlinked configs, secrets file skeleton, `xclip` shim, oh-my-zsh, mise toolchains, uv, the three harnesses |
 | `install-mac.sh` | Mac | you, no sudo | mosh, pngpaste, `~/.ssh/config` block, SSH key and key login to as1, WezTerm include, `clip-push` |
 
-Order: as1 prerequisites, then the Mac script (it puts the Mac key on as1), then the as1 root script,
-then the as1 user script, then one-time logins, then the joint checkpoints. Keep a key-based SSH session
-open while the root script runs; it reloads sshd.
+Order: as1 prerequisites, then the Mac script (it puts the Mac key on as1), then the as1 script, then
+one-time logins, then the joint checkpoints. Keep a key-based SSH session open while the as1 script runs;
+its phase 1 reloads sshd.
 
 Conventions: `as1$` is a shell on as1, `mac$` a local shell on the Mac. The repo hardcodes one owner and
 one network. For a different user, host or LAN, change these in one commit before running anything:
 
 | Value | Current | Where it lives |
 |---|---|---|
-| as1 login | `kyle` | `config/sshd/10-hardening.conf` (`AllowUsers`), `config/ssh_config.mac`, `config/wezterm-as1.lua`, `install-as1-root.sh` (default when not run via sudo) |
+| as1 login | `kyle` | `config/sshd/10-hardening.conf` (`AllowUsers`), `config/ssh_config.mac`, `config/wezterm-as1.lua`; `install-as1.sh` uses the login it runs as |
 | as1 hostname (MagicDNS) | `as1`, `as1.manee-goby.ts.net` | `config/ssh_config.mac`, `config/wezterm-as1.lua`, this README |
 | as1 LAN address, LAN range | `192.168.10.2`, `192.168.10.0/24` | `config/ssh_config.mac` (`Host as1-lan`), `config/ufw.sh` |
 | Macs | `macbook`, `mini` | docs only; nothing on as1 knows the Mac names |
@@ -32,7 +31,7 @@ one network. For a different user, host or LAN, change these in one commit befor
 Manual on purpose, so a script re-run can never lock you out.
 
 1. Install Ubuntu Server LTS. Hostname `as1`, user `kyle` with a real password, tick "Install OpenSSH server".
-   Importing a GitHub SSH identity is optional; it turns password login off until the root script runs,
+   Importing a GitHub SSH identity is optional; it turns password login off until the as1 script runs,
    so a Mac with a new key must then have its key pasted at the console instead of `ssh-copy-id`.
 2. Fixed LAN address `192.168.10.2` (DHCP reservation on the router).
 3. Base packages, Tailscale, repo clone:
@@ -88,17 +87,28 @@ mac$ command -v clip-push && mosh --version | head -1                       # ~/
 mac$ ssh as1 true && echo key-login-ok                                      # no prompt
 ```
 
-## 3. as1 root script
+## 3. as1 script
 
 ```
 mac$ ssh as1
-as1$ cd ~/workspace/agentic-framework && sudo bash install-as1-root.sh
+as1$ cd ~/workspace/agentic-framework && ./install-as1.sh        # --no-tools skips network installs, --no-root skips phase 1
 ```
 
-Refuses to run unless `kyle` has a password. Installs `config/sshd/10-hardening.conf` (key or password for
-`kyle` only, no root, no empty passwords) and reloads sshd; installs tmux, mosh, gh, zsh, git, curl, file, jq,
-unattended-upgrades; sets zsh as the login shell; applies `config/ufw.sh` (inbound only on `tailscale0`, plus
-SSH from the LAN); enables linger; turns on Tailscale auto-update.
+Run it as `kyle`, never with `sudo`. Phase 1 runs the root steps one command at a time through `sudo`, each only
+when the host is not already in the wanted state, so `sudo` asks for your password once on a fresh host and not at
+all on a re-run of a configured one. It refuses to start phase 1 unless `kyle` has a password. It installs
+`config/sshd/10-hardening.conf` (key or password for `kyle` only, no root, no empty passwords) and reloads sshd;
+installs tmux, mosh, gh, zsh, git, curl, file, jq, unattended-upgrades; sets zsh as the login shell; applies
+`config/ufw.sh` (inbound only on `tailscale0`, plus SSH from the LAN); enables linger; turns on Tailscale
+auto-update and unattended-upgrades.
+
+Phases 2 to 4 run as `kyle`: symlink `~/.tmux.conf`, `~/.zshenv`, `~/.zshrc`, `~/.bashrc.d`, `~/.claude/settings.json`,
+`~/.claude/statusline-command.sh`, `~/workspace/CLAUDE.md` and `~/workspace/AGENTS.md` into the repo; create
+`~/.config/agents/env` from `env.example` (mode 600); install the `xclip` shim and `clip-put`; with network,
+install oh-my-zsh, mise with Node, Bun and Python 3.12, uv, OpenCode, Oh My Pi and Claude Code.
+
+Log out and back in. The new login lands in zsh inside tmux session `main`. If an older `main` session still
+runs bash: `tmux kill-server`, log in again.
 
 Verify, from the open session and a new one:
 ```
@@ -108,24 +118,6 @@ as1$ loginctl show-user kyle | grep Linger                                      
 as1$ getent passwd kyle | cut -d: -f7                                                  # /usr/bin/zsh
 mac$ ssh as1 true && echo still-ok
 mac$ ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no kyle@as1 true && echo password-ok
-```
-
-## 4. as1 user script
-
-```
-as1$ cd ~/workspace/agentic-framework && ./install-as1.sh        # --no-tools skips network installs
-```
-
-Symlinks `~/.tmux.conf`, `~/.zshenv`, `~/.zshrc`, `~/.bashrc.d`, `~/.claude/settings.json`,
-`~/.claude/statusline-command.sh`, `~/workspace/CLAUDE.md` and `~/workspace/AGENTS.md` into the repo; creates
-`~/.config/agents/env` from `env.example` (mode 600); installs the `xclip` shim and `clip-put`; with network,
-installs oh-my-zsh, mise with Node, Bun and Python 3.12, uv, OpenCode, Oh My Pi and Claude Code.
-
-Log out and back in. The new login lands in zsh inside tmux session `main`. If an older `main` session still
-runs bash: `tmux kill-server`, log in again.
-
-Verify:
-```
 as1$ echo $ZSH_THEME $TMUX | cut -c1-40           # robbyrussell /tmp/tmux-...
 as1$ for c in mise node bun python3.12 uv claude opencode omp; do printf '%-10s %s\n' $c "$(command -v $c || echo MISSING)"; done
 as1$ command -v xclip                             # ~/.local/bin/xclip, not /usr/bin
@@ -134,7 +126,7 @@ as1$ readlink ~/workspace/AGENTS.md               # .../config/workspace/CLAUDE.
 mac$ ssh as1 'echo tmux=$TMUX; command -v mise'   # tmux= (empty), then a mise path
 ```
 
-## 5. One-time logins and secrets (as1, manual)
+## 4. One-time logins and secrets (as1, manual)
 
 Both logins print a URL and a code; open the URL in the Mac's browser.
 
@@ -151,7 +143,7 @@ as1$ claude -p 'reply with the single word ok'
 mac$ ssh as1 'claude --bare -p "reply with the single word ok"'    # needs the API key; proves the env file reaches ssh commands
 ```
 
-## 6. Joint checkpoints (Mac and as1 together)
+## 5. Joint checkpoints (Mac and as1 together)
 
 | Check | Expect |
 |---|---|
@@ -176,8 +168,9 @@ If image paste fails: `mac$ clip-push` in a local terminal prints the ssh error;
 
 - Second Mac: section 2 only, then the checkpoints. Nothing on as1 is per-Mac.
 - as1 reinstalled: section 1, then on each Mac `ssh-keygen -R as1; ssh-keygen -R 192.168.10.2` and
-  re-run `./install-mac.sh`, then sections 3 to 5.
-- Config change in the repo: `git pull` and re-run `./install-as1.sh --no-tools` or `./install-mac.sh`.
+  re-run `./install-mac.sh`, then sections 3 and 4.
+- Config change in the repo: `git pull` and re-run `./install-as1.sh --no-tools` or `./install-mac.sh`. Phase 1
+  skips every step that is already in place and asks for `sudo` only if, say, `config/sshd` changed.
   Symlinked configs pick up the change without a re-run.
 
 ## Rollback (Mac)

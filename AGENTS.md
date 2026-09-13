@@ -26,9 +26,9 @@ Do not assume something exists because the plan describes it. Check this table a
 
 | Phase | Scope | State |
 |---|---|---|
-| 1 access | sshd hardening, ufw, apt (tmux mosh gh zsh git curl file jq unattended-upgrades), zsh + chsh, linger | scripted (`install-as1-root.sh`, `config/sshd`, `config/ufw.sh`) |
+| 1 access | sshd hardening, ufw, apt (tmux mosh gh zsh git curl file jq unattended-upgrades), zsh + chsh, linger | scripted (`install-as1.sh` phase 1, `config/sshd`, `config/ufw.sh`) |
 | 2 sessions | tmux, auto-attach, zsh + oh-my-zsh, WezTerm domain | scripted (`config/tmux.conf`, `config/zshenv`, `config/zshrc`, `config/bashrc.d`, `config/wezterm-as1.lua`) |
-| 3 harnesses | mise, uv, gh, three harnesses, secrets file, shared rules, Claude settings | scripted (`install-as1.sh`) |
+| 3 harnesses | mise, uv, gh, three harnesses, secrets file, shared rules, Claude settings | scripted (`install-as1.sh` phases 2 to 4) |
 | 4 clipboard bridge | Mac pushes images on Cmd+V; `clip-put` spool and `xclip` shim on as1 | scripted (`bin/xclip`, `bin/clip-put`, `bin/clip-push-mac.sh`, Cmd+V in `config/wezterm-as1.lua`) |
 | 5 automation | `agent` CLI, `agent-worker`, systemd units, GitHub runner workflow | planned, not started |
 | 6 isolation | `docker/Dockerfile.agent-sandbox`, `agent run --sandbox` | planned, not started |
@@ -39,9 +39,8 @@ When you implement part of phase 5 or 6, update this table and section 8 of the 
 
 | Path | What it is | Installed to |
 |---|---|---|
-| `README.md` | orientation: which doc to read, what the three scripts do | read only |
-| `install-as1.sh` | idempotent user-level setup on as1, phases 2 to 4, plus oh-my-zsh, toolchains and harnesses (Claude Code via the native installer when absent) | run in place |
-| `install-as1-root.sh` | phase 1 root steps: password check, sshd, ufw, apt (tmux mosh gh zsh git curl file jq unattended-upgrades), chsh to zsh, linger, tailscale | run by a human with sudo |
+| `README.md` | orientation: which doc to read, what the two scripts do | read only |
+| `install-as1.sh` | idempotent as1 setup, phases 1 to 4, run as `kyle`. Phase 1 (password check, sshd, apt tmux mosh gh zsh git curl file jq unattended-upgrades, chsh to zsh, ufw, linger, tailscale auto-update, unattended-upgrades) goes through the `as_root` helper one `sudo` command at a time, each behind a no-sudo state check, so a configured host never prompts; `--no-root` skips it. Phases 2 to 4 symlink configs, then oh-my-zsh, toolchains and harnesses (Claude Code via the native installer when absent) behind `--no-tools` | run in place |
 | `install-mac.sh` | idempotent Mac client setup, phases 1, 2 and 4; no sudo; writes a minimal `wezterm.lua` when none exists, otherwise inserts the `wezterm-as1` require before the final `return <config>` (backup `.before-as1`; exits 1 with the line to add when the file ends some other way); `path` marker block in `~/.zshrc`; ends by making `ssh as1` keyless: stores as1's host key on first contact (fingerprint printed), installs the repo key over an already-trusted key with `ssh-copy-id -f`, or runs `ssh-copy-id` and asks for kyle's password once; never deletes a stored host key or edits `authorized_keys` directly; exits 1 with the fix when it cannot finish | run on the Mac |
 | `bin/xclip` | clipboard shim; serves the spool the Mac pushed (`~/.clip/latest`) to Claude Code, copies go back via OSC 52 | `~/.local/bin/xclip` on as1 |
 | `bin/clip-put` | stdin to the spool, atomic, mode 600; `--clear` | `~/.local/bin/clip-put` on as1 |
@@ -51,12 +50,12 @@ When you implement part of phase 5 or 6, update this table and section 8 of the 
 | `config/zshrc` | oh-my-zsh (robbyrussell, git plugin, updates off) then the interactive fragments | `~/.zshrc` (symlink) |
 | `config/bashrc.d/agents-env.sh` | PATH and secrets for every shell, including non-interactive SSH; POSIX sh, shared by bash and zsh | sourced at top of `~/.bashrc` and from `~/.zshenv` |
 | `config/bashrc.d/mise.sh`, `tmux-autoattach.sh` | interactive-only shell bits, valid in bash and zsh | sourced at bottom of `~/.bashrc` and end of `~/.zshrc` |
-| `config/sshd/10-hardening.conf` | key or password for `kyle` (no empty passwords, `MaxAuthTries 4`), no root, `AllowUsers kyle` | `/etc/ssh/sshd_config.d/` (root script) |
-| `config/ufw.sh` | tailnet-only inbound, LAN SSH fallback | run by root script |
+| `config/sshd/10-hardening.conf` | key or password for `kyle` (no empty passwords, `MaxAuthTries 4`), no root, `AllowUsers kyle` | `/etc/ssh/sshd_config.d/` (phase 1, via sudo) |
+| `config/ufw.sh` | tailnet-only inbound, LAN SSH fallback | run by phase 1 via sudo when ufw is not yet enabled; by hand to re-apply rules |
 | `config/ssh_config.mac` | `Host as1`, `as1-lan`, and `as1-clip` (BatchMode, ControlMaster) for the push | marker block in `~/.ssh/config` on the Mac |
 | `config/wezterm-as1.lua` | SSH domain `as1`, Cmd+Shift+A tab, Cmd+V image push | `~/.config/wezterm/wezterm-as1.lua` |
 | `config/claude-settings.json` | Claude Code allow and deny lists, model, status line command | `~/.claude/settings.json` (symlink) |
-| `config/statusline-command.sh` | Claude Code status line, two lines: dir, branch, model, effort; context tokens and 5h/7d rate limits. Needs jq (root script) | `~/.claude/statusline-command.sh` (symlink) |
+| `config/statusline-command.sh` | Claude Code status line, two lines: dir, branch, model, effort; context tokens and 5h/7d rate limits. Needs jq (phase 1) | `~/.claude/statusline-command.sh` (symlink) |
 | `config/workspace/CLAUDE.md` | house rules for all repos under `~/workspace`; one file linked under both names | `~/workspace/CLAUDE.md` and `~/workspace/AGENTS.md` (symlinks) |
 | `env.example` | secret variable names only | copied to `~/.config/agents/env` once, mode 600 |
 | `README.md` | ordered runbook: prerequisites, the three scripts with verify blocks, logins, joint checkpoints, rollback, parameters table | read only |
@@ -83,8 +82,12 @@ mechanisms rather than inventing new ones:
 - **Shell fragments run under bash and zsh.** `~/.zshrc` and `~/.zshenv` source the same
   `config/bashrc.d/*.sh` files as `~/.bashrc`; keep them POSIX or `[[ ]]`-only and branch on
   `$ZSH_VERSION` where the shells differ, rather than duplicating a zsh copy.
-- **Root and user steps stay in separate scripts.** Nothing in `install-as1.sh` or `install-mac.sh`
-  may call `sudo`. The Mac side must stay sudo-free: a managed laptop should need no system changes.
+- **Root steps only through `as_root`, only when needed.** `install-as1.sh` runs as the user and refuses to
+  run as root. Every root command in phase 1 goes through the `as_root` helper (one `sudo` call per command,
+  never a root shell) and sits behind a check that needs no sudo (`cmp` against the installed file,
+  `dpkg-query`, `getent`, `/etc/ufw/ufw.conf`, `/var/lib/systemd/linger`, `systemctl is-enabled`), so a
+  configured host never prompts and `--no-root` skips the phase entirely. Nothing outside phase 1 may call
+  `sudo`. `install-mac.sh` must stay sudo-free: a managed laptop should need no system changes.
 
 ## Change conventions
 
@@ -108,8 +111,8 @@ Run these on as1 without sudo before you open a PR. `shellcheck` is not installe
 `mise use -g shellcheck@latest` adds it without sudo, otherwise skip that line and say so.
 
 ```
-shellcheck install-as1.sh install-mac.sh install-as1-root.sh bin/xclip bin/clip-put bin/clip-push-mac.sh config/ufw.sh config/statusline-command.sh config/bashrc.d/*.sh
-bash -n install-as1.sh install-mac.sh install-as1-root.sh bin/xclip bin/clip-put bin/clip-push-mac.sh config/statusline-command.sh
+shellcheck install-as1.sh install-mac.sh bin/xclip bin/clip-put bin/clip-push-mac.sh config/ufw.sh config/statusline-command.sh config/bashrc.d/*.sh
+bash -n install-as1.sh install-mac.sh bin/xclip bin/clip-put bin/clip-push-mac.sh config/statusline-command.sh
 printf '{"model":{"display_name":"M"},"workspace":{"current_dir":"%s"}}' "$PWD" | bash config/statusline-command.sh   # two lines: ➜ agentic-framework git:(branch) [M], then ctx —
 zsh -n config/zshenv config/zshrc config/bashrc.d/*.sh
 NO_TMUX=1 zsh -ic 'echo $ZSH_THEME; type omz; command -v mise'   # robbyrussell, function, mise path
@@ -120,11 +123,11 @@ S=$(mktemp); printf plain | CLIP_BRIDGE_SPOOL=$S bin/clip-put && CLIP_BRIDGE_SPO
 python3 -m json.tool config/claude-settings.json >/dev/null
 ```
 
-`./install-as1.sh --no-tools` is safe to re-run on as1 and is the real idempotency test, but it
+`./install-as1.sh --no-tools --no-root` is safe to re-run on as1 and is the real idempotency test, but it
 rewrites `~/.bashrc`, `~/.ssh/config`, `~/.zshrc`, `~/.zshenv`, `~/.claude/settings.json` and `~/.claude/statusline-command.sh` on this host. Run it only when
 your change touches those paths and say so in the PR.
 
-Needs a human, do not attempt: `install-as1-root.sh`, `config/ufw.sh`, anything under
+Needs a human, do not attempt: phase 1 of `install-as1.sh` (anything through `as_root`), `config/ufw.sh`, anything under
 `config/sshd`, `install-mac.sh`, and every joint checkpoint in the docs that involves a Mac.
 Report those as unverified in the PR body.
 
@@ -132,7 +135,7 @@ Report those as unverified in the PR body.
 
 In addition to the workspace house rules:
 
-- Never run or "test" the root script, the ufw script or an sshd config, and never reload
+- Never run or "test" phase 1 of `install-as1.sh`, the ufw script or an sshd config, and never reload
   `ssh`, `ufw` or `tailscale`. A mistake there locks the only operator out of a headless box.
 - Never read, print or alter key material: `~/.ssh/id_ed25519`, `authorized_keys`,
   `~/.config/agents/env`. Treat `~/.clip/latest` the same way: it holds whatever the user last pasted.

@@ -56,7 +56,7 @@ Image paste: Cmd+V in WezTerm runs `clip-push --if-image` on the Mac, which pipe
 ### On as1
 
 1. Confirm your key already works from the Mac before changing anything (`ssh as1 true` from the Mac). Keep that session open while editing sshd.
-2. Confirm `kyle` has a real password: `passwd -S kyle` must show `P` in the second field. If it shows `NP` or `L`, run `sudo passwd kyle` first. `install-as1-root.sh` refuses to continue otherwise: with no password set, `PermitEmptyPasswords no` would silently refuse every password attempt and the fallback path would not exist.
+2. Confirm `kyle` has a real password: `passwd -S kyle` must show `P` in the second field. If it shows `NP` or `L`, run `sudo passwd kyle` first. Phase 1 of `install-as1.sh` refuses to continue otherwise: with no password set, `PermitEmptyPasswords no` would silently refuse every password attempt and the fallback path would not exist.
 3. Create `/etc/ssh/sshd_config.d/10-hardening.conf` (kept in this repo at `config/sshd/10-hardening.conf`):
    ```
    PasswordAuthentication yes
@@ -81,7 +81,7 @@ Image paste: Cmd+V in WezTerm runs `clip-push --if-image` on the Mac, which pipe
    sudo ufw enable
    ```
    Docker publishes ports around ufw; do not rely on ufw for containers.
-6. `sudo apt install tmux mosh gh zsh git curl file jq unattended-upgrades` (mosh UDP 60000–61000 is covered by the tailscale0 allow rule; tmux is not on a stock Ubuntu Server image, so the root script owns it); `chsh -s /usr/bin/zsh kyle`. Shell config is phase 2.
+6. `sudo apt install tmux mosh gh zsh git curl file jq unattended-upgrades` (mosh UDP 60000–61000 is covered by the tailscale0 allow rule; tmux is not on a stock Ubuntu Server image, so phase 1 of `install-as1.sh` owns it); `chsh -s /usr/bin/zsh kyle`. Shell config is phase 2.
 7. `loginctl enable-linger kyle` so user systemd units and tmux survive logout.
 8. `sudo tailscale set --auto-update` and confirm unattended-upgrades is enabled: `systemctl status unattended-upgrades`.
 9. Optional: `sudo tailscale up --ssh` for identity-based SSH via Tailscale ACLs. Keep OpenSSH as well; mosh and the clipboard push use plain sshd.
@@ -143,7 +143,7 @@ From the Mac: `ssh as1 true` succeeds without a prompt (key path); `ssh -o Prefe
    set -g escape-time 10
    ```
 2. Shell profile (`config/bashrc.d/tmux-autoattach.sh`): for interactive SSH logins only, `tmux new -As main`. Guard with `[[ $- == *i* && -n $SSH_TTY && -z $TMUX ]]` so `ssh as1 <command>` and automation never trigger it.
-3. Login shell: zsh with oh-my-zsh, so interactive work on as1 gets completion, git prompt and history search without per-device setup. Root script installs `zsh` and runs `chsh` for `kyle`; `install-as1.sh` clones `~/.oh-my-zsh` and symlinks `~/.zshenv` → `config/zshenv` and `~/.zshrc` → `config/zshrc`.
+3. Login shell: zsh with oh-my-zsh, so interactive work on as1 gets completion, git prompt and history search without per-device setup. Phase 1 of `install-as1.sh` installs `zsh` and runs `chsh` for `kyle` through sudo; phase 2 clones `~/.oh-my-zsh` and symlinks `~/.zshenv` → `config/zshenv` and `~/.zshrc` → `config/zshrc`.
    - `~/.zshenv` sources `bashrc.d/agents-env.sh`, because `ssh as1 <command>` under a zsh login shell runs `zsh -c`, which reads only `.zshenv`. This mirrors the env block at the top of `~/.bashrc`.
    - `~/.zshrc` loads oh-my-zsh (theme `robbyrussell`, plugin `git`, auto-update disabled so an update prompt can never block an unattended tmux window) and then the same `bashrc.d/mise.sh` and `bashrc.d/tmux-autoattach.sh` bash sources. The fragments are written to run under both shells; `mise.sh` selects `mise activate zsh` or `bash` from `$ZSH_VERSION`.
    - bash stays fully configured: `ssh -t as1 'NO_TMUX=1 bash -l'` still works, and scripts keep `#!/usr/bin/env bash`.
@@ -169,7 +169,7 @@ From the Mac: `ssh as1 true` succeeds without a prompt (key path); `ssh -o Prefe
 tmux -f ~/.tmux.conf new -d -s t && tmux show -s set-clipboard && tmux show -g allow-passthrough && tmux kill-session -t t
 tmux show -g update-environment | grep SSH_CONNECTION
 bash -lc 'echo $TMUX'                 # empty: non-interactive login must not auto-attach
-getent passwd kyle | cut -d: -f7       # /usr/bin/zsh after the root script
+getent passwd kyle | cut -d: -f7       # /usr/bin/zsh after phase 1
 zsh -c 'command -v mise; [ -n "$ANTHROPIC_API_KEY" ] && echo secrets-ok'   # non-interactive zsh: PATH and secrets via ~/.zshenv
 zsh -lc 'echo $TMUX'                  # empty, same rule as bash
 NO_TMUX=1 zsh -ic 'echo $ZSH_THEME; type omz'   # robbyrussell, omz is a shell function
@@ -381,7 +381,7 @@ docker/         Dockerfile.agent-sandbox
 docs/           this plan,
                 operations runbook for phase 5 (attach/steer/kill/clean, to be written)
 env.example     variable names only
-install-as1.sh  idempotent: symlinks configs, installs bin/, enables units, prints manual sudo steps
+install-as1.sh  idempotent: phase 1 via sudo, one command at a time and only where the host differs; symlinks configs, installs bin/, toolchains, harnesses
 install-mac.sh  idempotent, no sudo: brew installs, clip-push, ssh config block, WezTerm include
 ```
 
