@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Idempotent macOS client setup for as1 (phases 1, 2 and 4). Run on the Mac from a clone of this repo. No sudo.
+# Idempotent macOS client setup for as1 (phases 1 to 4, including putting the Mac key on as1). Run on the Mac from a
+# clone of this repo. No sudo. Asks for kyle's password on as1 once, only when no local key is trusted there.
 # Usage: ./install-mac.sh
 set -euo pipefail
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -71,47 +72,86 @@ if grep -qs '@as1$' "$HOME/.ssh/authorized_keys"; then
   note "as1's key is still in ~/.ssh/authorized_keys; it is no longer needed (docs/mac-client-setup.md, Rollback)"
 fi
 
-say "Check: does ssh as1 log in by key, with no prompt?"
-# Report only; never touch authorized_keys or known_hosts. Prints the one command that fits the situation.
-# probe <key>: can this key alone log in? Host key deliberately ignored and not recorded: this checks
-# authentication only, so it also works before the first interactive `ssh as1` has stored the host key.
+say "Phase 1, continued: key login to as1 (asks for kyle's password on as1 once, only if it has to)"
+# Goal: `ssh as1 true` runs with no prompt of any kind. mosh, the clipboard push and every `ssh as1 <cmd>`
+# depend on it. Never deletes anything: a stored host key that no longer matches is for a human to judge.
+PUB="$HOME/.ssh/id_ed25519.pub"
+fail() { printf '\033[1;31m!!  %s\033[0m\n' "$*"; }
+key_ok() { ssh -o BatchMode=yes -o ConnectTimeout=5 as1 true 2>/dev/null; }
+# probe <key>: can this key alone log in? Host key deliberately ignored and not recorded: authentication only.
 probe() {
   ssh -o BatchMode=yes -o ConnectTimeout=5 -o IdentitiesOnly=yes -i "$1" \
       -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR as1 true 2>/dev/null
 }
-check_as1_login() {
-  local k trusted= reply
-  if ssh -o BatchMode=yes -o ConnectTimeout=5 as1 true 2>/dev/null; then
-    note "ok   ssh as1 logs in by key"; return
-  fi
-  reply=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-              -o PreferredAuthentications=none -o LogLevel=ERROR as1 true 2>&1 || true)
-  case "$reply" in
-    *"Permission denied"*) ;;   # reachable: sshd answered
-    *) note "as1 is not reachable over ssh: $reply"; note "check the Tailscale menu bar icon and that as1 is online"; return ;;
+# sshd's reply to a connection that offers no authentication: "Permission denied (publickey,password)" when
+# reachable, and the list says whether password login is on. Anything else means as1 did not answer.
+auth_reply() {
+  ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+      -o PreferredAuthentications=none -o LogLevel=ERROR as1 true 2>&1 || true
+}
+
+setup_as1_login() {
+  local k trusted= auth reply
+  if key_ok; then note "ok   ssh as1 logs in by key"; return 0; fi
+
+  auth=$(auth_reply)
+  case "$auth" in
+    *"Permission denied"*) ;;
+    *) fail "as1 is not reachable over ssh: $auth"
+       note "check the Tailscale menu bar icon and that as1 is online, then re-run ./install-mac.sh"; return 1 ;;
   esac
-  if probe "$HOME/.ssh/id_ed25519"; then
-    note "as1 trusts the repo key; only its host key is missing from ~/.ssh/known_hosts."
-    note "  run:  ssh as1      and answer yes once"
-    return
+
+  # Host key. BatchMode refuses an unknown host, so store it now (trust on first use, fingerprint shown for the
+  # record). A stored key that no longer matches is never replaced here.
+  reply=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -o PreferredAuthentications=none -o LogLevel=ERROR as1 true 2>&1 || true)
+  if [[ $reply != *"Permission denied"* ]]; then
+    if ssh-keygen -F as1 >/dev/null 2>&1; then
+      fail "as1's host key does not match the one stored in ~/.ssh/known_hosts."
+      note "if as1 was reinstalled:  ssh-keygen -R as1; ssh-keygen -R 192.168.10.2   then re-run ./install-mac.sh"
+      return 1
+    fi
+    note "first connection: storing as1's host key in ~/.ssh/known_hosts"
+    ssh-keyscan -T 5 -t ed25519 as1 2>/dev/null | ssh-keygen -lf - 2>/dev/null | sed 's/^/      /' || true
+    ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new -o PreferredAuthentications=none \
+        -o LogLevel=ERROR as1 true 2>/dev/null || true
+    if key_ok; then note "ok   ssh as1 logs in by key (as1 already trusted the repo key)"; return 0; fi
   fi
-  ssh-keygen -F as1 >/dev/null 2>&1 || note "the first ssh to as1 will ask you to confirm its host key: answer yes"
-  # A key provisioned before this repo may already be trusted by as1. If so, install the repo key over it, without a
-  # password. -f is required: ssh-copy-id first logs in with every explicit identity to skip keys it thinks are already
-  # installed, and the -o IdentityFile option makes that probe succeed with the old key, so without -f it skips the new
-  # one and reports "All keys were skipped".
+
+  # A key provisioned before this repo may already be trusted by as1. If so, install the repo key over it, without
+  # a password. -f is required: ssh-copy-id first logs in with every explicit identity to skip keys it thinks are
+  # already installed, and the -o IdentityFile option makes that probe succeed with the old key, so without -f it
+  # skips the new one and reports "All keys were skipped".
   for k in "$HOME"/.ssh/id_*; do
     case "$k" in *.pub|*-cert*|"$HOME/.ssh/id_ed25519") continue ;; esac
     [ -f "$k" ] || continue
     if probe "$k"; then trusted=$k; break; fi
   done
   if [ -n "$trusted" ]; then
-    note "as1 trusts ${trusted/#$HOME/~} but not the repo key ~/.ssh/id_ed25519. Install the repo key over the trusted one (no password):"
-    note "  ssh-copy-id -f -i ~/.ssh/id_ed25519.pub -o IdentityFile=${trusted/#$HOME/~} as1"
+    note "as1 trusts ${trusted/#$HOME/~} but not ~/.ssh/id_ed25519; installing the repo key over it (no password)"
+    ssh-copy-id -f -i "$PUB" -o IdentityFile="$trusted" as1 >/dev/null 2>&1 || fail "ssh-copy-id via ${trusted/#$HOME/~} failed"
   else
-    note "no local key logs in to as1. Install the repo key with kyle's password (docs/setup-from-scratch.md, part C):"
-    note "  ssh-copy-id -i ~/.ssh/id_ed25519.pub as1"
+    case "$auth" in
+      *password*) ;;
+      *) fail "as1 does not trust any local key and has password login off (a key was imported at install)."
+         note "either run the root script on as1 (docs/setup-from-scratch.md, part D) and re-run this script, or"
+         note "at the as1 console:  mkdir -p -m 700 ~/.ssh && echo '$(cat "$PUB")' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
+         return 1 ;;
+    esac
+    if [ ! -t 0 ]; then
+      fail "as1 does not trust ~/.ssh/id_ed25519 and there is no terminal to ask for a password."
+      note "run in a terminal:  ssh-copy-id -i ~/.ssh/id_ed25519.pub as1"; return 1
+    fi
+    note "as1 does not trust ~/.ssh/id_ed25519 yet. Enter kyle's password on as1 when asked; it is needed once."
+    ssh-copy-id -i "$PUB" as1 || fail "ssh-copy-id failed (wrong password, or as1 refused)"
   fi
+
+  if key_ok; then note "ok   ssh as1 logs in by key"; return 0; fi
+  fail "ssh as1 still prompts. Diagnose with:  ssh -v as1 true"; return 1
 }
-check_as1_login
-say "Done. Verify with docs/mac-client-setup.md; first-time order of work in docs/setup-from-scratch.md"
+
+if setup_as1_login; then
+  say "Done. Open a new shell, reload WezTerm (Cmd+Shift+R), then verify with docs/mac-client-setup.md"
+else
+  say "Done, but ssh as1 is not keyless yet (see above). Fix that, then re-run ./install-mac.sh"
+  exit 1
+fi

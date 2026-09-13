@@ -119,8 +119,8 @@ as1$ ls ~/workspace/agentic-framework/install-as1.sh
    **script**: it installs mosh and pngpaste, writes the `as1`, `as1-lan` and `as1-clip` blocks into
    `~/.ssh/config`, generates `~/.ssh/id_ed25519` if you have none, writes `~/.config/wezterm/wezterm.lua` if
    you have none (otherwise tells you the one line to add), installs `clip-push`, and adds a marker block to
-   `~/.zshrc` that puts `~/.local/bin` on PATH. Its last lines test whether `ssh as1` logs in by key with no
-   prompt and, if not, print the `ssh-copy-id` command for your situation. On a new Mac it will not; that is part C.
+   `~/.zshrc` that puts `~/.local/bin` on PATH. Its last section is part C: it makes `ssh as1` log in by key with
+   no prompt, asking for kyle's password on as1 once when it has to. Run it in a terminal, not from a pipe.
 6. Open a new shell (or a WezTerm window) so the PATH change applies.
 
 Verify B (Mac alone):
@@ -136,21 +136,22 @@ mac$ command -v clip-push && mosh --version | head -1            # ~/.local/bin/
 
 Until the root script runs, sshd on as1 is whatever the installer left (see A.1 and the last line of Verify A).
 
-The last lines of `install-mac.sh` diagnose this step and print the one command that fits; the cases are
-spelled out here. The first connection is interactive on purpose: answer `yes` to the host-key prompt. That
-entry in `~/.ssh/known_hosts` is what later lets `as1-clip` run in BatchMode, which never prompts and fails
-silently without it. `Host as1` in `~/.ssh/config` supplies the user, so `as1` alone is the target.
+`install-mac.sh` does this step itself; the cases are spelled out here so you know what it did and what to do
+when it stops. On first contact it stores as1's host key in `~/.ssh/known_hosts` (trust on first use, fingerprint
+printed). That entry is what later lets `as1-clip` run in BatchMode, which never prompts and fails silently
+without it. `Host as1` in `~/.ssh/config` supplies the user, so `as1` alone is the target.
 
-**Fresh Mac, no key on as1 yet** (the normal case):
+**Fresh Mac, no key on as1 yet** (the normal case): the script runs
 ```
-mac$ ssh-copy-id -i ~/.ssh/id_ed25519.pub as1      # host key: yes; then kyle's password, once
-mac$ ssh as1 true && echo key-login-ok               # no prompt of any kind
+mac$ ssh-copy-id -i ~/.ssh/id_ed25519.pub as1      # kyle's password, once
 ```
-The password prompt is expected here; it is the fallback the sshd config keeps for exactly this moment.
+and then checks `ssh as1 true` runs with no prompt of any kind. The password prompt is expected here; it is the
+fallback the sshd config keeps for exactly this moment. If the script was run without a terminal (from a pipe or
+an agent), it prints that command instead and exits 1; run it, then re-run `./install-mac.sh`.
 
 **Mac that already has a different key as1 trusts** (a key provisioned before this repo, under another name
 such as `~/.ssh/id_rsa`). `ssh as1` then asks for a password, because `Host as1` offers only the repo key,
-and `as1-clip` fails outright. Install the repo key over the trusted one, no password:
+and `as1-clip` fails outright. The script finds the trusted key and installs the repo key over it, no password:
 ```
 mac$ ssh-copy-id -f -i ~/.ssh/id_ed25519.pub -o IdentityFile=~/.ssh/id_rsa as1
 ```
@@ -158,10 +159,13 @@ mac$ ssh-copy-id -f -i ~/.ssh/id_ed25519.pub -o IdentityFile=~/.ssh/id_rsa as1
 are already installed; the `-o IdentityFile` makes that probe succeed with the old key, so it reports
 "All keys were skipped because they already exist" and installs nothing.
 
-**Repo key already trusted, only the host key missing**: `ssh as1`, answer `yes`, done.
+**Repo key already trusted, only the host key missing**: the script stores the host key and is done.
 
-If `ssh-copy-id` is refused with "Permission denied (publickey)", password login is off because a key was
-imported in A.1. Then either:
+**as1 reinstalled, stale host key on the Mac**: the script stops rather than replace a stored host key. Run
+`mac$ ssh-keygen -R as1; ssh-keygen -R 192.168.10.2` and re-run it.
+
+If as1 answers "Permission denied (publickey)", password login is off because a key was imported in A.1. The
+script stops and says so. Then either:
 
 - paste the Mac key at the console: `mac$ cat ~/.ssh/id_ed25519.pub`, and on as1
   `mkdir -p -m 700 ~/.ssh && echo '<that line>' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys`, or
