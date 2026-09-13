@@ -1,6 +1,7 @@
 # as1: remote coding-agent host — setup plan
 
 Date: 12 Sep 2026. Host: `as1` (Ubuntu 26.04 LTS, 12 cores, 14 GB RAM, headless, Tailscale `as1.manee-goby.ts.net`, 100.112.145.54).
+The names, addresses and login in this document are this deployment's; since 13 Sep 2026 the scripts take them from `.env` or the system (`lib/params.sh`, README "Parameters"), and the repo carries none of them outside examples.
 Clients in scope: macOS only for now — `macbook` (100.93.240.89) and `mini` (100.84.188.45), both on the tailnet, both running WezTerm. Windows (kylepc) and phone are deferred; the design does not block them.
 
 Each phase below has four parts: what to set up on as1, what to set up on the Mac, how to test as1 on its own, how to test the Mac on its own. A final joint checkpoint closes the phase. This document explains the design and the per-phase tests; the ordered from-nothing procedure, including the steps before phase 1 (OS install, Tailscale join, key provisioning), is the README.
@@ -373,16 +374,19 @@ A sandboxed run from the Mac completes with changes only inside the mounted work
 ```
 README.md       which doc to read, what the three scripts do
 AGENTS.md       status table, layout, install contract and boundaries for agents editing this repo
-bin/            agent, agent-worker, xclip (shim), clip-put, clip-push-mac.sh
-config/         tmux.conf, zshenv, zshrc, sshd/10-hardening.conf, ufw.sh, ssh_config.mac, wezterm-as1.lua,
+bin/            agent, agent-worker, xclip (shim), clip-put, clip-push-mac.sh.in (template)
+config/         tmux.conf, zshenv, zshrc, sshd/10-hardening.conf.in, ufw.sh, ssh_config.mac.in, wezterm-agent-host.lua.in,
                 claude-settings.json, statusline-command.sh, bashrc.d/{agents-env,mise,tmux-autoattach}.sh
+lib/            params.sh: .env loading, validation, derivation on the host, template rendering
+tests/          params-test.sh (library, templates, install-mac.sh dry run, literal scan)
 systemd/        agent@.service, agent-worker.service, agent-<job>.timer templates
 docker/         Dockerfile.agent-sandbox
 docs/           this plan,
                 operations runbook for phase 5 (attach/steer/kill/clean, to be written)
-env.example     variable names only
-install-as1.sh  idempotent: phase 1 via sudo, one command at a time and only where the host differs; symlinks configs, installs bin/, toolchains, harnesses
-install-mac.sh  idempotent, no sudo: brew installs, clip-push, ssh config block, WezTerm include
+.env.example    host parameters (AGENT_HOST, address, login, LAN address and range); copied to .env, gitignored
+secrets.env.example  secret variable names only
+install-as1.sh  idempotent: derives the parameters and writes .env; phase 1 via sudo, one command at a time and only where the host differs; symlinks configs, installs bin/, toolchains, harnesses
+install-mac.sh  idempotent, no sudo: reads .env (or asks), brew installs, rendered clip-push, ssh config block, WezTerm include
 ```
 
 ## 9. Order and time

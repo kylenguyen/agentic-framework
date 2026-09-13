@@ -1,5 +1,5 @@
 # Sourced from ~/.bashrc BEFORE the interactive guard and from ~/.zshenv, so it applies to
-# non-interactive SSH commands too (ssh as1 'claude -p ...', systemd, automation) in either shell.
+# non-interactive SSH commands too (ssh <host> 'claude -p ...', systemd, automation) in either shell.
 # Must stay POSIX sh: it runs under bash and zsh.
 # shellcheck shell=bash
 

@@ -202,6 +202,21 @@ echo "# WezTerm module and a Linux dry run of install-mac.sh"
   case "$out2" in *"wezterm.lua includes wezterm-agent-host"*) ok "dry run: second run sees the include";; *) bad "dry run: second run sees the include" "$out2";; esac
 )
 
+echo "# no host, login or address literals outside comments"
+( # Comment lines (# and --) are stripped, then the example values must not appear. The only tolerated lines are the
+  # migrations in install-mac.sh (the old marker and module name) and the script's own file name.
+  cd "$REPO" || exit 1
+  hits=$(grep -rn --exclude-dir=workspace . install-as1.sh install-mac.sh bin config lib \
+          | sed 's/install-as1//g' | grep -v ':[[:space:]]*\(#\|--\)' | grep -v 'unblock\|wezterm-as1' \
+          | grep -wE 'as1|kyle|192\.168\.10' || true)
+  [ -z "$hits" ] && ok "scan: no literals in scripts, templates or configs" || bad "scan: literals found" "$hits"
+  left=$(grep -rln '@AGENT_[A-Z_]*@' bin config lib install-as1.sh install-mac.sh | grep -v '\.in$\|^lib/' || true)
+  [ -z "$left" ] && ok "scan: placeholders only in .in templates and lib" || bad "scan: placeholders outside templates" "$left"
+  for f in config/sshd/10-hardening.conf config/ssh_config.mac config/wezterm-as1.lua bin/clip-push-mac.sh config/workspace/AGENTS.md env.example; do
+    [ -e "$f" ] && bad "scan: $f should be gone" || ok "scan: $f gone"
+  done
+)
+
 pass=$(grep -c '^ok$' "$T/results"); fail=$(grep -c '^FAIL$' "$T/results")
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" = 0 ]

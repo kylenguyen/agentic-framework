@@ -1,4 +1,4 @@
-# Interactive zsh on as1: oh-my-zsh plus the same interactive bits bash gets from ~/.bashrc.
+# Interactive zsh on the host: oh-my-zsh plus the same interactive bits bash gets from ~/.bashrc.
 # Installed as ~/.zshrc (symlink). PATH and secrets are already in place from ~/.zshenv.
 # shellcheck shell=sh
 
