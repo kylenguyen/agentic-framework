@@ -52,7 +52,7 @@ if [ "$op" = copy ]; then
   tmp=$(mktemp "$dir/.put.XXXXXX") || exit 1
   if ! cat > "$tmp" || ! chmod 600 "$tmp" || ! mv -f "$tmp" "$spool"; then rm -f "$tmp"; exit 1; fi
   # Best effort OSC 52: tmux (set-clipboard on) forwards it to WezTerm, which writes the Mac clipboard.
-  # Without a controlling terminal (systemd job, plain `ssh as1 cmd`) the copy simply stays in the spool.
+  # Without a controlling terminal (systemd job, plain `ssh <host> cmd`) the copy simply stays in the spool.
   if { exec 3>/dev/tty; } 2>/dev/null; then
     printf '\033]52;c;%s\a' "$(base64 < "$spool" | tr -d '\n')" >&3 || true
     exec 3>&-

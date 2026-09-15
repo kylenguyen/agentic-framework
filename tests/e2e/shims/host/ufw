@@ -1,5 +1,5 @@
 #!/bin/sh
-# ufw shim: logs the rule instead of programming iptables; `enable` writes the ufw.conf line install-as1.sh reads
+# ufw shim: logs the rule instead of programming iptables; `enable` writes the ufw.conf line install-host.sh reads
 # to decide the firewall is already on, so the second run skips the phase like a real host does.
 echo "ufw $*" >> /var/log/e2e-shims.log
 case "$*" in

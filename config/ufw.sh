@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Host firewall: tailnet-only inbound, LAN fallback for SSH. Run as root, by install-as1.sh (phase 1) or by hand to
-# re-apply rules. The LAN range is an argument, never a literal here: install-as1.sh derives it from the default
+# Host firewall: tailnet-only inbound, LAN fallback for SSH. Run as root, by install-host.sh (phase 1) or by hand to
+# re-apply rules. The LAN range is an argument, never a literal here: install-host.sh derives it from the default
 # route or takes AGENT_HOST_LAN_CIDR from .env (lib/params.sh).
-# Usage: ufw.sh [--dry-run] <lan-cidr>        e.g. sudo bash config/ufw.sh 192.168.10.0/24 (the range install-as1.sh printed)
+# Usage: ufw.sh [--dry-run] <lan-cidr>        e.g. sudo bash config/ufw.sh 192.168.1.0/24 (the range install-host.sh printed)
 #   --dry-run   print the ufw commands instead of running them (no root needed)
 # Docker publishes ports around ufw; do not rely on ufw for containers.
 set -euo pipefail

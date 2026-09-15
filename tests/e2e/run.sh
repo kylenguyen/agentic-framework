@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tests/e2e/run.sh: two Docker containers on a private network, "box" (the host, real sshd, install-as1.sh as alice
+# tests/e2e/run.sh: two Docker containers on a private network, "box" (the host, real sshd, install-host.sh as alice
 # with sudo) and "mac" (install-mac.sh as macuser, brew/osascript/pbpaste/pngpaste stubbed). The Mac script runs
 # first through the password path (SSH_ASKPASS answers for the human), then once more for idempotency; the host
 # script runs twice as well. Values are deliberately not the live ones (alias box, login alice), so a literal that
@@ -49,8 +49,8 @@ tar -C "$REPO" --exclude=.git --exclude=.env -cf - . | docker exec -i -u macuser
 for _ in $(seq 1 30); do mac ssh-keyscan -T 2 "$ALIAS" 2>/dev/null | grep -q ssh-ed25519 && break; sleep 1; done
 mac ssh-keyscan -T 2 "$ALIAS" 2>/dev/null | grep -q ssh-ed25519 && ok "sshd on $ALIAS answers" || { bad "sshd on $ALIAS answers"; exit 1; }
 
-say "host: ./install-as1.sh --no-tools (first run, phase 1 through sudo)"
-run box ./install-as1.sh --no-tools; out=$OUT
+say "host: ./install-host.sh --no-tools (first run, phase 1 through sudo)"
+run box ./install-host.sh --no-tools; out=$OUT
 check "host: exit 0" 0 "$RC"
 has "Parameters: host $ALIAS ($ALIAS), login $LOGIN, LAN $BOX_IP in $SUBNET" "$out" "host: derived alias, address, login, LAN address and range"
 has "wrote .env" "$out" "host: wrote .env on the first run"
@@ -126,7 +126,7 @@ has "ok   ssh $ALIAS logs in by key" "$mout2" "mac: second run finds key login"
 has "wezterm.lua includes wezterm-agent-host" "$mout2" "mac: second run finds the include"
 check "mac: still one agent-host block" 1 "$(mac grep -c 'agentic-framework:agent-host >>>' /home/macuser/.ssh/config)"
 before=$(root sh -c 'wc -l < /var/log/e2e-shims.log')
-run box ./install-as1.sh --no-tools; out2=$OUT
+run box ./install-host.sh --no-tools; out2=$OUT
 check "host: second run exit 0" 0 "$RC"
 has "ok   .env" "$out2" "host: second run keeps .env"
 has "ok   /etc/ssh/sshd_config.d/10-hardening.conf" "$out2" "host: second run leaves sshd alone"
@@ -137,7 +137,7 @@ after=$(root sh -c 'wc -l < /var/log/e2e-shims.log')
 root sed -n "$((before + 1)),\$p" /var/log/e2e-shims.log | grep -qE 'reload|ufw|enable-linger' && bad "host: second run made no root changes" "$(root sed -n "$((before + 1)),\$p" /var/log/e2e-shims.log)" || ok "host: second run made no root changes ($((after - before)) read-only shim calls)"
 # .env from a Mac with a different login must be refused on the host, before anything runs.
 box sh -c "sed -i 's/^AGENT_HOST_USER=.*/AGENT_HOST_USER=someone/' .env"
-run box ./install-as1.sh --no-tools --no-root
+run box ./install-host.sh --no-tools --no-root
 check "host: .env with another login -> exit 1" 1 "$RC"; has "but this script runs as $LOGIN" "$OUT" "host: says why"
 box sh -c "sed -i 's/^AGENT_HOST_USER=.*/AGENT_HOST_USER=$LOGIN/' .env"
 

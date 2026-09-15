@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Idempotent host setup, phases 1 to 4 in one script. Safe to re-run. Run as the login the host is for, never with sudo.
-# Usage: ./install-as1.sh [--no-tools] [--no-root]
+# Usage: ./install-host.sh [--no-tools] [--no-root]
 #   --no-tools   skip network installs (oh-my-zsh, mise toolchains, uv, harnesses)
 #   --no-root    skip phase 1 (the steps that need sudo)
 # Phase 1 (sshd hardening, apt packages, zsh as login shell, ufw, linger, Tailscale auto-update,

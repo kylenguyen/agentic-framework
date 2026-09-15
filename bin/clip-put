@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # clip-put: store a clipboard payload from stdin where the xclip shim reads it (~/.clip/latest).
-# Called over SSH by clip-push on the Mac (Cmd+V in WezTerm). Installed to ~/.local/bin/clip-put by install-as1.sh
+# Called over SSH by clip-push on the Mac (Cmd+V in WezTerm). Installed to ~/.local/bin/clip-put by install-host.sh
 # and invoked by that absolute path, so the minimal PATH of a non-interactive SSH command does not matter.
 # Usage: clip-put            stdin -> spool, atomic replace, directory 700, file 600
 #        clip-put --clear    remove the spool (the pasted content stays on disk until then)

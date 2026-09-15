@@ -24,7 +24,7 @@ params_validate || exit 1
 H=$AGENT_HOST; ADDR=$AGENT_HOST_ADDRESS; RUSER=$AGENT_HOST_USER; LAN=${AGENT_HOST_LAN_IP:-}
 say "Parameters: \`ssh $H\` is $RUSER@$ADDR${LAN:+, \`ssh $H-lan\` is $RUSER@$LAN}"
 
-# block <file> <marker> <content>: append or replace a marked block (same markers as install-as1.sh).
+# block <file> <marker> <content>: append or replace a marked block (same markers as install-host.sh).
 # The content goes through a file, not awk -v: BSD awk on macOS rejects a -v value that contains newlines.
 block() {
   local file=$1 marker=$2 content=$3 begin end tmp ctmp
@@ -178,7 +178,7 @@ setup_host_login() {
     case "$auth" in
       *password*) ;;
       *) fail "$H does not trust any local key and has password login off (a key was imported at install)."
-         note "either run ./install-as1.sh on $H (README.md, section 3) and re-run this script, or"
+         note "either run ./install-host.sh on $H (README.md, section 3) and re-run this script, or"
          note "at the $H console:  mkdir -p -m 700 ~/.ssh && echo '$(cat "$PUB")' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
          return 1 ;;
     esac

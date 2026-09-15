@@ -19,7 +19,7 @@ zstyle ':omz:update' mode disabled
 if [ -r "$ZSH/oh-my-zsh.sh" ]; then
   . "$ZSH/oh-my-zsh.sh"
 else
-  echo "oh-my-zsh missing: run ./install-as1.sh (without --no-tools)" >&2
+  echo "oh-my-zsh missing: run ./install-host.sh (without --no-tools)" >&2
 fi
 
 # Same interactive fragments as ~/.bashrc, so bash and zsh behave alike. mise.sh picks the

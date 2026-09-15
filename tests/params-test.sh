@@ -39,17 +39,17 @@ echo "# params_load"
 
 echo "# validators"
 ( fresh
-  params_is_user kyle && ok "user: kyle" || bad "user: kyle"
-  params_is_user "kyle smith" && bad "user: rejects space" || ok "user: rejects space"
+  params_is_user alice && ok "user: alice" || bad "user: alice"
+  params_is_user "alice smith" && bad "user: rejects space" || ok "user: rejects space"
   params_is_user "a@b" && bad "user: rejects @" || ok "user: rejects @"
-  params_is_name as1 && ok "name: as1" || bad "name: as1"
+  params_is_name box && ok "name: box" || bad "name: box"
   params_is_name "a/b" && bad "name: rejects /" || ok "name: rejects /"
-  params_is_addr as1.tail.ts.net && ok "addr: fqdn" || bad "addr: fqdn"
-  params_is_ipv4 192.168.10.2 && ok "ipv4: ok" || bad "ipv4: ok"
+  params_is_addr box.tail.ts.net && ok "addr: fqdn" || bad "addr: fqdn"
+  params_is_ipv4 192.168.1.2 && ok "ipv4: ok" || bad "ipv4: ok"
   params_is_ipv4 256.1.1.1 && bad "ipv4: rejects 256" || ok "ipv4: rejects 256"
-  params_is_cidr 192.168.10.0/24 && ok "cidr: ok" || bad "cidr: ok"
-  params_is_cidr 192.168.10.0/33 && bad "cidr: rejects /33" || ok "cidr: rejects /33"
-  params_is_cidr 192.168.10.0 && bad "cidr: rejects no prefix" || ok "cidr: rejects no prefix"
+  params_is_cidr 192.168.1.0/24 && ok "cidr: ok" || bad "cidr: ok"
+  params_is_cidr 192.168.1.0/33 && bad "cidr: rejects /33" || ok "cidr: rejects /33"
+  params_is_cidr 192.168.1.0 && bad "cidr: rejects no prefix" || ok "cidr: rejects no prefix"
   params_is_private_cidr 10.0.0.0/8 && ok "private: 10/8" || bad "private: 10/8"
   params_is_private_cidr 172.31.0.0/16 && ok "private: 172.31" || bad "private: 172.31"
   params_is_private_cidr 172.32.0.0/16 && bad "private: rejects 172.32" || ok "private: rejects 172.32"
@@ -168,7 +168,7 @@ echo "# WezTerm module and a Linux dry run of install-mac.sh"
   check "wezterm: HOST constant" 'local HOST = "box"' "$(grep '^local HOST' "$T/wez.lua")"
   check "wezterm: remote_address" 1 "$(grep -c 'remote_address = "box.tail.ts.net"' "$T/wez.lua")"
   check "wezterm: username" 1 "$(grep -c 'username = "alice"' "$T/wez.lua")"
-  grep -q '"as1"\|kyle' "$T/wez.lua" && bad "wezterm: no example literals" "$(grep -n 'as1\|kyle' "$T/wez.lua")" || ok "wezterm: no example literals"
+  grep -q '"agent-host"\|example.ts.net' "$T/wez.lua" && bad "wezterm: no .env.example values" "$(grep -n '"agent-host"\|example.ts.net' "$T/wez.lua")" || ok "wezterm: no .env.example values"
   check "wezterm: balanced function/end" "$(grep -c '^end$' "$T/wez.lua")" "$(grep -c '^\(local \)\?function ' "$T/wez.lua")"
 )
 ( # Everything in install-mac.sh up to the ssh probes runs on Linux against a throwaway HOME once brew is stubbed;
@@ -201,15 +201,19 @@ echo "# WezTerm module and a Linux dry run of install-mac.sh"
   case "$out2" in *"wezterm.lua includes wezterm-agent-host"*) ok "dry run: second run sees the include";; *) bad "dry run: second run sees the include" "$out2";; esac
 )
 
-echo "# no host, login or address literals outside comments"
-( # Comment lines (# and --) are stripped, then the example values must not appear. The only tolerated occurrence
-  # is the host script's own file name.
+echo "# no deployment literals anywhere in the repo"
+( # The repo describes a framework, not one deployment: no file, comment or doc may name a real host, login, LAN or
+  # tailnet. Placeholders in the docs are <host>, <user>, <lan-ip>, <lan-cidr>; the tests use box, alice and 10.x.
+  # Add a word here when a deployment value slips in and gets fixed, so it cannot come back. This file is skipped
+  # because it carries the list; .env is the one place the real values belong.
   cd "$REPO" || exit 1
-  hits=$(grep -rn --exclude-dir=workspace . install-as1.sh install-mac.sh bin config lib \
-          | sed 's/install-as1//g' | grep -v ':[[:space:]]*\(#\|--\)' \
-          | grep -wE 'as1|kyle|192\.168\.10' || true)
-  [ -z "$hits" ] && ok "scan: no literals in scripts, templates or configs" || bad "scan: literals found" "$hits"
-  left=$(grep -rln '@AGENT_[A-Z_]*@' bin config lib install-as1.sh install-mac.sh | grep -v -e '\.in$' -e '^lib/' || true)   # two -e: BSD grep misreads $\|
+  words='as1|kyle|kylepc|macbook|manee-goby|192\.168\.10\.'
+  hits=$(grep -rnwE --exclude-dir=.git --exclude=.env --exclude=params-test.sh "$words" . || true)
+  [ -z "$hits" ] && ok "scan: no deployment literals in scripts, templates, configs or docs" || bad "scan: deployment literals found" "$hits"
+  # .env.example values are examples too: they may appear only there.
+  ex=$(grep -rnw --exclude-dir=.git --exclude=.env --exclude=.env.example --exclude=params-test.sh 'agent-host\.example\.ts\.net\|192\.168\.1\.10' . || true)
+  [ -z "$ex" ] && ok "scan: .env.example values appear only in .env.example" || bad "scan: .env.example values leaked" "$ex"
+  left=$(grep -rln '@AGENT_[A-Z_]*@' bin config lib install-host.sh install-mac.sh | grep -v -e '\.in$' -e '^lib/' || true)   # two -e: BSD grep misreads $\|
   [ -z "$left" ] && ok "scan: placeholders only in .in templates and lib" || bad "scan: placeholders outside templates" "$left"
 )
 
