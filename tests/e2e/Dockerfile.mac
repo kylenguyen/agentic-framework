@@ -1,13 +1,15 @@
 # e2e "Mac": a Linux stand-in for the macOS client. install-mac.sh needs ssh, ssh-copy-id, ssh-keyscan, awk, sed,
 # hostname and brew; brew, osascript, pbpaste and pngpaste are stubs in tests/e2e/shims/mac (the clipboard is
 # /tmp/clipboard.kind, .txt and .png). askpass feeds the host password to ssh-copy-id so the password path runs
-# without a human. Not covered here: BSD awk, /bin/bash 3.2 and WezTerm itself.
+# without a human. lua5.4 runs the rendered WezTerm module (WezTerm embeds Lua 5.4) under tests/e2e/wezterm-paste.lua
+# with a stub `wezterm` table, so the Cmd+V routing is exercised without a GUI. macuser2 is a second Mac: same .env,
+# its own key and HOME. Not covered here: BSD awk, /bin/bash 3.2 and WezTerm's own runtime.
 FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get install -y --no-install-recommends openssh-client ca-certificates file \
+RUN apt-get update && apt-get install -y --no-install-recommends openssh-client ca-certificates file lua5.4 \
     && rm -rf /var/lib/apt/lists/*
 COPY shims/mac/ /usr/local/bin/
-RUN chmod 755 /usr/local/bin/* && useradd -m -s /bin/bash macuser
+RUN chmod 755 /usr/local/bin/* && useradd -m -s /bin/bash macuser && useradd -m -s /bin/bash macuser2
 USER macuser
 WORKDIR /home/macuser
 CMD ["sleep", "infinity"]

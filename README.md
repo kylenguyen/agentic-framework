@@ -217,8 +217,17 @@ If image paste fails: `mac$ clip-push` in a local terminal prints the ssh error;
 
 - [docs/remote-agent-host-plan.md](docs/remote-agent-host-plan.md): design, per-phase tests, and what is still planned.
 - [AGENTS.md](AGENTS.md): status table, layout, install contract, boundaries for humans and agents.
-- `tests/params-test.sh` runs anywhere without sudo or network; `tests/e2e/run.sh` runs both install scripts against
-  each other in two Docker containers (host `box`, login `alice`) and is the check to run before changing either script.
+- `tests/params-test.sh` runs anywhere without sudo or network: the parameter library, every rendered template, a dry
+  run of `install-mac.sh`, and a scan that fails if any file, comment or doc names a real host, login or address.
+- `tests/e2e/run.sh` is the check to run before changing a script or the clipboard bridge. Two Docker containers on a
+  private network: a host (`box`, login `alice`, real sshd) and a Mac stand-in with two Mac users. Both install scripts
+  run against each other, twice. Cmd+V is exercised the way WezTerm runs it: the rendered `wezterm-agent-host.lua`
+  runs under Lua 5.4 with a stub `wezterm` table (`tests/e2e/wezterm-paste.lua`), its decision calls the real
+  `clip-push`, which pushes over ssh to the real host, and the shell then makes the `xclip` calls Claude Code makes
+  after Ctrl+V and compares the PNG byte for byte. Also covered: text pastes never touch the host, a local pane never
+  pushes, ssh and mosh panes do, a failed push shows a toast and sends no key, copies on the host come back as OSC 52,
+  and a second Mac with the same `.env` installs, logs in with its own key and pushes (last pusher wins). Not covered:
+  real systemd, ufw, Tailscale, macOS itself and WezTerm's own runtime.
 
 Phases 1 to 4 (access, sessions, harnesses, clipboard bridge) are scripted and in use. Phases 5 and 6
 (automation, sandbox) are designed and not yet built.

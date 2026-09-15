@@ -278,6 +278,8 @@ clip-put --clear; xclip -selection clipboard -t TARGETS -o; echo "exit $?"      
 ```
 Then start `claude` in tmux with `CLIP_BRIDGE_SPOOL=/usr/share/pixmaps/debian-logo.png` exported, press Ctrl+V: the prompt shows an attached image. This proves the Claude Code ↔ shim contract without any Mac involvement.
 
+Automated: `tests/e2e/run.sh` runs the rendered WezTerm module under Lua 5.4 in the Mac container, lets its Cmd+V handler call the real `clip-push` against the host container, then makes the `xclip` calls Claude Code makes after Ctrl+V and compares the PNG bytes. Text, local-pane, ssh-pane, mosh-pane and failed-push cases, OSC 52 copy-back and a second Mac are covered there; only WezTerm's own runtime and macOS are left to the joint checkpoint.
+
 ### Test the Mac alone
 
 After Cmd+Shift+Ctrl+4 (screenshot to clipboard), in a local terminal:
