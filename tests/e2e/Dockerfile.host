@@ -5,7 +5,7 @@ FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
       openssh-server sudo iproute2 passwd ca-certificates \
-      tmux mosh gh zsh git curl file jq unattended-upgrades \
+      tmux mosh gh zsh fzf git curl file jq unattended-upgrades \
     && rm -rf /var/lib/apt/lists/*
 COPY shims/host/ /usr/local/sbin/
 RUN chmod 755 /usr/local/sbin/* && touch /var/log/e2e-shims.log && chmod 666 /var/log/e2e-shims.log \

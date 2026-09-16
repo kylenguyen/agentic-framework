@@ -76,10 +76,11 @@ block() {
 }
 
 if [ "$ROOT" = 1 ]; then
-  say "Phase 1: packages: tmux mosh gh zsh, plus git curl file jq unattended-upgrades"
-  # tmux is the whole of phase 2; the rest are what the later phases, the shim tests and the status line call.
+  say "Phase 1: packages: tmux mosh gh zsh fzf, plus git curl file jq unattended-upgrades"
+  # tmux and fzf are the whole of phase 2 (sessions and the picker); the rest are what the later
+  # phases, the shim tests and the status line call.
   MISSING=()
-  for pkg in tmux mosh gh zsh git curl file jq unattended-upgrades; do
+  for pkg in tmux mosh gh zsh fzf git curl file jq unattended-upgrades; do
     [ "$(dpkg-query -W -f='${db:Status-Status}' "$pkg" 2>/dev/null)" = installed ] || MISSING+=("$pkg")
   done
   if [ "${#MISSING[@]}" = 0 ]; then note "ok   all installed"
@@ -153,10 +154,13 @@ install -d "$HOME/.claude"
 link "$REPO/config/claude-settings.json" "$HOME/.claude/settings.json"
 link "$REPO/config/statusline-command.sh" "$HOME/.claude/statusline-command.sh"
 
-say "Phase 4: clipboard bridge (clip-put writes the spool, the xclip shim serves it)"
+say "Phase 4: clipboard bridge (clip-put writes the spool, the xclip shim serves it), session picker"
 install -d "$HOME/.local/bin"
 link "$REPO/bin/xclip" "$HOME/.local/bin/xclip"
 link "$REPO/bin/clip-put" "$HOME/.local/bin/clip-put"
+# The picker is what every interactive login lands in (config/bashrc.d/tmux-autoattach.sh), so it has to
+# be on PATH before the next login, not only after a re-login.
+link "$REPO/bin/agent" "$HOME/.local/bin/agent"
 
 if [ "$TOOLS" = 1 ]; then
   say "Phase 2: oh-my-zsh"
