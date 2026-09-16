@@ -1,0 +1,373 @@
+#!/usr/bin/env bash
+# bin/agent: harness sessions on the host, and the picker every login lands in.
+# Installed to ~/.local/bin/agent by install-host.sh (phase 4); config/bashrc.d/tmux-autoattach.sh runs
+# `agent pick` for interactive SSH/mosh logins, so this file is the first thing the operator sees.
+#
+# Usage:
+#   agent new <repo> [--harness claude|omp|opencode|shell] [--slug <slug>] [--name <name>] [--no-attach]
+#   agent ls [--porcelain]
+#   agent attach <name>
+#   agent pick [--switch]        # --switch only inside tmux (the Ctrl+B g popup)
+#   agent switch                 # alias for: agent pick --switch
+#   agent kill <name>
+#
+# Model: one harness run in one repo is one tmux "base" session. The base is never attached directly.
+# Each device attaches its own "view" session (<name>@<n>) grouped with the base, so several Macs share the
+# processes but keep their own current window, size and scroll. A view is destroyed the moment it has no
+# client (destroy-unattached), the base survives, and a finished or crashed harness leaves its last screen
+# behind (remain-on-exit) until `agent kill`. tmux is the only state: no registry file, nothing survives a
+# reboot, and re-attach is to live processes only.
+#
+# Session names never contain "." or ":": tmux rewrites the first and treats both as target separators.
+# Names are for display; every command resolves a name to a session id once and then uses the id.
+#
+# AGENT_TMUX_SOCKET routes every tmux call to that socket (-L), which is how the tests stay off the live
+# server. AGENT_PICK_FILTER makes `pick` non-interactive: the first menu runs `fzf --filter=<value>` and
+# takes the first match, any later menu takes its first row, and the loop runs once. Nothing else is
+# test-only; --porcelain is the interface phase 5 and the tests consume, so keep its columns stable.
+set -euo pipefail
+
+WORKSPACE=$HOME/workspace
+HARNESSES="claude omp opencode shell"
+# Field separator, both for tmux format output and for the rows built from it. It has to be a printable
+# character: tmux 3.4 (Ubuntu 24.04) rewrites tab and newline in a format result to "_" and escapes every
+# other non-printable byte as \NNN, so an ASCII unit separator arrives as four characters and nothing
+# splits. Session names are sanitised to exclude it, and the two path fields come last in the tmux format
+# so the final read variable absorbs anything odd; a repo directory with a "|" in its name would still
+# confuse the rows, which is the one case this does not survive.
+SEP='|' 
+TMUX_ARGS=()
+if [ -n "${AGENT_TMUX_SOCKET:-}" ]; then TMUX_ARGS=(-L "$AGENT_TMUX_SOCKET"); fi
+
+tm()   { tmux "${TMUX_ARGS[@]}" "$@"; }
+note() { printf '%s\n' "$*" >&2; }
+die()  { printf 'agent: %s\n' "$1" >&2; exit "${2:-1}"; }
+
+usage() {
+  cat >&2 <<'USAGE'
+usage: agent <command>
+  new <repo> [--harness claude|omp|opencode|shell] [--slug <slug>] [--name <name>] [--no-attach]
+  ls [--porcelain]
+  attach <name>
+  pick [--switch]
+  switch
+  kill <name>
+USAGE
+  exit "${1:-2}"
+}
+
+# --- naming -------------------------------------------------------------------------------------------
+
+# "." and ":" because tmux rewrites the first and splits targets on the second; "|" and "," because they
+# are this script's field separator and the separator inside a list-sessions filter.
+sanitise() { printf '%s' "${1//[.:|,]/_}"; }
+
+# Names are resolved through a list-sessions filter, never through a -t target: a bare name in -t is a
+# prefix match, and the "=name" exact form is only understood where -t is a target-session, which
+# display-message and set-option are not. Everything downstream targets the session id.
+session_id() { tm list-sessions -F '#{session_id}' -f "#{==:#{session_name},$1}" 2>/dev/null | head -1; }
+session_exists() { [ -n "$(session_id "$1")" ]; }
+
+unique_name() {                                                  # <want> -> want, want-2, want-3, ...
+  local want=$1 name=$1 n=2
+  while session_exists "$name"; do name="$want-$n"; n=$((n + 1)); done
+  printf '%s' "$name"
+}
+
+free_view_name() {                                               # <base> -> base@1, base@2, ... first free
+  local base=$1 n=1
+  while session_exists "$base@$n"; do n=$((n + 1)); done
+  printf '%s@%s' "$base" "$n"
+}
+
+is_view() {                                                      # is_view <name> <id>: grouped and <base>@<n>
+  case $1 in
+    *@[0-9]*) [ "$(tm display-message -p -t "$2" '#{session_grouped}' 2>/dev/null || echo 0)" = 1 ] ;;
+    *) return 1 ;;
+  esac
+}
+
+device() {                                                       # the Mac's address, as ssh saw it
+  local d=${SSH_CLIENT:-}
+  d=${d%% *}
+  printf '%s' "${d:-local}"
+}
+
+# --- sessions -----------------------------------------------------------------------------------------
+
+# session_create <name> <harness> <repo> <cwd> <branch>: the base session, with the facts the picker shows.
+# The harness is the session command, so tmux runs it through default-shell -c (zsh), which reads ~/.zshenv
+# and therefore gets PATH and ~/.config/agents/env. remain-on-exit is a window option and is set on the
+# harness window only: extra windows the operator opens close normally, the harness leaves its last screen.
+session_create() {
+  local name=$1 harness=$2 repo=$3 cwd=$4 branch=$5 sid wid
+  local new=(new-session -d -P -F "#{session_id}${SEP}#{window_id}" -s "$name" -c "$cwd")
+  [ "$harness" = shell ] || new+=("$harness")
+  IFS=$SEP read -r sid wid < <(tm "${new[@]}")
+  [ -n "$sid" ] || die "tmux did not create $name"
+  tm set-option -t "$sid" remain-on-exit on
+  tm set-option -t "$sid" @harness "$harness"
+  tm set-option -t "$sid" @repo    "$repo"
+  tm set-option -t "$sid" @cwd     "$cwd"
+  tm set-option -t "$sid" @branch  "$branch"
+  tm set-option -t "$sid" @created "$(date +%s)"
+  tm set-option -t "$sid" @hwin    "$wid"
+}
+
+cmd_new() {
+  local repo="" harness=claude slug="" name="" attach=1 root cwd branch
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --harness) [ $# -ge 2 ] || usage; harness=$2; shift 2 ;;
+      --slug)    [ $# -ge 2 ] || usage; slug=$2;    shift 2 ;;
+      --name)    [ $# -ge 2 ] || usage; name=$2;    shift 2 ;;
+      --no-attach) attach=0; shift ;;
+      -*) usage ;;
+      *) [ -z "$repo" ] || usage; repo=$1; shift ;;
+    esac
+  done
+  [ -n "$repo" ] || usage
+  case " $HARNESSES " in *" $harness "*) ;; *) die "unknown harness: $harness (one of: $HARNESSES)" 2 ;; esac
+  root=$WORKSPACE/$repo
+  [ -d "$root" ] || die "no such repo: $root" 2
+  cwd=$root
+  if [ -n "$slug" ]; then
+    cwd=$WORKSPACE/$repo.wt/$slug
+    if [ -d "$cwd" ]; then
+      note "reusing worktree $cwd"
+    else
+      git -C "$root" worktree add "$cwd" -b "agent/$slug" >&2 || die "git worktree add failed"
+    fi
+  fi
+  branch=$(git -C "$cwd" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+  [ -n "$branch" ] || branch=-
+  [ -n "$name" ] || name=$harness-$repo${slug:+-$slug}
+  name=$(unique_name "$(sanitise "$name")")
+  session_create "$name" "$harness" "$repo" "$cwd" "$branch"
+  if [ "$attach" = 1 ]; then cmd_attach "$name"; else printf '%s\n' "$name"; fi
+}
+
+# A view attaches in the foreground: tmux runs the whole command list server-side and the client is attached
+# by new-session itself, so destroy-unattached is armed on a session that already has a client.
+cmd_attach() {
+  local name=${1:-} id vname
+  [ -n "$name" ] || usage
+  id=$(session_id "$name") || true
+  [ -n "$id" ] || die "no such session: $name" 2
+  ! is_view "$name" "$id" || die "$name is a view; attach ${name%@*} instead" 2
+  vname=$(free_view_name "$name")
+  # The two set-options carry no -t on purpose: they run in the client new-session just attached, so the
+  # current session is the view. Arming destroy-unattached any earlier would destroy it before the attach.
+  tm new-session -t "$id" -s "$vname" \
+     ';' set-option destroy-unattached on \
+     ';' set-option @device "$(device)"
+}
+
+# Inside tmux the view cannot be created attached, so it is created detached with destroy-unattached still
+# off, switched to, and only then armed. The view the client came from loses its client and destroys itself.
+cmd_switch_to() {
+  local name=$1 id vname vid
+  id=$(session_id "$name") || true
+  [ -n "$id" ] || die "no such session: $name" 2
+  ! is_view "$name" "$id" || die "$name is a view; attach ${name%@*} instead" 2
+  vname=$(free_view_name "$name")
+  vid=$(tm new-session -d -P -F '#{session_id}' -t "$id" -s "$vname")
+  tm set-option -t "$vid" @device "$(device)"
+  tm switch-client -t "$vid"
+  tm set-option -t "$vid" destroy-unattached on
+}
+
+cmd_kill() {
+  local name=${1:-} id cwd repo vid vname
+  [ -n "$name" ] || usage
+  id=$(session_id "$name") || true
+  [ -n "$id" ] || die "no such session: $name" 2
+  cwd=$(tm display-message -p -t "$id" '#{@cwd}' 2>/dev/null || true)
+  repo=$(tm display-message -p -t "$id" '#{@repo}' 2>/dev/null || true)
+  # The views only share the base's windows; killing the base would leave each device attached to a
+  # session nobody owns any more, so the whole group goes, views first.
+  while IFS=$SEP read -r vid vname; do
+    case $vname in "$name"@[0-9]*) tm kill-session -t "$vid" 2>/dev/null || true ;; esac
+  done < <(tm list-sessions -F "#{session_id}${SEP}#{session_name}" 2>/dev/null)
+  tm kill-session -t "$id"
+  case $cwd in
+    "$WORKSPACE"/*.wt/*) printf 'worktree kept: git -C %s worktree remove %s\n' "$WORKSPACE/$repo" "$cwd" ;;
+  esac
+}
+
+# --- listing ------------------------------------------------------------------------------------------
+
+# rows: name harness repo branch wt cwd state created devices, SEP-separated, oldest first.
+# One line per base session. A pre-existing session with no @harness (today's "main") is a shell session
+# and is listed, never killed. Views are not listed; their @device lands in their base's devices column.
+rows() {
+  local fmt raw dead sid name grouped created created_opt harness repo branch cwd hwin dev attached path base wt state
+  fmt="#{session_id}${SEP}#{session_name}${SEP}#{session_grouped}${SEP}#{session_created}${SEP}#{@harness}"
+  fmt="$fmt${SEP}#{@repo}${SEP}#{@branch}${SEP}#{@hwin}${SEP}#{@device}${SEP}#{session_attached}"
+  fmt="$fmt${SEP}#{@created}${SEP}#{pane_current_path}${SEP}#{@cwd}"      # paths last: see SEP above
+  raw=$(tm list-sessions -F "$fmt" 2>/dev/null) || return 0
+  [ -n "$raw" ] || return 0
+  dead=$(tm list-panes -a -F "#{window_id}${SEP}#{pane_dead}" 2>/dev/null || true)
+  declare -A devices=() dead_of=()
+  local w d
+  while IFS=$SEP read -r w d; do [ -z "$w" ] || [ "$d" != 1 ] || dead_of[$w]=1; done <<<"$dead"
+  # pass 1: views contribute their device to the base they are grouped with
+  while IFS=$SEP read -r sid name grouped created harness repo branch hwin dev attached created_opt path cwd; do
+    [ -n "$name" ] || continue
+    [ "$grouped" = 1 ] || continue
+    case $name in *@[0-9]*) ;; *) continue ;; esac
+    [ "$attached" -ge 1 ] 2>/dev/null || continue
+    base=${name%@*}
+    devices[$base]=${devices[$base]:+${devices[$base]},}${dev:-local}
+  done <<<"$raw"
+  # pass 2: the base sessions themselves
+  while IFS=$SEP read -r sid name grouped created harness repo branch hwin dev attached created_opt path cwd; do
+    [ -n "$name" ] || continue
+    if [ "$grouped" = 1 ]; then case $name in *@[0-9]*) continue ;; esac; fi
+    state=running
+    [ -z "$hwin" ] || [ -z "${dead_of[$hwin]:-}" ] || state=exited
+    wt=-; case $cwd in "$WORKSPACE"/*.wt/*) wt=wt ;; esac
+    printf '%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n' \
+      "$name" "$SEP" "${harness:-shell}" "$SEP" "${repo:--}" "$SEP" "${branch:--}" "$SEP" "$wt" "$SEP" \
+      "${cwd:-$path}" "$SEP" "$state" "$SEP" "${created_opt:-$created}" "$SEP" "${devices[$name]:--}"
+  done <<<"$raw" | sort -t"$SEP" -k8,8n -k1,1
+}
+
+age_of() {
+  local s now
+  now=$(date +%s); s=$((now - $1))
+  [ "$s" -ge 0 ] || s=0
+  if   [ "$s" -lt 60 ];    then printf '%ds' "$s"
+  elif [ "$s" -lt 3600 ];  then printf '%dm' $((s / 60))
+  elif [ "$s" -lt 86400 ]; then printf '%dh' $((s / 3600))
+  else                          printf '%dd' $((s / 86400)); fi
+}
+
+# ls_human [header]: the aligned columns `agent ls` and the picker rows share.
+ls_human() {
+  local header=${1:-0} all w=4 name harness repo branch wt cwd state created devices
+  all=$(rows)
+  [ -n "$all" ] || return 0
+  while IFS=$SEP read -r name _; do [ "${#name}" -le "$w" ] || w=${#name}; done <<<"$all"
+  [ "$header" = 0 ] || printf "%-${w}s  %-8s  %-16s  %-18s  %-2s  %5s  %-7s  %s\n" \
+    NAME HARNESS REPO BRANCH WT AGE STATE DEVICES
+  while IFS=$SEP read -r name harness repo branch wt cwd state created devices; do
+    [ "$wt" = wt ] || wt=""
+    printf "%-${w}s  %-8s  %-16s  %-18s  %-2s  %5s  %-7s  %s\n" \
+      "$name" "$harness" "$repo" "$branch" "$wt" "$(age_of "$created")" "$state" "$devices"
+  done <<<"$all"
+}
+
+cmd_ls() {
+  case ${1:-} in
+    --porcelain) rows | cut -d"$SEP" -f1-4,6-9 | tr "$SEP" '\t' ;;
+    "") ls_human 1 ;;
+    *) usage ;;
+  esac
+}
+
+# --- picker -------------------------------------------------------------------------------------------
+
+# Rows carry their own meaning: the four verbs are prefixed with a glyph, every other row starts with a
+# session name, so the selected line parses without hidden fields and fzf's filter sees what the eye sees.
+pick_rows() {
+  printf '+ new session\n+ new shell\n'
+  ls_human 0
+  printf '> plain shell here\nx log out\n'
+}
+
+# menu <prompt> <filter>: one fzf pass. With AGENT_PICK_FILTER set there is no tty, so --filter does the
+# choosing; an empty filter matches everything and the first row wins.
+menu() {
+  local prompt=$1 filter=${2:-} preview
+  if [ -n "${AGENT_PICK_FILTER:-}" ]; then
+    fzf --filter="$filter" | head -1
+    return 0
+  fi
+  # {1} is the first column: a session name on a session row, a glyph on the four verb rows, where
+  # capture-pane simply fails and the preview stays empty. No "=" prefix: -t here is a pane target.
+  preview="tmux ${TMUX_ARGS[*]} capture-pane -p -e -t {1} 2>/dev/null || true"
+  fzf --prompt="$prompt " --height=100% --reverse --no-sort --no-multi \
+      --preview="$preview" --preview-window='right,50%,border-left' || return $?
+}
+
+repo_list() {
+  local d
+  for d in "$WORKSPACE"/*/; do
+    d=${d%/}
+    case $d in *.wt) continue ;; esac
+    [ -e "$d/.git" ] || continue
+    printf '%s\n' "$(basename "$d")"
+  done
+}
+
+pick_new_session() {
+  local repo harness slug
+  repo=$(repo_list | menu 'repo>') || return 0
+  [ -n "$repo" ] || return 0
+  harness=$(printf 'claude\nomp\nopencode\nshell\n' | menu 'harness>') || return 0
+  [ -n "$harness" ] || return 0
+  if [ -n "${AGENT_PICK_FILTER:-}" ]; then
+    slug=""
+  else
+    # --print-query with nothing to match: the typed text is the answer, empty means the main checkout.
+    slug=$(: | fzf --print-query --prompt='slug (empty: work in the main checkout)> ' | head -1) || true
+  fi
+  local args=("$repo" --harness "$harness")
+  [ -z "$slug" ] || args+=(--slug "$slug")
+  cmd_new "${args[@]}"
+}
+
+cmd_pick() {
+  local switch=0 sel rc name
+  case ${1:-} in
+    --switch) switch=1; shift ;;
+    "") ;;
+    *) usage ;;
+  esac
+  [ $# = 0 ] || usage
+  command -v fzf >/dev/null 2>&1 || die "fzf is not installed (install-host.sh phase 1)" 2
+  [ "$switch" = 0 ] || [ -n "${TMUX:-}" ] || die "--switch only works inside tmux" 2
+  while :; do
+    rc=0
+    sel=$(pick_rows | menu 'session>' "${AGENT_PICK_FILTER:-}") || rc=$?
+    if [ "$rc" != 0 ] || [ -z "$sel" ]; then
+      # fzf aborted (Esc, Ctrl+C) or matched nothing: in the popup that just closes it, at the login
+      # prompt there is nothing else to do, so it means log out.
+      [ "$switch" = 0 ] || return 0
+      return 3
+    fi
+    case $sel in
+      '+ new session')      pick_new_session || true ;;
+      '+ new shell')        pick_new_shell "$switch" || true ;;
+      '> plain shell here') return 0 ;;
+      'x log out')          return 3 ;;
+      *)
+        name=${sel%% *}
+        if [ "$switch" = 1 ]; then cmd_switch_to "$name" || true; return 0; fi
+        cmd_attach "$name" || true
+        ;;
+    esac
+    [ -z "${AGENT_PICK_FILTER:-}" ] || return 0
+  done
+}
+
+pick_new_shell() {
+  local switch=$1 name
+  name=$(unique_name shell-scratch)
+  session_create "$name" shell "" "$WORKSPACE" -
+  if [ "$switch" = 1 ]; then cmd_switch_to "$name"; else cmd_attach "$name"; fi
+}
+
+# --- dispatch -----------------------------------------------------------------------------------------
+
+case ${1:-} in
+  new)    shift; cmd_new "$@" ;;
+  ls)     shift; cmd_ls "${1:-}" ;;
+  attach) shift; cmd_attach "${1:-}" ;;
+  pick)   shift; cmd_pick "$@" ;;
+  switch) shift; [ $# = 0 ] || usage; cmd_pick --switch ;;
+  kill)   shift; cmd_kill "${1:-}" ;;
+  -h|--help|help) usage 0 ;;
+  *) usage ;;
+esac
