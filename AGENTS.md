@@ -27,11 +27,11 @@ Do not assume something exists because the plan describes it. Check this table a
 
 | Phase | Scope | State |
 |---|---|---|
-| 1 access | apt (tmux mosh gh zsh git curl file jq unattended-upgrades), zsh + chsh, linger, auto-updates; sshd and firewall left at OS defaults | scripted (`install-host.sh` phase 1) |
-| 2 sessions | tmux, auto-attach, zsh + oh-my-zsh, WezTerm domain | scripted (`config/tmux.conf`, `config/zshenv`, `config/zshrc`, `config/bashrc.d`, `config/wezterm-agent-host.lua.in`) |
+| 1 access | apt (tmux mosh gh zsh fzf git curl file jq unattended-upgrades), zsh + chsh, linger, auto-updates; sshd and firewall left at OS defaults | scripted (`install-host.sh` phase 1) |
+| 2 sessions | tmux, session picker (`bin/agent`: one base session per harness run, an independent view per device), zsh + oh-my-zsh, WezTerm domain | scripted (`bin/agent`, `config/tmux.conf`, `config/zshenv`, `config/zshrc`, `config/bashrc.d`, `config/wezterm-agent-host.lua.in`) |
 | 3 harnesses | mise, uv, gh, three harnesses, secrets file, shared rules, Claude settings | scripted (`install-host.sh` phases 2 to 4) |
 | 4 clipboard bridge | Mac pushes images on Cmd+V; `clip-put` spool and `xclip` shim on the host | scripted (`bin/xclip`, `bin/clip-put`, `bin/clip-push-mac.sh.in`, Cmd+V in `config/wezterm-agent-host.lua.in`) |
-| 5 automation | `agent` CLI, `agent-worker`, systemd units, GitHub runner workflow | planned, not started |
+| 5 automation | `agent run`/`logs`/`stop`/`clean` on top of `bin/agent`, `agent-worker`, systemd units, GitHub runner workflow | planned, not started |
 | 6 isolation | `docker/Dockerfile.agent-sandbox`, `agent run --sandbox` | planned, not started |
 
 When you implement part of phase 5 or 6, update this table and section 8 of the plan doc.
@@ -43,18 +43,20 @@ When you implement part of phase 5 or 6, update this table and section 8 of the 
 | `README.md` | orientation: which doc to read, what the two scripts do | read only |
 | `lib/params.sh` | the parameters: `.env` loading without executing it, validators, derivation from the system on the host (`hostname -s`, Tailscale DNS name, default route), `params_render` for `.in` templates, the Mac's ssh config text | sourced by both install scripts and the tests |
 | `.env.example` | the four `AGENT_HOST_*` parameters with example values; copied to `.env` (gitignored) | `.env` at the repo root on host and Macs |
+| `bin/agent` | sessions on the host: `new`, `ls [--porcelain]`, `attach`, `pick [--switch]`, `switch`, `kill`. One harness run in one repo is one base tmux session (`remain-on-exit`, `@harness`/`@repo`/`@cwd`/`@branch`/`@created`/`@hwin`); each device attaches a view (`<name>@<n>`, grouped, `destroy-unattached`, `@device`). `pick` is an fzf loop and the login landing. tmux is the only state | `~/.local/bin/agent` on the host |
+| `tests/agent-test.sh` | unit tests for `bin/agent` and the login fragment: naming, worktrees, `--porcelain` columns, views per device, exited sessions, `kill`, the picker under `AGENT_PICK_FILTER`, and the fragment's guard under bash and zsh. Throwaway HOME, stand-in harness, own tmux socket | run anywhere, no sudo, no network, no Docker |
 | `tests/params-test.sh` | unit tests for the library, every rendered template checked with real tools (`ssh -G`, `bash -n`), a Linux dry run of `install-mac.sh` against a throwaway HOME, and the literal scan | run anywhere, no sudo, no network |
-| `tests/e2e/` | two Docker containers, a host (`box`, real sshd, login `alice`, systemd/tailscale shimmed and logged) and a Mac stand-in with two Mac users (brew, osascript, pbpaste, pngpaste stubbed; Lua 5.4 for the WezTerm module): both install scripts run twice against each other; password path, key login and idempotency; Cmd+V routing through the rendered WezTerm module (`wezterm-paste.lua`, stub `wezterm` table, real `clip-push`, real host) for text, image, local, ssh, mosh and failed-push cases; the `xclip` calls Claude Code makes after Ctrl+V with a byte-exact PNG check; OSC 52 copy-back; a second Mac installing and pushing against the same host | `bash tests/e2e/run.sh`; needs docker without sudo, network for the image builds only |
-| `install-host.sh` | idempotent host setup, phases 1 to 4, run as the host login. Loads `.env`, derives the rest, writes `.env` when absent and prints it for the Macs at the end. Phase 1 (apt tmux mosh gh zsh git curl file jq unattended-upgrades, chsh to zsh, linger, tailscale auto-update, unattended-upgrades; sshd and the firewall are not touched) goes through the `as_root` helper one `sudo` command at a time, each behind a no-sudo state check, so a configured host never prompts; `--no-root` skips it. Phases 2 to 4 symlink configs, then oh-my-zsh, toolchains and harnesses (Claude Code via the native installer when absent) behind `--no-tools` | run in place |
+| `tests/e2e/` | two Docker containers, a host (`box`, real sshd, login `alice`, systemd/tailscale shimmed and logged) and a Mac stand-in with two Mac users (brew, osascript, pbpaste, pngpaste stubbed; Lua 5.4 for the WezTerm module): both install scripts run twice against each other; password path, key login and idempotency; Cmd+V routing through the rendered WezTerm module (`wezterm-paste.lua`, stub `wezterm` table, real `clip-push`, real host) for text, image, local, ssh, mosh and failed-push cases; the `xclip` calls Claude Code makes after Ctrl+V with a byte-exact PNG check; OSC 52 copy-back; a second Mac installing and pushing against the same host; and the session picker driven over `ssh -tt` from both Mac users, with two views on one base session, independent current windows, detach and `agent kill` | `bash tests/e2e/run.sh`; needs docker without sudo, network for the image builds only |
+| `install-host.sh` | idempotent host setup, phases 1 to 4, run as the host login. Loads `.env`, derives the rest, writes `.env` when absent and prints it for the Macs at the end. Phase 1 (apt tmux mosh gh zsh fzf git curl file jq unattended-upgrades, chsh to zsh, linger, tailscale auto-update, unattended-upgrades; sshd and the firewall are not touched) goes through the `as_root` helper one `sudo` command at a time, each behind a no-sudo state check, so a configured host never prompts; `--no-root` skips it. Phases 2 to 4 symlink configs, then oh-my-zsh, toolchains and harnesses (Claude Code via the native installer when absent) behind `--no-tools` | run in place |
 | `install-mac.sh` | idempotent Mac client setup, phases 1, 2 and 4; no sudo; settles its parameters first (`.env`, a prompt on a terminal, or exit 2); renders the ssh config block (`agent-host` marker) and `clip-push`; writes a minimal `wezterm.lua` when none exists, otherwise inserts the `wezterm-agent-host` require before the final `return <config>` (backup `.before-agent-host`; exits 1 with the line to add when the file ends some other way); `path` marker block in `~/.zshrc`; ends by making `ssh <alias>` keyless: stores the host key on first contact (fingerprint printed), installs the repo key over an already-trusted key with `ssh-copy-id -f`, or runs `ssh-copy-id` and asks for the host password once; never deletes a stored host key or edits `authorized_keys` directly; exits 1 with the fix when it cannot finish | run on the Mac |
 | `bin/xclip` | clipboard shim; serves the spool the Mac pushed (`~/.clip/latest`) to Claude Code, copies go back via OSC 52 | `~/.local/bin/xclip` on the host |
 | `bin/clip-put` | stdin to the spool, atomic, mode 600; `--clear` | `~/.local/bin/clip-put` on the host |
 | `bin/clip-push-mac.sh.in` | template: pngpaste or pbpaste piped over `ssh <alias>-clip` into `clip-put`, prints the type; WezTerm runs `--if-image` on Cmd+V | rendered to `~/.local/bin/clip-push` on the Mac |
-| `config/tmux.conf` | OSC 52 passthrough, mouse, history, SSH_CONNECTION refresh | `~/.tmux.conf` (symlink) |
+| `config/tmux.conf` | OSC 52 passthrough, mouse, history, SSH_CONNECTION refresh; prefix `g` opens the picker in a popup, prefix `c` keeps the cwd, `status-left` shows session and harness | `~/.tmux.conf` (symlink) |
 | `config/zshenv` | sources `agents-env.sh` for every zsh, incl. `ssh <host> <cmd>` | `~/.zshenv` (symlink) |
 | `config/zshrc` | oh-my-zsh (robbyrussell, git plugin, updates off) then the interactive fragments | `~/.zshrc` (symlink) |
 | `config/bashrc.d/agents-env.sh` | PATH and secrets for every shell, including non-interactive SSH; POSIX sh, shared by bash and zsh | sourced at top of `~/.bashrc` and from `~/.zshenv` |
-| `config/bashrc.d/mise.sh`, `tmux-autoattach.sh` | interactive-only shell bits, valid in bash and zsh | sourced at bottom of `~/.bashrc` and end of `~/.zshrc` |
+| `config/bashrc.d/mise.sh`, `tmux-autoattach.sh` | interactive-only shell bits, valid in bash and zsh; `tmux-autoattach.sh` runs `agent pick` for interactive SSH logins and logs out on exit 3 | sourced at bottom of `~/.bashrc` and end of `~/.zshrc` |
 | `config/ssh_config.mac.in` | template: `Host <alias>`, `<alias>-lan` (dropped without a LAN address), `<alias>-clip` (BatchMode, ControlMaster) for the push | `agent-host` marker block in `~/.ssh/config` on the Mac |
 | `config/wezterm-agent-host.lua.in` | template: SSH domain `<alias>`, Cmd+Shift+A tab, Cmd+V image push, default `color_scheme` (Tokyo Night) | `~/.config/wezterm/wezterm-agent-host.lua` |
 | `config/claude-settings.json` | Claude Code allow and deny lists, model, status line command | `~/.claude/settings.json` (symlink) |
@@ -64,8 +66,9 @@ When you implement part of phase 5 or 6, update this table and section 8 of the 
 | `README.md` | ordered runbook: prerequisites, the three scripts with verify blocks, logins, joint checkpoints, rollback, parameters table | read only |
 | `docs/` | `remote-agent-host-plan.md` (design, per-phase tests); operations runbook for phase 5 to be written | read only |
 
-Planned but absent: `bin/agent`, `bin/agent-worker`, `systemd/`, `docker/`, `docs/runbook.md`. The first
-`bin/agent` subcommands (session picker) are specified in `docs/session-picker-plan.md`; implement from that file.
+Planned but absent: `bin/agent-worker`, `systemd/`, `docker/`, `docs/runbook.md`. `bin/agent` exists with the
+session subcommands from `docs/session-picker-plan.md`; the phase 5 subcommands (`run`, `logs`, `stop`, `clean`)
+extend it rather than replace it, and `--porcelain` is the interface they share.
 
 ## Install contract
 
@@ -122,15 +125,17 @@ Run these on the host without sudo before you open a PR. `shellcheck` is not ins
 `mise use -g shellcheck@latest` adds it without sudo, otherwise skip that line and say so.
 
 ```
+bash tests/agent-test.sh             # bin/agent and the login fragment, own tmux socket and HOME; N passed, 0 failed
 bash tests/params-test.sh            # library, rendered templates, install-mac.sh dry run, literal scan; N passed, 0 failed
 bash tests/e2e/run.sh                # both scripts, Cmd+V routing, clipboard round trip and a second Mac, in two containers (about 3 min); N passed, 0 failed
-shellcheck -x install-host.sh install-mac.sh bin/xclip bin/clip-put config/statusline-command.sh config/bashrc.d/*.sh
-shellcheck -x -s bash lib/params.sh tests/params-test.sh bin/clip-push-mac.sh.in
-bash -n install-host.sh install-mac.sh bin/xclip bin/clip-put bin/clip-push-mac.sh.in config/statusline-command.sh lib/params.sh
+shellcheck -x install-host.sh install-mac.sh bin/agent bin/xclip bin/clip-put config/statusline-command.sh config/bashrc.d/*.sh
+shellcheck -x -s bash lib/params.sh tests/params-test.sh tests/agent-test.sh bin/clip-push-mac.sh.in
+bash -n install-host.sh install-mac.sh bin/agent bin/xclip bin/clip-put bin/clip-push-mac.sh.in config/statusline-command.sh lib/params.sh
 printf '{"model":{"display_name":"M"},"workspace":{"current_dir":"%s"}}' "$PWD" | bash config/statusline-command.sh   # two lines: ➜ agentic-framework git:(branch) [M], then ctx —
 zsh -n config/zshenv config/zshrc config/bashrc.d/*.sh
 NO_TMUX=1 zsh -ic 'echo $ZSH_THEME; type omz; command -v mise'   # robbyrussell, function, mise path
-tmux -f config/tmux.conf new -d -s check && tmux show -s set-clipboard && tmux kill-session -t check
+tmux -f config/tmux.conf -L check new -d -s check && tmux -L check show -s set-clipboard && tmux -L check list-keys -T prefix | grep -E ' (g|c) ' && tmux -L check kill-server
+AGENT_TMUX_SOCKET=scratch bin/agent ls && AGENT_TMUX_SOCKET=scratch bin/agent pick --switch; echo "$? (2: --switch needs tmux)"
 CLIP_BRIDGE_SPOOL=/usr/share/pixmaps/debian-logo.png bin/xclip -selection clipboard -t TARGETS -o    # image/png
 CLIP_BRIDGE_SPOOL=/usr/share/pixmaps/debian-logo.png bin/xclip -selection clipboard -t image/png -o | file -
 S=$(mktemp); printf plain | CLIP_BRIDGE_SPOOL=$S bin/clip-put && CLIP_BRIDGE_SPOOL=$S bin/xclip -selection clipboard -o; echo; rm -f $S   # plain
@@ -175,7 +180,7 @@ same interface regardless of harness:
   creates `~/workspace/<repo>.wt/<slug>` on branch `agent/<slug>`, opens window `<slug>` in tmux
   session `agents`, runs the harness headless with a budget cap, logs to `~/agents/logs/<slug>.jsonl`,
   then commits, pushes and runs `gh pr create`, printing the PR URL to stdout and `~/agents/logs/<slug>.url`.
-- `agent ls | attach | logs | stop | clean <slug>` wrap tmux and `git worktree remove`.
+- `agent logs | stop | clean <slug>` join the session subcommands that exist already (`new`, `ls`, `attach`, `pick`, `kill`); `agent ls --porcelain` is the interface they share, so keep its columns stable.
 - Scheduled: `systemd/agent@.service` plus `agent-<job>.timer`, `EnvironmentFile=%h/.config/agents/env`,
   prompts in `~/agents/prompts/*.md`, enabled with `systemctl --user`.
 - Git events: self-hosted runner labelled after the host, workflow triggered by `/agent ` issue comments and

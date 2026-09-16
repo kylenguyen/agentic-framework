@@ -116,13 +116,18 @@ From the Mac: `ssh <host> true` succeeds without a prompt (key path); `ssh -o Pr
    set -g focus-events on
    set -g escape-time 10
    ```
-2. Shell profile (`config/bashrc.d/tmux-autoattach.sh`): for interactive SSH logins only, `tmux new -As main`. Guard with `[[ $- == *i* && -n $SSH_TTY && -z $TMUX ]]` so `ssh <host> <command>` and automation never trigger it.
+2. Shell profile (`config/bashrc.d/tmux-autoattach.sh`): for interactive SSH logins only, `agent pick`, the session picker, not a fixed session. Guard with `[[ $- == *i* && -n $SSH_TTY && -z $TMUX && -z $NO_TMUX ]]` so `ssh <host> <command>` and automation never trigger it. The picker exits 0 for "plain shell here" (the login shell carries on outside tmux) and 3 for "log out" (the fragment exits the shell).
 3. Login shell: zsh with oh-my-zsh, so interactive work on <host> gets completion, git prompt and history search without per-device setup. Phase 1 of `install-host.sh` installs `zsh` and runs `chsh` for `<user>` through sudo; phase 2 clones `~/.oh-my-zsh` and symlinks `~/.zshenv` → `config/zshenv` and `~/.zshrc` → `config/zshrc`.
    - `~/.zshenv` sources `bashrc.d/agents-env.sh`, because `ssh <host> <command>` under a zsh login shell runs `zsh -c`, which reads only `.zshenv`. This mirrors the env block at the top of `~/.bashrc`.
    - `~/.zshrc` loads oh-my-zsh (theme `robbyrussell`, plugin `git`, auto-update disabled so an update prompt can never block an unattended tmux window) and then the same `bashrc.d/mise.sh` and `bashrc.d/tmux-autoattach.sh` bash sources. The fragments are written to run under both shells; `mise.sh` selects `mise activate zsh` or `bash` from `$ZSH_VERSION`.
    - bash stays fully configured: `ssh -t <host> 'NO_TMUX=1 bash -l'` still works, and scripts keep `#!/usr/bin/env bash`.
    - tmux picks its default shell from `$SHELL` when the server starts, so an existing `main` session keeps bash until `tmux kill-server` or a reboot.
-4. Session convention: `tmux new -As <repo>` for interactive work; an `agents` session with one window per unattended job.
+4. Session convention is owned by `bin/agent`, not by hand: one harness run in one repo is one base session named `<harness>-<repo>[-<slug>]`, created by `agent new` with the harness as the session command, `remain-on-exit on` so a finished harness leaves its last screen, and `@harness`, `@repo`, `@cwd`, `@branch`, `@created`, `@hwin` for the picker to read. tmux is the only state; there is no registry file and nothing survives a reboot.
+   - Each device attaches its own view: `agent attach` creates `<name>@<n>` grouped with the base, sets `@device` from `SSH_CLIENT` and `destroy-unattached on`, so two Macs share the processes but keep their own current window, size and scroll, and detaching leaves the harness running. Nobody attaches a base directly.
+   - `agent pick` is the fzf loop behind all of it, with a preview of each session's last screen; prefix `g` opens it in `display-popup -E` with `--switch`. `agent ls --porcelain` is the stable machine interface (`name harness repo branch cwd state created_epoch devices`).
+   - Session names never contain `.` or `:`: tmux rewrites the first and treats both as target separators. Commands resolve a name to a `#{session_id}` once and use that.
+   - Sessions that predate the tooling (an old `main`) have no `@harness`, are listed as shells, and are never killed by it.
+5. `fzf` comes from phase 1; without it the picker exits 2 and says so rather than dropping the login nowhere.
 
 ### On the Mac
 
@@ -140,6 +145,9 @@ From the Mac: `ssh <host> true` succeeds without a prompt (key path); `ssh -o Pr
 ### Test the host alone
 
 ```
+bash tests/agent-test.sh              # bin/agent and the login fragment, own tmux socket and HOME; N passed, 0 failed
+command -v agent fzf                  # ~/.local/bin/agent, then an fzf path
+agent ls                              # a header and one row per base session; views are not listed
 tmux -f ~/.tmux.conf new -d -s t && tmux show -s set-clipboard && tmux show -g allow-passthrough && tmux kill-session -t t
 tmux show -g update-environment | grep SSH_CONNECTION
 bash -lc 'echo $TMUX'                 # empty: non-interactive login must not auto-attach
@@ -161,7 +169,9 @@ wezterm ssh --help >/dev/null && echo ok
 
 ### Joint checkpoint
 
-From the Mac `ssh <host>` lands in tmux session `main`. Open a second Mac terminal, `ssh <host>`, both attached. Enter tmux copy-mode, select text, press `y` or Enter, then `pbpaste` on the Mac shows it. Select text with the mouse in a Claude Code session on <host> and Cmd+C in WezTerm; paste back with Cmd+V. Text works both ways with no bridge involved.
+From the Mac `ssh <host>` lands in the picker. Open a second Mac terminal, `ssh <host>`, pick the same session: both
+see the harness, each has its own view, and changing window on one does not move the other. Detaching one leaves the
+harness and the other view alone. Enter tmux copy-mode, select text, press `y` or Enter, then `pbpaste` on the Mac shows it. Select text with the mouse in a Claude Code session on <host> and Cmd+C in WezTerm; paste back with Cmd+V. Text works both ways with no bridge involved.
 
 ## 4. Phase 3: toolchains, harnesses, secrets
 
@@ -276,14 +286,14 @@ Fallbacks that always work: `tailscale file cp shot.png <host>:` then `tailscale
 
 ### On the host
 
-1. `bin/agent` CLI (installed to `~/.local/bin/agent`):
+1. `bin/agent` CLI (installed to `~/.local/bin/agent`), extending the session subcommands phase 2 already ships (`new`, `ls`, `attach`, `pick`, `switch`, `kill`) rather than replacing them; `agent ls --porcelain` stays the interface:
    - `agent run <repo> "<task>" [--harness claude|opencode|omp] [--interactive] [--budget 5]`
      - `git -C ~/workspace/<repo> worktree add ../<repo>.wt/<slug> -b agent/<slug>`
      - new window `<slug>` in tmux session `agents`
      - headless: `claude -p "<task>" --permission-mode acceptEdits --max-budget-usd <budget> --output-format stream-json | tee ~/agents/logs/<slug>.jsonl`
      - on exit: commit, push, `gh pr create --fill --head agent/<slug>`, print PR URL to stdout and to `~/agents/logs/<slug>.url`
      - `--interactive`: run the harness normally in the window so any PC can `tmux attach -t agents` and steer
-   - `agent ls | attach <slug> | logs <slug> | stop <slug> | clean <slug>` wrap tmux and worktree removal.
+   - `agent logs <slug> | stop <slug> | clean <slug>` join `ls` and `attach`, wrapping tmux and worktree removal.
    - Claude Code's own `--bg`, `claude agents`, `claude attach` are equivalent for Claude only; the wrapper gives one interface across the three harnesses.
 2. Scheduled jobs: `systemd/agent@.service` template plus per-job timers, e.g. `agent-deps-review.timer` (Mon 03:00) → `ExecStart=%h/.local/bin/agent run <repo> --prompt-file %h/agents/prompts/deps-review.md`. `EnvironmentFile=%h/.config/agents/env`. Install with `systemctl --user enable --now agent-deps-review.timer`.
 3. Git events (GitHub): self-hosted Actions runner on <host> as a systemd service, label `<host>`. Repo workflow `.github/workflows/agent.yml` on `issue_comment` starting with `/agent ` and on `pull_request` labelled `agent-review`, running `agent run` with the comment body. The runner long-polls GitHub, so no inbound port. Use a dedicated runner user only if repos are untrusted; otherwise run as <user>.
@@ -349,14 +359,17 @@ A sandboxed run from the Mac completes with changes only inside the mounted work
 ```
 README.md       which doc to read, what the three scripts do
 AGENTS.md       status table, layout, install contract and boundaries for agents editing this repo
-bin/            agent, agent-worker, xclip (shim), clip-put, clip-push-mac.sh.in (template)
+bin/            agent (sessions: new/ls/attach/pick/switch/kill; phase 5 adds run/logs/stop/clean),
+                agent-worker, xclip (shim), clip-put, clip-push-mac.sh.in (template)
 config/         tmux.conf, zshenv, zshrc, ssh_config.mac.in, wezterm-agent-host.lua.in,
                 claude-settings.json, statusline-command.sh, bashrc.d/{agents-env,mise,tmux-autoattach}.sh
 lib/            params.sh: .env loading, validation, derivation on the host, template rendering
 tests/          params-test.sh (library, templates, install-mac.sh dry run, literal scan)
+                agent-test.sh (bin/agent and the login fragment, own tmux socket and HOME)
+                e2e/ (two containers: both install scripts, the clipboard bridge, the session picker)
 systemd/        agent@.service, agent-worker.service, agent-<job>.timer templates
 docker/         Dockerfile.agent-sandbox
-docs/           this plan,
+docs/           this plan, session-picker-plan.md (the decisions behind bin/agent),
                 operations runbook for phase 5 (attach/steer/kill/clean, to be written)
 .env.example    host parameters (AGENT_HOST, address, login, LAN address); copied to .env, gitignored
 secrets.env.example  secret variable names only

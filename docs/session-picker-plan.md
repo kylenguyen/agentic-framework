@@ -105,7 +105,7 @@ set, in which case every tmux call gets `-L "$AGENT_TMUX_SOCKET"` (the tests use
 | `agent ls [--porcelain]` | one line per base session (grouped or not, excluding names matching `*@[0-9]*` that are in a group). Human: aligned columns. Porcelain: tab-separated `name harness repo branch cwd state created_epoch devices`, `devices` comma-separated `@device` values of the group's attached views, `-` if none; harness `shell` and repo `-` for sessions without `@harness` | 0; 0 with no output when no server |
 | `agent attach <name>` | create a view and attach; refuse if `<name>` is itself a view | 0 on detach; 2 unknown name |
 | `agent pick [--switch]` | the fzf loop; `--switch` only inside tmux | 0 plain shell / 3 log out / 2 no fzf |
-| `agent kill <name>` | `kill-session` on the base id (views die with it, verified); worktrees are not removed, print the `git worktree remove` command instead | 0; 2 unknown |
+| `agent kill <name>` | `kill-session` on every view of the group, then on the base id; worktrees are not removed, print the `git worktree remove` command instead | 0; 2 unknown |
 | `agent switch` | alias for `pick --switch` | as pick |
 
 Test seam: when `AGENT_PICK_FILTER` is set, `agent pick` runs fzf with `--filter="$AGENT_PICK_FILTER"` and takes the
@@ -150,7 +150,10 @@ touched. Cases:
   `SSH_CLIENT`; after `tmux detach-client -s <view>` the view is gone and the base remains. If `script` cannot
   provide a working client in the CI environment, the test must skip with an explicit `skip` line, not pass.
 - harness exit: the stand-in exits; base remains with `pane_dead` = 1 and `ls` says `exited`.
-- `kill` removes base and all views; worktree left in place and the removal command printed.
+- `kill` removes base and all views; worktree left in place and the removal command printed. (Implementation
+  note, 16 Sep 2026: the design's "views die with the base" is wrong for tmux 3.6. Grouped sessions share a
+  window list, not a lifetime: killing the base leaves each view attached to a session nobody owns. `agent kill`
+  kills the views first, then the base.)
 - `pick` with `AGENT_PICK_FILTER` selecting a session row creates a view (detached client is fine here: assert
   the `new-session -t` happened by checking the view exists immediately with `destroy-unattached` off during the
   test, or by `agent ls --porcelain` devices), selecting `log out` returns 3, `plain shell here` returns 0.
