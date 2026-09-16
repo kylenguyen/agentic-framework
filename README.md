@@ -208,6 +208,8 @@ If image paste fails: `mac$ clip-push` in a local terminal prints the ssh error;
 ## More
 
 - [docs/remote-agent-host-plan.md](docs/remote-agent-host-plan.md): design, per-phase tests, and what is still planned.
+- [docs/session-picker-plan.md](docs/session-picker-plan.md): next change, not yet built: `bin/agent` session picker so any Mac can
+  attach any harness session, with independent views per device; decisions, contract, tests, done criteria.
 - [AGENTS.md](AGENTS.md): status table, layout, install contract, boundaries for humans and agents.
 - `tests/params-test.sh` runs anywhere without sudo or network: the parameter library, every rendered template, a dry
   run of `install-mac.sh`, and a scan that fails if any file, comment or doc names a real host, login or address.

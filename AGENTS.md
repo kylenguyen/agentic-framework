@@ -64,7 +64,8 @@ When you implement part of phase 5 or 6, update this table and section 8 of the 
 | `README.md` | ordered runbook: prerequisites, the three scripts with verify blocks, logins, joint checkpoints, rollback, parameters table | read only |
 | `docs/` | `remote-agent-host-plan.md` (design, per-phase tests); operations runbook for phase 5 to be written | read only |
 
-Planned but absent: `bin/agent`, `bin/agent-worker`, `systemd/`, `docker/`, `docs/runbook.md`.
+Planned but absent: `bin/agent`, `bin/agent-worker`, `systemd/`, `docker/`, `docs/runbook.md`. The first
+`bin/agent` subcommands (session picker) are specified in `docs/session-picker-plan.md`; implement from that file.
 
 ## Install contract
 
