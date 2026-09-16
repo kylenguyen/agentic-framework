@@ -182,6 +182,105 @@ check "host: mac2 now sees the image" image/png "$(mac2 ssh -o BatchMode=yes "$A
 mac2 /home/macuser2/.local/bin/clip-push --clear >/dev/null 2>&1
 check "mac2: --clear empties the spool for everyone" "" "$(box ls "/home/$LOGIN/.clip")"
 
+say "sessions: the picker, and two devices on one harness session"
+# Two Mac users are the two devices; each gets its own view of one base session, which is the whole point
+# of the grouped-session design. The picker runs non-interactively through AGENT_PICK_FILTER, so the ssh
+# commands need a pty (for tmux to attach to) but no human.
+AGENTBIN=/home/$LOGIN/.local/bin/agent
+bagent() { box "$AGENTBIN" "$@"; }
+btmux()  { box tmux "$@"; }
+# until_box <seconds> <shell test>: poll inside the box, because attaching happens in another container
+until_box() { local n=$1 i=0; shift; while [ "$i" -lt $((n * 5)) ]; do box sh -c "$1" >/dev/null 2>&1 && return 0; sleep 0.2; i=$((i + 1)); done; return 1; }
+MAC_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$MAC")
+
+check "box: agent is linked into the repo" "$BOX_REPO/bin/agent" "$(box readlink "$AGENTBIN")"
+check "box: fzf is installed" 0 "$(box sh -c 'command -v fzf >/dev/null; echo $?')"
+check "box: no sessions before any are made" "" "$(bagent ls --porcelain)"
+check "mac: non-interactive ssh still bypasses tmux and can call agent" "tmux= 0" \
+  "$(mac ssh -o BatchMode=yes "$ALIAS" 'echo tmux=$TMUX; agent ls --porcelain | wc -l' 2>/dev/null | tr '\n' ' ' | sed 's/ *$//')"
+
+# device 1 logs in and makes a shell session through the picker
+timeout 180 docker exec -t -u macuser -e HOME=/home/macuser "$MAC" \
+  ssh -tt -o BatchMode=yes "$ALIAS" 'AGENT_PICK_FILTER="new shell" agent pick' >"$T/mac1.ssh" 2>&1 &
+MAC1=$!
+if until_box 20 "tmux list-sessions -F '#{session_name}' | grep -qx 'shell-scratch@1'"; then
+  ok "mac1: the picker made a shell session and attached a view to it"
+else
+  bad "mac1: the picker made a shell session and attached a view to it" "$(bagent ls --porcelain; tr -d '\r' < "$T/mac1.ssh" | tail -3)"
+fi
+SESSION=shell-scratch
+check "box: one base session, listed as a shell" "$SESSION	shell	-	-" "$(bagent ls --porcelain | cut -f1-4)"
+check "box: the view carries the Mac's address" "$MAC_IP" "$(bagent ls --porcelain | cut -f8)"
+check "box: the base itself is not attached" 0 "$(btmux display-message -p -t "$SESSION" '#{session_attached}')"
+
+# device 2 picks the same session: a second view, same windows, its own current window
+timeout 180 docker exec -t -u macuser2 -e HOME=/home/macuser2 "$MAC" \
+  ssh -tt -o BatchMode=yes "$ALIAS" "AGENT_PICK_FILTER=$SESSION agent pick" >"$T/mac2.ssh" 2>&1 &
+MAC2=$!
+if until_box 20 "tmux list-sessions -F '#{session_name}' | grep -qx '$SESSION@2'"; then
+  ok "mac2: picking the same session gives it a second view"
+else
+  bad "mac2: picking the same session gives it a second view" "$(btmux list-sessions -F '#{session_name}'; tr -d '\r' < "$T/mac2.ssh" | tail -3)"
+fi
+check "box: base and two views are one group" 3 "$(btmux display-message -p -t "$SESSION" '#{session_group_size}')"
+check "box: view 1 has its own client" 1 "$(btmux display-message -p -t "$SESSION@1" '#{session_attached}')"
+check "box: view 2 has its own client" 1 "$(btmux display-message -p -t "$SESSION@2" '#{session_attached}')"
+check "box: both devices are listed against the one base" 2 "$(bagent ls --porcelain | cut -f8 | tr ',' '\n' | grep -c "$MAC_IP")"
+check "box: still one base session in ls" 1 "$(bagent ls --porcelain | wc -l)"
+# Independent views: a window switch on one device must not move the other. Window indexes are whatever
+# base-index says, so take them from tmux rather than assuming.
+WIN_BEFORE=$(btmux display-message -p -t "$SESSION@2" '#{window_index}')
+WIN_NEW=$(btmux new-window -t "$SESSION" -P -F '#{window_index}')
+btmux select-window -t "$SESSION@1:$WIN_NEW"
+check "box: view 1 moved to the new window" "$WIN_NEW" "$(btmux display-message -p -t "$SESSION@1" '#{window_index}')"
+check "box: view 2 did not move with it" "$WIN_BEFORE" "$(btmux display-message -p -t "$SESSION@2" '#{window_index}')"
+
+btmux detach-client -s "$SESSION@1"
+until_box 20 "! tmux has-session -t '$SESSION@1' 2>/dev/null" \
+  && ok "box: detaching device 1 destroys only its view" || bad "box: detaching device 1 destroys only its view" "$(btmux list-sessions -F '#{session_name}')"
+check "box: the base survives the detach" 0 "$(btmux has-session -t "$SESSION" >/dev/null 2>&1; echo $?)"
+check "box: view 2 survives the detach" 1 "$(btmux display-message -p -t "$SESSION@2" '#{session_attached}')"
+wait "$MAC1"; check "mac1: the ssh session ended cleanly on detach" 0 "$?"
+
+bagent kill "$SESSION" >/dev/null
+check "box: kill removes the base and the remaining view" "" "$(btmux list-sessions -F '#{session_name}' 2>/dev/null | grep "$SESSION" || true)"
+# A client whose session is killed under it does not exit 0; what matters is that it ends rather than hangs.
+wait "$MAC2" 2>/dev/null; rc2=$?
+[ "$rc2" -lt 124 ] && ok "mac2: its ssh session ended when the session was killed" \
+  || bad "mac2: its ssh session ended when the session was killed" "exit $rc2, probably a timeout"
+check "box: ls is empty again" "" "$(bagent ls --porcelain)"
+
+say "sessions: agent new runs a harness in the repo and keeps its last screen"
+# A stand-in "claude" on the box PATH: it records where it started, then becomes a process tmux can name.
+# It is a copy of /bin/sh rather than a link to sleep, because coreutils is one multi-call binary that
+# refuses to run under another argv[0].
+docker exec -i -u "$LOGIN" -e "HOME=/home/$LOGIN" "$BOX" sh -s <<'STUB'
+set -e
+cp "$(readlink -f /bin/sh)" "$HOME/.local/bin/claude-proc"
+cat > "$HOME/.local/bin/claude" <<'EOS'
+#!/bin/sh
+pwd > "$HOME/stub.cwd"
+exec claude-proc -c 'read line'
+EOS
+chmod +x "$HOME/.local/bin/claude"
+mkdir -p "$HOME/workspace/standin"
+git -C "$HOME/workspace/standin" init -q -b main
+git -C "$HOME/workspace/standin" -c user.email=t@example -c user.name=t commit -q --allow-empty -m init
+STUB
+check "box: agent new --no-attach prints the session name" claude-standin "$(bagent new standin --harness claude --no-attach)"
+until_box 20 "test -f /home/$LOGIN/stub.cwd"
+check "box: the harness started in the repo" "/home/$LOGIN/workspace/standin" "$(box cat "/home/$LOGIN/stub.cwd")"
+check "box: ls says running, with the repo as cwd" "claude-standin	claude	standin	main	/home/$LOGIN/workspace/standin	running" \
+  "$(bagent ls --porcelain | cut -f1-6)"
+check "box: nothing is attached to it" "-" "$(bagent ls --porcelain | cut -f8)"
+box sh -c "kill \$(tmux display-message -p -t claude-standin '#{pane_pid}')"
+until_box 20 "tmux display-message -p -t claude-standin '#{pane_dead}' | grep -qx 1" \
+  && ok "box: the dead harness leaves its pane behind" || bad "box: the dead harness leaves its pane behind"
+check "box: ls says exited" exited "$(bagent ls --porcelain | cut -f6)"
+check "box: the last screen is still readable" 1 "$(box sh -c 'tmux capture-pane -p -t claude-standin | grep -c .' || true)"
+bagent kill claude-standin >/dev/null
+check "box: kill clears the exited session" "" "$(bagent ls --porcelain)"
+
 say "second runs: idempotency"
 run docker exec -t -u macuser -e HOME=/home/macuser -w "$MAC_REPO" "$MAC" ./install-mac.sh; mout2=$OUT
 check "mac: second run exit 0" 0 "$RC"
