@@ -1,11 +1,4 @@
 {
-  "model": "claude-fable-5-1[1m]",
-  "theme": "dark",
-  "tui": "fullscreen",
-  "statusLine": {
-    "type": "command",
-    "command": "bash ~/.claude/statusline-command.sh"
-  },
   "permissions": {
     "allow": [
       "Bash(git status:*)",
@@ -30,6 +23,54 @@
       "Read(~/.config/agents/**)",
       "Edit(~/.config/agents/**)",
       "Read(~/.ssh/**)"
+    ]
+  },
+  "model": "claude-fable-5-1[1m]",
+  "statusLine": {
+    "type": "command",
+    "command": "bash ~/.claude/statusline-command.sh"
+  },
+  "tui": "fullscreen",
+  "theme": "dark",
+  "autoMode": {
+    "environment": [
+      "### Org-wide",
+      "**Organization**: None configured",
+      "**Cloud provider(s)**: None configured",
+      "**Repository visibility**: not queryable via gh here; remote is github.com:kylenguyen/agentic-framework — assume private unless shown otherwise. Treat pushes as publishing if visibility is later confirmed public.",
+      "**Internal sharing / snippet hosting**: None configured — treat public paste/gist services as outside the trust boundary",
+      "**Secrets management**: Local secrets file on the host at ~/.config/agents/env (skeleton created by install-host.sh; templates .env.example and secrets.env.example in this repo). Repo-root .env is gitignored and must never be committed or echoed.",
+      "**Default / protected branches**: Default branch main (from local repo facts). Protection rules not queryable via gh here — assume main may be ruleset-protected and treat force-push/history rewrite on main as destructive.",
+      "**CI/CD deploy targets**: None configured",
+      "**Network posture**: Tailscale tailnet reaching one headless Ubuntu host; Macs connect over SSH/mosh via the tailnet MagicDNS name or the LAN alias. ufw restricts ssh ingress to the configured LAN CIDR. Host alias, address, login and LAN range are parameters in .env, not hardcoded.",
+      "**Host containment**: None configured — assume Claude Code runs on an ordinary developer machine or CI runner with open internet; if it runs inside a container/VM/pod with an egress allow-list, no network, or neighbours it must not touch, say so here (network setting and allowed hosts, whether the cloud metadata endpoint is meant to be reachable, which cloud project/cluster/registry the task operates and as what identity). Whatever is configured, instance-metadata credential paths and node/cluster credentials of the hosting layer are never task credentials unless this entry says the agent operates that identity (see Containment Escape). The classifier sees commands, not their output, so a declared-sealed box that is actually open cannot be caught here — enforce that in network configuration.",
+      "**Source control**: github.com:kylenguyen/agentic-framework (origin, fetch and push) only — no additional orgs configured.",
+      "**Trusted internal domains**: None configured beyond the repo's own Tailscale tailnet host, whose MagicDNS name is a per-deployment .env parameter and is not recorded here.",
+      "**Trusted cloud buckets**: None configured",
+      "**Key internal services**: Tailscale (tailnet membership and MagicDNS), sshd on the agent host, tmux session main, agent harnesses Claude Code / OpenCode / Oh My Pi installed by install-host.sh.",
+      "**Internal package registry**: None configured — toolchains come from mise and uv against their public upstreams.",
+      "**Sensitive data locations & audiences**: repo-root .env (gitignored), ~/.config/agents/env on the host, ~/.ssh/id_ed25519 and authorized_keys, shell history files (~/.zsh_history, ~/.bash_history — known to carry inline secrets), plus any file or store holding personal data, confidential business data, credentials, regulated data, or similarly sensitive material; preserve exact handles when known and share only with audiences cleared at the [named+specifics] bar",
+      "**Data retention / declassification**: None configured",
+      "**Sensitive remote targets**: any namespace, host, or container whose name carries `prod` or `production` as a whole word or name segment (hyphen/underscore/dot-delimited — e.g. matches `prod-db`, not `producer`). Additionally treat the single agent host reached over the tailnet or LAN alias as a sensitive remote target for sshd, ufw and Tailscale state changes.",
+      "**Protected deployment namespaces / environments**: None configured — fall back to the Sensitive remote targets heuristic",
+      "**Protected IaC scopes**: IAM, RBAC, networking, quota, and node-pool resources; anything whose name or tag carries `prod` or `production` as a whole word or name segment. In this repo also: sshd hardening config, ufw rules, login shell and user/group changes, and Tailscale auto-update settings applied by install-host.sh.",
+      "### User-specific",
+      "**Primary use of Claude Code**: shell and infrastructure scripting in /home/kyle/workspace/agentic-framework — idempotent install scripts, zsh/sshd/wezterm config templates, shellcheck-driven review.",
+      "**Trusted repo**: /home/kyle/workspace/agentic-framework and its configured remote github.com:kylenguyen/agentic-framework. Visibility unconfirmed, so treat it as private for confidential material but do not publish anything read from outside this repo. Secrets and sensitive data are never cleared into it by visibility.",
+      "**Org-specific CLIs**: tailscale, omp (Oh My Pi), uv, mise, shellcheck — all observed in this project or in shell history.",
+      "**Routine under this repo's prefix**: shellcheck runs over bin/, lib/, config/ and the install scripts; tailscale status/ip reads; hostname and id lookups during parameter derivation."
+    ],
+    "allow": [
+      "$defaults",
+      "Bash(shellcheck:*) — lint shell scripts in /home/kyle/workspace/agentic-framework",
+      "Bash(tailscale status:*) — read tailnet state on the agent host",
+      "Bash(tailscale ip:*) — read the host's tailnet address for .env derivation",
+      "Bash(hostname:*) — derive AGENT_HOST during install-script work"
+    ],
+    "soft_deny": [
+      "$defaults",
+      "Bash(tailscale down:*) — drops the tailnet link that is the only remote path to the agent host",
+      "Bash(tailscale logout:*) — de-authenticates the host from the tailnet"
     ]
   }
 }
