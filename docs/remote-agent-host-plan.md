@@ -3,7 +3,7 @@
 Date: 12 Sep 2026. Target: one headless Ubuntu Server LTS box on a Tailscale tailnet, called `<host>` below, with a single
 login `<user>`; several macOS clients, each running WezTerm, reach it over the tailnet with a LAN fallback for SSH. The real
 names, addresses and login are parameters (`.env` or the system, see `lib/params.sh` and README "Parameters"); the repo
-carries none of them. `<lan-ip>` and `<lan-cidr>` stand for the host's LAN address and range. Windows and phone clients
+carries none of them. `<lan-ip>` stands for the host's LAN address. Windows and phone clients
 are deferred; the design does not block them.
 
 Each phase below has four parts: what to set up on <host>, what to set up on the Mac, how to test <host> on its own, how to test the Mac on its own. A final joint checkpoint closes the phase. This document explains the design and the per-phase tests; the ordered from-nothing procedure, including the steps before phase 1 (OS install, Tailscale join, key provisioning), is the README.
@@ -18,16 +18,16 @@ Decided:
 
 Assumed (correct me if wrong):
 
-- Tailnet-only access. Nothing exposed to the internet. The LAN (<lan-cidr>) is kept as a fallback path for SSH.
+- Access over the tailnet, with the LAN as a fallback path for SSH. The host runs no firewall of its own and sshd keeps the OS defaults; the router keeps it off the internet.
 - Repos live under `~/workspace/<repo>`. This repo (`agentic-framework`) holds all scripts, configs and docs from this plan.
 - Git hosting is GitHub.
 - Nothing connects into the Macs. The clipboard bridge is a push from the Mac (Cmd+V in WezTerm) over the same Mac → <host> SSH path; Remote Login on the Macs is not required.
-- <host> sshd accepts key or password for `<user>`. Password login exists so a device without a provisioned key can still get in; ufw limits who can even reach port 22 (tailnet and home LAN only), and `AllowUsers` plus `PermitEmptyPasswords no` limit what a guess can hit. Keys stay the default for the Macs and for everything non-interactive (mosh, the clipboard bridge, `ssh <host> agent`).
+- <host> sshd is whatever the Ubuntu installer left (password login on unless a key was imported at install). Keys are the default for the Macs and for everything non-interactive (mosh, the clipboard bridge, `ssh <host> agent`); `install-mac.sh` installs the Mac key over the password path once.
 
 Verified on the reference host while planning:
 
 - tmux 3.6, Docker, Tailscale, OpenSSH 10.2 present and active. ufw installed but state unknown (needs sudo). mosh, mise, gh, Node, xclip absent.
-- sshd: `KbdInteractiveAuthentication no` in the main config; `/etc/ssh/sshd_config.d/50-cloud-init.conf` exists and is root-only. Phase 1 sets `PasswordAuthentication yes` explicitly in `10-hardening.conf` so the cloud-init value no longer matters.
+- sshd: `KbdInteractiveAuthentication no` in the main config; `/etc/ssh/sshd_config.d/50-cloud-init.conf` exists and is root-only. Nothing in this repo changes sshd.
 - Claude Code 2.1.269 has `--print`, `--output-format stream-json`, `--permission-mode`, `--max-budget-usd`, `--worktree`, `--tmux=classic`, `--bg` / `claude agents|attach|logs`, `--remote-control`.
 - Claude Code on Linux reads clipboard images by running `xclip -selection clipboard -t TARGETS -o`, then `xclip -selection clipboard -t image/png -o`, with `wl-paste` as fallback. Text via `xclip -selection clipboard -t text/plain -o`. Copy-out uses `xclip`/`xsel`/`wl-copy` or OSC 52. The clipboard bridge (phase 4) hooks exactly these calls.
 
@@ -36,10 +36,10 @@ Verified on the reference host while planning:
 ```
   Macs (WezTerm)
         │  ssh / mosh  →        image push on Cmd+V  →
-        │        Tailscale only (100.64.0.0/10), LAN fallback for ssh
+        │        Tailscale (100.64.0.0/10), LAN fallback for ssh
   ┌─────▼──────────────────────────────────────────────┐
   │ <host>                                             │
-  │  sshd key or password (<user> only) + mosh-server │
+  │  sshd as installed by Ubuntu + mosh-server        │
   │  tmux: one session per repo, "agents" for jobs     │
   │  harnesses: claude, opencode, omp                  │
   │  clipboard: Mac push → clip-put spool → xclip shim │
@@ -54,40 +54,15 @@ Verified on the reference host while planning:
 Text copy: remote → Mac via OSC 52 (tmux passes it through, WezTerm writes the Mac clipboard). Mac → remote via ordinary paste.
 Image paste: Cmd+V in WezTerm runs `clip-push --if-image` on the Mac, which pipes the image into `clip-put` on <host>; WezTerm then sends Ctrl+V, Claude Code calls `xclip` and the shim serves that file.
 
-## 2. Phase 1: access and hardening
+## 2. Phase 1: access
 
 ### On the host
 
-1. Confirm your key already works from the Mac before changing anything (`ssh <host> true` from the Mac). Keep that session open while editing sshd.
-2. Confirm `<user>` has a real password: `passwd -S <user>` must show `P` in the second field. If it shows `NP` or `L`, run `sudo passwd <user>` first. Phase 1 of `install-host.sh` refuses to continue otherwise: with no password set, `PermitEmptyPasswords no` would silently refuse every password attempt and the fallback path would not exist.
-3. Create `/etc/ssh/sshd_config.d/10-hardening.conf` (kept in this repo at `config/sshd/10-hardening.conf`):
-   ```
-   PasswordAuthentication yes
-   PermitEmptyPasswords no
-   MaxAuthTries 4
-   KbdInteractiveAuthentication no
-   PermitRootLogin no
-   AllowUsers <user>
-   ClientAliveInterval 30
-   ClientAliveCountMax 4
-   X11Forwarding no
-   ```
-   Files in `sshd_config.d` are read in lexical order and the first value wins, so `10-` beats `50-cloud-init.conf`. Check that file anyway: `sudo cat /etc/ssh/sshd_config.d/50-cloud-init.conf`.
-   Password login is deliberate (see section 0). The firewall in the next step is what keeps it off the internet; do not enable password login without it.
-4. `sudo sshd -t && sudo systemctl reload ssh`.
-5. Firewall (`config/ufw.sh`):
-   ```
-   sudo ufw default deny incoming
-   sudo ufw default allow outgoing
-   sudo ufw allow in on tailscale0
-   sudo ufw allow from <lan-cidr> to any port 22 proto tcp
-   sudo ufw enable
-   ```
-   Docker publishes ports around ufw; do not rely on ufw for containers.
-6. `sudo apt install tmux mosh gh zsh git curl file jq unattended-upgrades` (mosh UDP 60000–61000 is covered by the tailscale0 allow rule; tmux is not on a stock Ubuntu Server image, so phase 1 of `install-host.sh` owns it); `chsh -s /usr/bin/zsh <user>`. Shell config is phase 2.
-7. `loginctl enable-linger <user>` so user systemd units and tmux survive logout.
-8. `sudo tailscale set --auto-update` and confirm unattended-upgrades is enabled: `systemctl status unattended-upgrades`.
-9. Optional: `sudo tailscale up --ssh` for identity-based SSH via Tailscale ACLs. Keep OpenSSH as well; mosh and the clipboard push use plain sshd.
+1. Confirm your key already works from the Mac (`ssh <host> true`), or that password login is on (`sudo sshd -T | grep -i ^passwordauthentication`) so `install-mac.sh` can put the key there. sshd and the firewall are left as the installer set them; nothing in this repo edits `/etc/ssh` or runs ufw.
+2. `sudo apt install tmux mosh gh zsh git curl file jq unattended-upgrades` (tmux is not on a stock Ubuntu Server image, so phase 1 of `install-host.sh` owns it); `chsh -s /usr/bin/zsh <user>`. Shell config is phase 2.
+3. `loginctl enable-linger <user>` so user systemd units and tmux survive logout.
+4. `sudo tailscale set --auto-update` and confirm unattended-upgrades is enabled: `systemctl status unattended-upgrades`.
+5. Optional: `sudo tailscale up --ssh` for identity-based SSH via Tailscale ACLs. Keep OpenSSH as well; mosh and the clipboard push use plain sshd.
 
 ### On the Mac
 
@@ -107,13 +82,9 @@ Image paste: Cmd+V in WezTerm runs `clip-push --if-image` on the Mac, which pipe
 ### Test the host alone
 
 ```
-sudo sshd -T | grep -iE '^(passwordauthentication|permitemptypasswords|maxauthtries|permitrootlogin|allowusers|kbdinteractive)'
-sudo ufw status verbose
 sudo ss -lntup | grep -E ':22 |mosh'    # sshd listening; mosh-server appears only when a client connects
 loginctl show-user <user> | grep Linger    # Linger=yes
-passwd -S <user>                           # field 2 is P
-ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no <user>@localhost true   # expect: password prompt, then success
-ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no root@localhost true   # expect: Permission denied even with the right password (PermitRootLogin no)
+getent passwd <user> | cut -d: -f7         # /usr/bin/zsh
 ```
 
 ### Test the Mac alone
@@ -379,7 +350,7 @@ A sandboxed run from the Mac completes with changes only inside the mounted work
 README.md       which doc to read, what the three scripts do
 AGENTS.md       status table, layout, install contract and boundaries for agents editing this repo
 bin/            agent, agent-worker, xclip (shim), clip-put, clip-push-mac.sh.in (template)
-config/         tmux.conf, zshenv, zshrc, sshd/10-hardening.conf.in, ufw.sh, ssh_config.mac.in, wezterm-agent-host.lua.in,
+config/         tmux.conf, zshenv, zshrc, ssh_config.mac.in, wezterm-agent-host.lua.in,
                 claude-settings.json, statusline-command.sh, bashrc.d/{agents-env,mise,tmux-autoattach}.sh
 lib/            params.sh: .env loading, validation, derivation on the host, template rendering
 tests/          params-test.sh (library, templates, install-mac.sh dry run, literal scan)
@@ -387,7 +358,7 @@ systemd/        agent@.service, agent-worker.service, agent-<job>.timer template
 docker/         Dockerfile.agent-sandbox
 docs/           this plan,
                 operations runbook for phase 5 (attach/steer/kill/clean, to be written)
-.env.example    host parameters (AGENT_HOST, address, login, LAN address and range); copied to .env, gitignored
+.env.example    host parameters (AGENT_HOST, address, login, LAN address); copied to .env, gitignored
 secrets.env.example  secret variable names only
 install-host.sh  idempotent: derives the parameters and writes .env; phase 1 via sudo, one command at a time and only where the host differs; symlinks configs, installs bin/, toolchains, harnesses
 install-mac.sh  idempotent, no sudo: reads .env (or asks), brew installs, rendered clip-push, ssh config block, WezTerm include

@@ -1,9 +1,8 @@
 #!/bin/sh
-# systemctl shim: logs the call; `reload ssh` really reloads the sshd running as PID 1 (-D); the unattended-upgrades
-# unit is reported enabled and active so install-host.sh takes its "ok" path.
+# systemctl shim: logs the call; the unattended-upgrades unit is reported enabled and active so install-host.sh
+# takes its "ok" path.
 echo "systemctl $*" >> /var/log/e2e-shims.log
 case "$1 $2" in
-  "reload ssh")                    kill -HUP "$(cat /run/sshd.pid)" ;;
   "is-enabled unattended-upgrades") echo enabled ;;
   "is-active unattended-upgrades")  echo active ;;
 esac

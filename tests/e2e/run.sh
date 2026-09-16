@@ -3,7 +3,7 @@
 # with sudo) and "mac" (install-mac.sh as macuser, brew/osascript/pbpaste/pngpaste stubbed). The Mac script runs
 # first through the password path (SSH_ASKPASS answers for the human), then once more for idempotency; the host
 # script runs twice as well. Values are deliberately not the live ones (alias box, login alice), so a literal that
-# slipped past tests/params-test.sh fails here. What a container cannot do (systemd, ufw, tailscale) is shimmed
+# slipped past tests/params-test.sh fails here. What a container cannot do (systemd, tailscale) is shimmed
 # and logged; see tests/e2e/shims. The clipboard bridge is driven the way WezTerm drives it: the rendered module runs
 # under Lua 5.4 (tests/e2e/wezterm-paste.lua) and its Cmd+V decision calls the real clip-push, which pushes over ssh
 # to the real host; the shell then makes the xclip calls Claude Code makes after Ctrl+V and compares bytes. A second
@@ -56,20 +56,13 @@ mac ssh-keyscan -T 2 "$ALIAS" 2>/dev/null | grep -q ssh-ed25519 && ok "sshd on $
 say "host: ./install-host.sh --no-tools (first run, phase 1 through sudo)"
 run box ./install-host.sh --no-tools; out=$OUT
 check "host: exit 0" 0 "$RC"
-has "Parameters: host $ALIAS ($ALIAS), login $LOGIN, LAN $BOX_IP in $SUBNET" "$out" "host: derived alias, address, login, LAN address and range"
+has "Parameters: host $ALIAS ($ALIAS), login $LOGIN, LAN $BOX_IP" "$out" "host: derived alias, address, login and LAN address"
 has "wrote .env" "$out" "host: wrote .env on the first run"
-check "host: .env content" "AGENT_HOST=$ALIAS AGENT_HOST_ADDRESS=$ALIAS AGENT_HOST_USER=$LOGIN AGENT_HOST_LAN_IP=$BOX_IP AGENT_HOST_LAN_CIDR=$SUBNET" \
+check "host: .env content" "AGENT_HOST=$ALIAS AGENT_HOST_ADDRESS=$ALIAS AGENT_HOST_USER=$LOGIN AGENT_HOST_LAN_IP=$BOX_IP" \
   "$(box grep -v '^#' .env | tr '\n' ' ' | sed 's/ $//')"
-check "host: sshd drop-in allows the login" "AllowUsers $LOGIN" "$(root grep '^AllowUsers' /etc/ssh/sshd_config.d/10-hardening.conf)"
-root grep -q '@' /etc/ssh/sshd_config.d/10-hardening.conf && bad "host: no placeholder in the installed drop-in" || ok "host: no placeholder in the installed drop-in"
-check "host: sshd -T allowusers" "allowusers $LOGIN" "$(root sshd -T 2>/dev/null | grep '^allowusers')"
-check "host: sshd -T passwordauthentication" "passwordauthentication yes" "$(root sshd -T 2>/dev/null | grep '^passwordauthentication')"
-check "host: sshd -T permitrootlogin" "permitrootlogin no" "$(root sshd -T 2>/dev/null | grep '^permitrootlogin')"
+root test -e /etc/ssh/sshd_config.d/10-hardening.conf && bad "host: sshd left as installed" "a drop-in was written" || ok "host: sshd left as installed (no drop-in)"
 log=$(root cat /var/log/e2e-shims.log)
-has "systemctl reload ssh" "$log" "host: sshd reloaded after install"
-has "ufw allow from $SUBNET to any port 22 proto tcp comment LAN ssh fallback" "$log" "host: ufw LAN rule carries the derived range"
-has "ufw allow in on tailscale0" "$log" "host: ufw tailnet rule"
-has "ufw --force enable" "$log" "host: ufw enabled"
+case "$log" in *"systemctl reload ssh"*|*ufw*) bad "host: no sshd reload, no ufw" "$log";; *) ok "host: no sshd reload, no ufw";; esac
 has "loginctl enable-linger $LOGIN" "$log" "host: linger for the login"
 check "host: login shell is zsh" /usr/bin/zsh "$(root getent passwd "$LOGIN" | cut -d: -f7)"
 check "host: ~/.zshrc links into the repo" "$BOX_REPO/config/zshrc" "$(box readlink "/home/$LOGIN/.zshrc")"
@@ -199,12 +192,10 @@ before=$(root sh -c 'wc -l < /var/log/e2e-shims.log')
 run box ./install-host.sh --no-tools; out2=$OUT
 check "host: second run exit 0" 0 "$RC"
 has "ok   .env" "$out2" "host: second run keeps .env"
-has "ok   /etc/ssh/sshd_config.d/10-hardening.conf" "$out2" "host: second run leaves sshd alone"
-has "ok   ufw enabled" "$out2" "host: second run leaves ufw alone"
 has "ok   Linger=yes" "$out2" "host: second run leaves linger alone"
 has "ok   /usr/bin/zsh" "$out2" "host: second run leaves the shell alone"
 after=$(root sh -c 'wc -l < /var/log/e2e-shims.log')
-root sed -n "$((before + 1)),\$p" /var/log/e2e-shims.log | grep -qE 'reload|ufw|enable-linger' && bad "host: second run made no root changes" "$(root sed -n "$((before + 1)),\$p" /var/log/e2e-shims.log)" || ok "host: second run made no root changes ($((after - before)) read-only shim calls)"
+root sed -n "$((before + 1)),\$p" /var/log/e2e-shims.log | grep -qE 'reload|enable-linger' && bad "host: second run made no root changes" "$(root sed -n "$((before + 1)),\$p" /var/log/e2e-shims.log)" || ok "host: second run made no root changes ($((after - before)) read-only shim calls)"
 # .env from a Mac with a different login must be refused on the host, before anything runs.
 box sh -c "sed -i 's/^AGENT_HOST_USER=.*/AGENT_HOST_USER=someone/' .env"
 run box ./install-host.sh --no-tools --no-root

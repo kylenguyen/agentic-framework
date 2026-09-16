@@ -1,4 +1,4 @@
-# e2e "host": what install-host.sh expects of a fresh Ubuntu Server, minus systemd, ufw and tailscale, which a
+# e2e "host": what install-host.sh expects of a fresh Ubuntu Server, minus systemd and tailscale, which a
 # container cannot run; tests/e2e/shims/host stands in for them and logs every call to /var/log/e2e-shims.log.
 # The phase 1 apt packages are preinstalled so the run needs no network. Login and password come from run.sh.
 FROM ubuntu:24.04

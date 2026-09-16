@@ -12,7 +12,7 @@ ok()    { echo ok >> "$T/results"; printf 'ok   %s\n' "$1"; }
 bad()   { echo FAIL >> "$T/results"; printf 'FAIL %s\n     %s\n' "$1" "${2:-}"; }
 check() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "expected [$2] got [$3]"; fi; }   # check <name> <expected> <actual>
 # fresh: start a case with no parameters set and the library loaded. Run inside ( ) so cases do not leak.
-fresh() { unset AGENT_HOST AGENT_HOST_ADDRESS AGENT_HOST_USER AGENT_HOST_LAN_IP AGENT_HOST_LAN_CIDR; . "$REPO/lib/params.sh"; }
+fresh() { unset AGENT_HOST AGENT_HOST_ADDRESS AGENT_HOST_USER AGENT_HOST_LAN_IP; . "$REPO/lib/params.sh"; }
 # expect_fail <name> <cmd...>: the command must return non-zero and print something on stderr
 expect_fail() { local n=$1; shift; local err; if err=$("$@" 2>&1 >/dev/null); then bad "$n" "succeeded, expected failure"; else
   if [ -n "$err" ]; then ok "$n"; else bad "$n" "failed silently"; fi; fi; }
@@ -22,11 +22,11 @@ for f in lib/params.sh tests/params-test.sh; do bash -n "$REPO/$f" && ok "bash -
 
 echo "# params_load"
 ( fresh
-  printf 'AGENT_HOST=box\nAGENT_HOST_USER="alice"\n\n# c\nAGENT_HOST_LAN_CIDR=10.1.0.0/16\n' > "$T/env1"
+  printf 'AGENT_HOST=box\nAGENT_HOST_USER="alice"\n\n# c\nAGENT_HOST_ADDRESS=box.tail.ts.net\n' > "$T/env1"
   params_load "$T/env1" || bad "load env1" "returned $?"
   check "load: plain value" box "$AGENT_HOST"
   check "load: quoted value" alice "$AGENT_HOST_USER"
-  check "load: cidr" 10.1.0.0/16 "$AGENT_HOST_LAN_CIDR"
+  check "load: value after a comment" box.tail.ts.net "$AGENT_HOST_ADDRESS"
   check "load: unset stays empty" "" "${AGENT_HOST_LAN_IP:-}"
 )
 ( fresh; AGENT_HOST=pre; printf 'AGENT_HOST=file\n' > "$T/env2"; params_load "$T/env2"; check "load: environment beats file" pre "$AGENT_HOST" )
@@ -47,13 +47,6 @@ echo "# validators"
   params_is_addr box.tail.ts.net && ok "addr: fqdn" || bad "addr: fqdn"
   params_is_ipv4 192.168.1.2 && ok "ipv4: ok" || bad "ipv4: ok"
   params_is_ipv4 256.1.1.1 && bad "ipv4: rejects 256" || ok "ipv4: rejects 256"
-  params_is_cidr 192.168.1.0/24 && ok "cidr: ok" || bad "cidr: ok"
-  params_is_cidr 192.168.1.0/33 && bad "cidr: rejects /33" || ok "cidr: rejects /33"
-  params_is_cidr 192.168.1.0 && bad "cidr: rejects no prefix" || ok "cidr: rejects no prefix"
-  params_is_private_cidr 10.0.0.0/8 && ok "private: 10/8" || bad "private: 10/8"
-  params_is_private_cidr 172.31.0.0/16 && ok "private: 172.31" || bad "private: 172.31"
-  params_is_private_cidr 172.32.0.0/16 && bad "private: rejects 172.32" || ok "private: rejects 172.32"
-  params_is_private_cidr 8.8.8.0/24 && bad "private: rejects 8.8.8.0" || ok "private: rejects 8.8.8.0"
   AGENT_HOST_USER="two words"; expect_fail "validate: names the bad parameter" params_validate
   AGENT_HOST_USER=alice; AGENT_HOST=box; params_validate && ok "validate: good set" || bad "validate: good set"
   AGENT_HOST_USER=; expect_fail "require: unset parameter" params_require AGENT_HOST AGENT_HOST_USER
@@ -61,14 +54,14 @@ echo "# validators"
 )
 
 echo "# params_render"
-( fresh; AGENT_HOST=box; AGENT_HOST_ADDRESS=box.tail.ts.net; AGENT_HOST_USER=alice; AGENT_HOST_LAN_IP=10.0.0.5; AGENT_HOST_LAN_CIDR=10.0.0.0/24
-  printf 'Host @AGENT_HOST@ @AGENT_HOST@-clip\n  HostName @AGENT_HOST_ADDRESS@\n  User @AGENT_HOST_USER@\n  ControlPath ~/.ssh/cm-%%r@%%h:%%p\n  # @AGENT_HOST_LAN_IP@ @AGENT_HOST_LAN_CIDR@\n' > "$T/t.in"
+( fresh; AGENT_HOST=box; AGENT_HOST_ADDRESS=box.tail.ts.net; AGENT_HOST_USER=alice; AGENT_HOST_LAN_IP=10.0.0.5
+  printf 'Host @AGENT_HOST@ @AGENT_HOST@-clip\n  HostName @AGENT_HOST_ADDRESS@\n  User @AGENT_HOST_USER@\n  ControlPath ~/.ssh/cm-%%r@%%h:%%p\n  # @AGENT_HOST_LAN_IP@\n' > "$T/t.in"
   params_render "$T/t.in" "$T/t.out" || bad "render: returns 0" "$?"
   check "render: repeated placeholder" "Host box box-clip" "$(sed -n 1p "$T/t.out")"
   check "render: address" "  HostName box.tail.ts.net" "$(sed -n 2p "$T/t.out")"
   check "render: user" "  User alice" "$(sed -n 3p "$T/t.out")"
   check "render: ssh tokens untouched" '  ControlPath ~/.ssh/cm-%r@%h:%p' "$(sed -n 4p "$T/t.out")"
-  check "render: ip and cidr" "  # 10.0.0.5 10.0.0.0/24" "$(sed -n 5p "$T/t.out")"
+  check "render: lan ip" "  # 10.0.0.5" "$(sed -n 5p "$T/t.out")"
   check "render: to stdout" "Host box box-clip" "$(params_render "$T/t.in" - | head -1)"
   printf 'x @AGENT_HOST_NOPE@\n' > "$T/u.in"; expect_fail "render: unknown placeholder fails" params_render "$T/u.in" "$T/u.out"
   [ -e "$T/u.out" ] && bad "render: nothing written on failure" || ok "render: nothing written on failure"
@@ -83,7 +76,6 @@ echo "# params_derive_host"
   check "derive: alias is hostname -s" "$(hostname -s)" "$AGENT_HOST"
   [ -n "$AGENT_HOST_ADDRESS" ] && ok "derive: address set ($AGENT_HOST_ADDRESS)" || bad "derive: address set"
   if command -v ip >/dev/null && ip -o -4 route show default 2>/dev/null | grep -q .; then
-    params_is_cidr "$AGENT_HOST_LAN_CIDR" && ok "derive: lan cidr ($AGENT_HOST_LAN_CIDR)" || bad "derive: lan cidr" "$AGENT_HOST_LAN_CIDR"
     dev=$(ip -o -4 route show default | awk '{for (i=1;i<NF;i++) if ($i=="dev") {print $(i+1); exit}}')
     ip -o -4 addr show dev "$dev" | grep -q " inet $AGENT_HOST_LAN_IP/" && ok "derive: lan ip is on the default-route interface ($AGENT_HOST_LAN_IP)" \
       || bad "derive: lan ip" "$AGENT_HOST_LAN_IP not on $dev"
@@ -91,34 +83,11 @@ echo "# params_derive_host"
     echo "skip derive: lan route (no ip route here)"
   fi
   params_env_text > "$T/env.txt"
-  check "env_text: five parameters" 5 "$(grep -c '^AGENT_HOST' "$T/env.txt")"
+  check "env_text: four parameters" 4 "$(grep -c '^AGENT_HOST' "$T/env.txt")"
   ( fresh; params_load "$T/env.txt" && params_validate && ok "env_text: loads back cleanly" || bad "env_text: loads back" )
 )
-( fresh; AGENT_HOST_LAN_CIDR=10.9.0.0/16; AGENT_HOST=custom; params_derive_host >/dev/null 2>&1
-  check "derive: .env cidr override wins" 10.9.0.0/16 "$AGENT_HOST_LAN_CIDR"; check "derive: .env alias wins" custom "$AGENT_HOST" )
-
-echo "# host templates: sshd, ufw"
-( fresh; AGENT_HOST_USER=alice
-  params_render "$REPO/config/sshd/10-hardening.conf.in" "$T/sshd" || bad "sshd: renders" "$?"
-  check "sshd: exactly one AllowUsers line" 1 "$(grep -c '^AllowUsers ' "$T/sshd")"
-  check "sshd: AllowUsers is the given login" "AllowUsers alice" "$(grep '^AllowUsers ' "$T/sshd")"
-  grep -q '@' "$T/sshd" && bad "sshd: no @ left (sshd reads user@host in AllowUsers)" || ok "sshd: no @ left in the rendered file"
-  installed=/etc/ssh/sshd_config.d/10-hardening.conf
-  if [ -r "$installed" ]; then   # on a configured host the template must reproduce what is installed, directives only
-    ( fresh; params_derive_host >/dev/null 2>&1; params_render "$REPO/config/sshd/10-hardening.conf.in" "$T/sshd2"
-      d() { grep -v '^[[:space:]]*#' "$1" | sed '/^[[:space:]]*$/d'; }
-      check "sshd: rendered for $(id -un) matches the installed drop-in" "$(d "$installed")" "$(d "$T/sshd2")" )
-  else echo "skip sshd: no installed drop-in to compare with"; fi
-)
-( fresh
-  out=$(bash "$REPO/config/ufw.sh" 2>&1); rc=$?
-  check "ufw: no argument exits 2 before touching ufw" 2 "$rc"; case "$out" in usage:*) ok "ufw: prints usage";; *) bad "ufw: prints usage" "$out";; esac
-  out=$(bash "$REPO/config/ufw.sh" --dry-run 10.0.0.0 2>&1); check "ufw: rejects a bare address" 2 "$?"
-  out=$(bash "$REPO/config/ufw.sh" --dry-run 10.1.2.0/24 2>&1) || bad "ufw: dry run exits 0" "$out"
-  check "ufw: dry run prints six commands" 6 "$(printf '%s\n' "$out" | grep -c '^ufw ')"
-  check "ufw: LAN rule carries the given range" 1 "$(printf '%s\n' "$out" | grep -c "^ufw allow from 10.1.2.0/24 to any port 22 proto tcp")"
-  printf '%s\n' "$out" | grep -q '^ufw --force enable$' && ok "ufw: enables" || bad "ufw: enables" "$out"
-)
+( fresh; AGENT_HOST_LAN_IP=10.9.0.9; AGENT_HOST=custom; params_derive_host >/dev/null 2>&1
+  check "derive: .env lan ip override wins" 10.9.0.9 "$AGENT_HOST_LAN_IP"; check "derive: .env alias wins" custom "$AGENT_HOST" )
 
 echo "# Mac templates: ssh config, clip-push, install-mac.sh entry"
 ( fresh; AGENT_HOST=box; AGENT_HOST_ADDRESS=box.tail.ts.net; AGENT_HOST_USER=alice; AGENT_HOST_LAN_IP=10.0.0.5
@@ -203,7 +172,7 @@ echo "# WezTerm module and a Linux dry run of install-mac.sh"
 
 echo "# no deployment literals anywhere in the repo"
 ( # The repo describes a framework, not one deployment: no file, comment or doc may name a real host, login, LAN or
-  # tailnet. Placeholders in the docs are <host>, <user>, <lan-ip>, <lan-cidr>; the tests use box, alice and 10.x.
+  # tailnet. Placeholders in the docs are <host>, <user>, <lan-ip>; the tests use box, alice and 10.x.
   # Add a word here when a deployment value slips in and gets fixed, so it cannot come back. This file is skipped
   # because it carries the list; .env is the one place the real values belong.
   cd "$REPO" || exit 1

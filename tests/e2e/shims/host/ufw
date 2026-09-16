@@ -1,9 +1,0 @@
-#!/bin/sh
-# ufw shim: logs the rule instead of programming iptables; `enable` writes the ufw.conf line install-host.sh reads
-# to decide the firewall is already on, so the second run skips the phase like a real host does.
-echo "ufw $*" >> /var/log/e2e-shims.log
-case "$*" in
-  "--force enable") mkdir -p /etc/ufw && printf 'ENABLED=yes\n' > /etc/ufw/ufw.conf ;;
-  "status verbose") echo "Status: active (e2e shim)" ;;
-esac
-exit 0

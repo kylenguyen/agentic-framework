@@ -8,11 +8,10 @@
 #   AGENT_HOST_ADDRESS   what the Mac connects to (MagicDNS name, FQDN, IP)  host: Tailscale DNS name, else AGENT_HOST
 #   AGENT_HOST_USER      login on the host                                 host: always `id -un`; .env must agree
 #   AGENT_HOST_LAN_IP    host address on the LAN; empty drops <alias>-lan   host: `src` of the default route
-#   AGENT_HOST_LAN_CIDR  LAN range ufw lets ssh in from; host only          host: connected route of that interface
 # Templates carry the same names as @AGENT_HOST@ style placeholders; params_render fills them in and fails on any
-# placeholder left over, so a half-rendered file (an sshd AllowUsers line, say) can never be installed.
+# placeholder left over, so a half-rendered file can never be installed.
 
-PARAMS_NAMES="AGENT_HOST AGENT_HOST_ADDRESS AGENT_HOST_USER AGENT_HOST_LAN_IP AGENT_HOST_LAN_CIDR"
+PARAMS_NAMES="AGENT_HOST AGENT_HOST_ADDRESS AGENT_HOST_USER AGENT_HOST_LAN_IP"
 
 params_fail() { printf '\033[1;31m!!  %s\033[0m\n' "$*" >&2; return 1; }
 
@@ -45,18 +44,6 @@ params_is_ipv4()  {
   [[ $1 =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]] || return 1
   for o in "${BASH_REMATCH[@]:1:4}"; do [ "$o" -le 255 ] || return 1; done
 }
-params_is_cidr()  {                                                            # a later =~ resets BASH_REMATCH, so copy first
-  local net bits
-  [[ $1 =~ ^(.*)/([0-9]{1,2})$ ]] || return 1
-  net=${BASH_REMATCH[1]}; bits=${BASH_REMATCH[2]}
-  params_is_ipv4 "$net" && [ "$bits" -le 32 ]
-}
-params_is_private_cidr() { # RFC 1918 only; anything else must be set explicitly in .env
-  params_is_cidr "$1" || return 1
-  case "$1" in 10.*) return 0 ;; 192.168.*) return 0 ;;
-    172.1[6-9].*|172.2[0-9].*|172.3[01].*) return 0 ;; esac
-  return 1
-}
 
 params_validate() {
   local ok=1
@@ -64,7 +51,6 @@ params_validate() {
   if [ -n "${AGENT_HOST_ADDRESS:-}" ] && ! params_is_addr "$AGENT_HOST_ADDRESS"; then params_fail "AGENT_HOST_ADDRESS=$AGENT_HOST_ADDRESS: hostname, FQDN or IP"; ok=0; fi
   if [ -n "${AGENT_HOST_USER:-}" ]    && ! params_is_user "$AGENT_HOST_USER";    then params_fail "AGENT_HOST_USER=$AGENT_HOST_USER: one login name, no spaces or @"; ok=0; fi
   if [ -n "${AGENT_HOST_LAN_IP:-}" ]  && ! params_is_ipv4 "$AGENT_HOST_LAN_IP";  then params_fail "AGENT_HOST_LAN_IP=$AGENT_HOST_LAN_IP: dotted IPv4"; ok=0; fi
-  if [ -n "${AGENT_HOST_LAN_CIDR:-}" ] && ! params_is_cidr "$AGENT_HOST_LAN_CIDR"; then params_fail "AGENT_HOST_LAN_CIDR=$AGENT_HOST_LAN_CIDR: IPv4/prefix"; ok=0; fi
   [ "$ok" = 1 ]
 }
 
@@ -77,9 +63,9 @@ params_require() {
 }
 
 # params_derive_host: fill what the system knows (Linux host only). Runs after params_load, so .env overrides
-# win, except the login: the script configures the account it runs as, and sshd AllowUsers must name that one.
+# win, except the login: the script configures the account it runs as.
 params_derive_host() {
-  local me dev route
+  local me
   me=$(id -un)
   if [ -n "${AGENT_HOST_USER:-}" ] && [ "$AGENT_HOST_USER" != "$me" ]; then
     params_fail "AGENT_HOST_USER=$AGENT_HOST_USER but this script runs as $me; fix .env or run as $AGENT_HOST_USER"; return 1
@@ -90,11 +76,7 @@ params_derive_host() {
     AGENT_HOST_ADDRESS=$(params_tailscale_name || true)
     : "${AGENT_HOST_ADDRESS:=$AGENT_HOST}"
   fi
-  if [ -z "${AGENT_HOST_LAN_IP:-}" ] || [ -z "${AGENT_HOST_LAN_CIDR:-}" ]; then
-    route=$(params_lan_route || true)              # "cidr ip" of the default-route interface, or empty
-    [ -n "${AGENT_HOST_LAN_CIDR:-}" ] || AGENT_HOST_LAN_CIDR=${route%% *}
-    [ -n "${AGENT_HOST_LAN_IP:-}" ]   || AGENT_HOST_LAN_IP=${route##* }
-  fi
+  [ -n "${AGENT_HOST_LAN_IP:-}" ] || AGENT_HOST_LAN_IP=$(params_lan_ip || true)
   params_validate
 }
 
@@ -107,18 +89,17 @@ params_tailscale_name() {
   printf '%s\n' "$n"
 }
 
-# params_lan_route: "<network/prefix> <address>" for the interface that carries the default route, from the kernel's
-# connected route (`ip route` on Linux), so no CIDR arithmetic is needed. Returns 1 when there is none.
-params_lan_route() {
+# params_lan_ip: the host's address on the interface that carries the default route, from the kernel's connected
+# route (`ip route` on Linux). Returns 1 when there is none.
+params_lan_ip() {
   command -v ip >/dev/null || return 1
-  local dev line cidr src
+  local dev line src
   dev=$(ip -o -4 route show default 2>/dev/null | awk '{for (i=1;i<NF;i++) if ($i=="dev") {print $(i+1); exit}}')
   [ -n "$dev" ] || return 1
   line=$(ip -o -4 route show dev "$dev" proto kernel scope link 2>/dev/null | head -1)
-  cidr=${line%% *}
   src=$(printf '%s\n' "$line" | awk '{for (i=1;i<NF;i++) if ($i=="src") {print $(i+1); exit}}')
-  params_is_cidr "$cidr" && params_is_ipv4 "$src" || return 1
-  printf '%s %s\n' "$cidr" "$src"
+  params_is_ipv4 "$src" || return 1
+  printf '%s\n' "$src"
 }
 
 # params_render <template> <out>: substitute every @AGENT_...@ placeholder; out may be - for stdout. Fails, and
@@ -141,9 +122,9 @@ params_render() {
 # params_env_text [origin]: the .env file body for the current values. What install-host.sh prints for the Macs.
 params_env_text() {
   printf '# Host parameters (names and addresses, no secrets). Generated by %s on %s, %s.\n' "${1:-install-host.sh}" "$(hostname -s)" "$(date +%Y-%m-%d)"
-  printf '# Copy to .env in the agentic-framework checkout on each Mac. AGENT_HOST_LAN_CIDR is used on the host only.\n'
-  printf 'AGENT_HOST=%s\nAGENT_HOST_ADDRESS=%s\nAGENT_HOST_USER=%s\nAGENT_HOST_LAN_IP=%s\nAGENT_HOST_LAN_CIDR=%s\n' \
-    "${AGENT_HOST:-}" "${AGENT_HOST_ADDRESS:-}" "${AGENT_HOST_USER:-}" "${AGENT_HOST_LAN_IP:-}" "${AGENT_HOST_LAN_CIDR:-}"
+  printf '# Copy to .env in the agentic-framework checkout on each Mac.\n'
+  printf 'AGENT_HOST=%s\nAGENT_HOST_ADDRESS=%s\nAGENT_HOST_USER=%s\nAGENT_HOST_LAN_IP=%s\n' \
+    "${AGENT_HOST:-}" "${AGENT_HOST_ADDRESS:-}" "${AGENT_HOST_USER:-}" "${AGENT_HOST_LAN_IP:-}"
 }
 
 # params_ssh_config_text: the Mac's ~/.ssh/config block, rendered from config/ssh_config.mac.in without its
