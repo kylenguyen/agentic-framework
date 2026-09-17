@@ -85,15 +85,25 @@ The chosen session's worktree goes with it, with one more question on the termin
 `plain shell here` exits 0 and the login shell continues outside tmux; `log out` exits 3 and
 the login fragment logs out. Inside tmux, prefix `g` opens the same picker in `display-popup -E` with `--switch`,
 which creates the target view and `switch-client`s to it; the abandoned view is destroyed by `destroy-unattached`.
+
+**Landing in what you made** (fixed 17 Sep 2026). Every row that leads to a session ends the picker's job, and the
+two mechanisms are not a choice the menu makes: `new-session -t` refuses to nest, so a terminal already inside tmux
+can only have its client switched, and one outside tmux can only attach. `enter_session` picks by `$TMUX`, which is
+also what puts `pick` in switch mode when `--switch` was not passed — plain `agent pick` in a pane used to create a
+session, fail the attach, swallow the error and draw the menu again. In switch mode the loop then returns instead of
+going round, so the popup closes over the session it moved to rather than redrawing its list on top of it. `new
+shell` asks for a name first (empty is `shell-scratch`), on the same `--print-query` prompt as the slug, now with a
+header so an empty `0/0` list reads as a question. The session is created detached either way and entered
+afterwards, so a `new session` chosen in the popup starts the harness in the client behind it and not in the popup,
+where it would die with the popup. Nothing in a picker flow may `exit`: that process is the login shell, so a flow
+that cannot finish sets a note, returns non-zero and the next menu shows the note as its header.
+A slug whose `agent/<slug>` branch exists but whose worktree was removed by an earlier `agent kill` is checked out
+again rather than passed to `worktree add -b`, which used to abort the flow and, through `exit`, the login itself.
 `log out` in that popup (fixed 17 Sep 2026, after the first version where it only closed the popup) cannot exit the
 login shell itself, because that shell is in another process tree: the popup sets `AGENT_LOGOUT_<client tty>` in the
 tmux server environment and detaches the client, and the login shell's picker loop — which the detach returns from
 its foreground attach — claims that mark on its way round and exits 3, so the connection closes. A picker claims a
 mark once and removes it; a fresh login on that tty drops any mark left by a popup nobody was there to hear.
-`new session` and `new shell` go the same way under `--switch` (fixed 17 Sep 2026, after the first version
-attached them instead): the session is created detached, the client behind the popup switches to it, and the
-picker returns so the popup closes. Attaching there would have started the harness inside the popup, where it
-would die with it.
 
 **Landing.** `config/bashrc.d/tmux-autoattach.sh` keeps its guard (`$- == *i*`, `SSH_TTY` set, `TMUX` empty,
 `NO_TMUX` empty, command present) and runs `agent pick` instead of `exec tmux new -As main`. Non-interactive
@@ -114,10 +124,10 @@ set, in which case every tmux call gets `-L "$AGENT_TMUX_SOCKET"` (the tests use
 
 | Command | Behaviour | Exit |
 |---|---|---|
-| `agent new <repo> [--harness claude\|omp\|opencode\|shell] [--slug <slug>] [--name <name>] [--no-attach]` | validate repo dir; with `--slug`, `git worktree add ~/workspace/<repo>.wt/<slug> -b agent/<slug>` from the main checkout (reuse if the worktree exists); create base session as above; attach unless `--no-attach` | 0; 2 usage or unknown repo/harness; 1 tmux/git failure |
+| `agent new <repo> [--harness claude\|omp\|opencode\|shell] [--slug <slug>] [--name <name>] [--no-attach]` | validate repo dir; with `--slug`, `git worktree add ~/workspace/<repo>.wt/<slug> -b agent/<slug>` from the main checkout (reuse the worktree if it exists, check out `agent/<slug>` if only the branch does); create base session as above; enter it unless `--no-attach` (switch inside tmux, attach outside) | 0; 2 usage or unknown repo/harness; 1 tmux/git failure |
 | `agent ls [--porcelain]` | one line per base session (grouped or not, excluding names matching `*@[0-9]*` that are in a group). Human: aligned columns. Porcelain: tab-separated `name harness repo branch cwd state created_epoch devices`, `devices` comma-separated `@device` values of the group's attached views, `-` if none; harness `shell` and repo `-` for sessions without `@harness` | 0; 0 with no output when no server |
 | `agent attach <name>` | create a view and attach; refuse if `<name>` is itself a view | 0 on detach; 2 unknown name |
-| `agent pick [--switch]` | the fzf loop; `--switch` only inside tmux | 0 plain shell / 3 log out / 2 no fzf |
+| `agent pick [--switch]` | the fzf loop; `--switch` only inside tmux, and implied by `$TMUX` | 0 plain shell / 3 log out / 2 no fzf |
 | `agent kill <name> [--force] [--keep-worktree]` | `kill-session` on every view of the group, then on the base id; a worktree under `~/workspace/<repo>.wt/` goes with it, the `agent/<slug>` branch never does. A dirty worktree is asked about on `/dev/tty` first and kept on anything but yes, which includes having no terminal to ask; `--force` removes it without asking, `--keep-worktree` keeps it. A kept worktree prints the `git worktree remove` command | 0; 2 unknown |
 | `agent switch` | alias for `pick --switch` | as pick |
 

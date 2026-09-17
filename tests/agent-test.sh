@@ -218,13 +218,46 @@ if [ "$HAVE_PTY" = 1 ]; then
   wait "$kill_pid" 2>/dev/null || true
 fi
 
+echo "# naming: what the picker can hand to tmux"
+"$AGENT" new demo --harness shell --name 'my notes' --no-attach >/dev/null
+check "name: whitespace becomes _, so the row's first word is the whole name" "my_notes" \
+  "$("$AGENT" ls --porcelain | awk -F'\t' '$1=="my_notes"{print $1}')"
+"$AGENT" kill my_notes >/dev/null 2>&1
+"$AGENT" new demo --harness shell --name 'a.b:c|d,e' --no-attach >/dev/null
+check "name: the tmux and field separators go too" "a_b_c_d_e" \
+  "$("$AGENT" ls --porcelain | awk -F'\t' '$1=="a_b_c_d_e"{print $1}')"
+"$AGENT" kill 'a_b_c_d_e' >/dev/null 2>&1
+
+echo "# new --slug: a branch that outlived its worktree"
+# `agent kill` takes the worktree directory and keeps the branch, so the second `new --slug reuse` meets an
+# agent/reuse that already exists. It used to die there, and dying inside the picker ends the login shell.
+"$AGENT" new demo --slug reuse --name wt1 --no-attach >/dev/null
+check "new --slug: the worktree is made" ok "$([ -d "$HOME/workspace/demo.wt/reuse" ] && echo ok)"
+check "new --slug: on the agent/ branch" "agent/reuse" "$(git -C "$HOME/workspace/demo.wt/reuse" rev-parse --abbrev-ref HEAD)"
+"$AGENT" kill wt1 >/dev/null 2>&1
+check "kill: the worktree directory is gone" "" "$([ -d "$HOME/workspace/demo.wt/reuse" ] && echo still-there)"
+check "kill: the branch is kept" ok "$(git -C "$HOME/workspace/demo" rev-parse --verify -q refs/heads/agent/reuse >/dev/null && echo ok)"
+out=$("$AGENT" new demo --slug reuse --name wt2 --no-attach 2>&1)
+check "new --slug: the same slug again succeeds on the kept branch" 0 "$?"
+has "reusing branch agent/reuse" "$out" "new --slug: and says it is reusing the branch"
+check "new --slug: the session is on that branch" "agent/reuse" "$("$AGENT" ls --porcelain | awk -F'\t' '$1=="wt2"{print $4}')"
+"$AGENT" kill wt2 >/dev/null 2>&1
+
 echo "# pick"
 if [ "$HAVE_FZF" = 0 ]; then
   skip "pick" "fzf is not installed (install-host.sh phase 1 installs it)"
 else
-  check "pick: log out exits 3" 3 "$(AGENT_PICK_FILTER='log out' "$AGENT" pick >/dev/null 2>&1; echo $?)"
-  check "pick: plain shell here exits 0" 0 "$(AGENT_PICK_FILTER='plain shell here' "$AGENT" pick >/dev/null 2>&1; echo $?)"
+  # env -u TMUX on every one of these: they are the *login* picker, and $TMUX is what tells the picker it has
+  # a client to switch instead of a client to attach. Left in, the developer's own tmux would change the
+  # answers (log out would mark and detach rather than exit 3), which is right for a pane and wrong here.
+  check "pick: log out exits 3" 3 "$(env -u TMUX AGENT_PICK_FILTER='log out' "$AGENT" pick >/dev/null 2>&1; echo $?)"
+  check "pick: plain shell here exits 0" 0 "$(env -u TMUX AGENT_PICK_FILTER='plain shell here' "$AGENT" pick >/dev/null 2>&1; echo $?)"
   check "pick: --switch outside tmux exits 2" 2 "$(env -u TMUX "$AGENT" pick --switch >/dev/null 2>&1; echo $?)"
+  # A flow that cannot finish returns to the menu. It must never exit: this process is the login shell.
+  before=$(names)
+  check "pick: a repo that matches nothing leaves the picker alive, exit 0" 0 \
+    "$(env -u TMUX AGENT_PICK_FILTER='new session;nosuchrepo' "$AGENT" pick >/dev/null 2>&1; echo $?)"
+  check "pick: and creates nothing" "$before" "$(names)"
   # The kill row asks a second time, so the filter is a queue: verb, then the session to kill.
   "$AGENT" new demo --harness shell --name killme --no-attach >/dev/null
   before=$(names)

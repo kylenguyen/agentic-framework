@@ -7,7 +7,7 @@
 #   agent new <repo> [--harness claude|omp|opencode|shell] [--slug <slug>] [--name <name>] [--no-attach]
 #   agent ls [--porcelain]
 #   agent attach <name>
-#   agent pick [--switch]        # --switch only inside tmux (the Ctrl+B g popup)
+#   agent pick [--switch]        # --switch only inside tmux (the Ctrl+B g popup); implied by $TMUX
 #   agent switch                 # alias for: agent pick --switch
 #   agent kill <name> [--force] [--keep-worktree]
 #
@@ -22,6 +22,11 @@
 #
 # Session names never contain "." or ":": tmux rewrites the first and treats both as target separators.
 # Names are for display; every command resolves a name to a session id once and then uses the id.
+#
+# Whichever menu row leads to a session, the picker's job ends when the operator is in it: enter_session
+# switches the client when one already exists ($TMUX) and attaches a new one when it does not, and the popup
+# closes rather than redrawing its list over the session it just moved to. Nothing in a picker flow may exit
+# the process -- see fail() -- because that process is the operator's login shell.
 #
 # AGENT_TMUX_SOCKET routes every tmux call to that socket (-L), which is how the tests stay off the live
 # server. AGENT_PICK_FILTER makes `pick` non-interactive: it is a ";"-separated list of fzf filters, one
@@ -46,6 +51,15 @@ if [ -n "${AGENT_TMUX_SOCKET:-}" ]; then TMUX_ARGS=(-L "$AGENT_TMUX_SOCKET"); fi
 tm()   { tmux "${TMUX_ARGS[@]}" "$@"; }
 note() { printf '%s\n' "$*" >&2; }
 die()  { printf 'agent: %s\n' "$1" >&2; exit "${2:-1}"; }
+# fail is die for anything the picker can reach. `die` exits, and an exit inside a picker flow takes the
+# login shell's `agent pick` with it, which drops the operator at a bare shell instead of back at the menu;
+# every caller here is either a `if cmd; then` in the picker or a bare call from the dispatch at the bottom,
+# where set -e turns the same non-zero status into the same exit code the CLI used to give.
+fail() { printf 'agent: %s\n' "$1" >&2; return "${2:-1}"; }
+# PICK_NOTE carries one line of bad news from a flow that gave up to the menu that draws next, as fzf's
+# header. Without it a failed flow is invisible: fzf repaints the screen over whatever was printed, and a
+# menu that simply draws itself again looks exactly like a menu that did nothing.
+PICK_NOTE=""
 
 usage() {
   cat >&2 <<'USAGE'
@@ -63,8 +77,10 @@ USAGE
 # --- naming -------------------------------------------------------------------------------------------
 
 # "." and ":" because tmux rewrites the first and splits targets on the second; "|" and "," because they
-# are this script's field separator and the separator inside a list-sessions filter.
-sanitise() { printf '%s' "${1//[.:|,]/_}"; }
+# are this script's field separator and the separator inside a list-sessions filter; whitespace because the
+# picker reads a row's name as its first word (`${sel%% *}`), so a session called "my notes" could be listed
+# and never chosen. Operators name shells themselves now, so this is reachable rather than theoretical.
+sanitise() { printf '%s' "${1//[[:space:].:|,]/_}"; }
 
 # Names are resolved through a list-sessions filter, never through a -t target: a bare name in -t is a
 # prefix match, and the "=name" exact form is only understood where -t is a target-session, which
@@ -132,7 +148,7 @@ session_create() {
   local new=(new-session -d -P -F "#{session_id}${SEP}#{window_id}" -s "$name" -c "$cwd")
   [ "$harness" = shell ] || new+=("$harness")
   IFS=$SEP read -r sid wid < <(tm "${new[@]}")
-  [ -n "$sid" ] || die "tmux did not create $name"
+  [ -n "$sid" ] || { fail "tmux did not create $name"; return; }
   tm set-option -t "$sid" remain-on-exit on
   tm set-option -t "$sid" @harness "$harness"
   tm set-option -t "$sid" @repo    "$repo"
@@ -155,24 +171,31 @@ cmd_new() {
     esac
   done
   [ -n "$repo" ] || usage
-  case " $HARNESSES " in *" $harness "*) ;; *) die "unknown harness: $harness (one of: $HARNESSES)" 2 ;; esac
+  case " $HARNESSES " in *" $harness "*) ;; *) fail "unknown harness: $harness (one of: $HARNESSES)" 2; return ;; esac
   root=$WORKSPACE/$repo
-  [ -d "$root" ] || die "no such repo: $root" 2
+  [ -d "$root" ] || { fail "no such repo: $root" 2; return; }
   cwd=$root
   if [ -n "$slug" ]; then
     cwd=$WORKSPACE/$repo.wt/$slug
+    # Three cases, because `agent kill` removes a worktree directory and deliberately keeps its branch: the
+    # worktree is still there (pick it up), only the branch is left (check it out again, which is the same
+    # piece of work being resumed), or neither exists yet (start both). Only the third can use -b, and using
+    # it on the second is what used to abort the flow.
     if [ -d "$cwd" ]; then
       note "reusing worktree $cwd"
+    elif git -C "$root" rev-parse --verify -q "refs/heads/agent/$slug" >/dev/null 2>&1; then
+      note "reusing branch agent/$slug"
+      git -C "$root" worktree add "$cwd" "agent/$slug" >&2 || { PICK_NOTE="git worktree add failed for agent/$slug"; fail "$PICK_NOTE"; return; }
     else
-      git -C "$root" worktree add "$cwd" -b "agent/$slug" >&2 || die "git worktree add failed"
+      git -C "$root" worktree add "$cwd" -b "agent/$slug" >&2 || { PICK_NOTE="git worktree add failed for agent/$slug"; fail "$PICK_NOTE"; return; }
     fi
   fi
   branch=$(git -C "$cwd" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
   [ -n "$branch" ] || branch=-
   [ -n "$name" ] || name=$harness-$repo${slug:+-$slug}
   name=$(unique_name "$(sanitise "$name")")
-  session_create "$name" "$harness" "$repo" "$cwd" "$branch"
-  if [ "$attach" = 1 ]; then cmd_attach "$name"; else printf '%s\n' "$name"; fi
+  session_create "$name" "$harness" "$repo" "$cwd" "$branch" || return
+  if [ "$attach" = 1 ]; then enter_session "$name"; else printf '%s\n' "$name"; fi
 }
 
 # A view attaches in the foreground: tmux runs the whole command list server-side and the client is attached
@@ -181,8 +204,8 @@ cmd_attach() {
   local name=${1:-} id vname
   [ -n "$name" ] || usage
   id=$(session_id "$name") || true
-  [ -n "$id" ] || die "no such session: $name" 2
-  ! is_view "$name" "$id" || die "$name is a view; attach ${name%@*} instead" 2
+  [ -n "$id" ] || { fail "no such session: $name" 2; return; }
+  ! is_view "$name" "$id" || { fail "$name is a view; attach ${name%@*} instead" 2; return; }
   vname=$(free_view_name "$name")
   # The two set-options carry no -t on purpose: they run in the client new-session just attached, so the
   # current session is the view. Arming destroy-unattached any earlier would destroy it before the attach.
@@ -191,13 +214,22 @@ cmd_attach() {
      ';' set-option @device "$(device)"
 }
 
+# enter_session <name>: put this terminal in that session, by whichever of the two mechanisms can work here.
+# Inside tmux there is already a client, and `new-session -t` refuses to nest ("sessions should be nested
+# with care"), so the client is switched; outside tmux there is no client yet, so one attaches. Every way of
+# arriving at a session goes through here -- the picker's rows, + new shell, + new session and `agent new` --
+# because the choice depends on where the command was typed, not on which menu row led to it.
+enter_session() {
+  if [ -n "${TMUX:-}" ]; then cmd_switch_to "$1"; else cmd_attach "$1"; fi
+}
+
 # Inside tmux the view cannot be created attached, so it is created detached with destroy-unattached still
 # off, switched to, and only then armed. The view the client came from loses its client and destroys itself.
 cmd_switch_to() {
   local name=$1 id vname vid
   id=$(session_id "$name") || true
-  [ -n "$id" ] || die "no such session: $name" 2
-  ! is_view "$name" "$id" || die "$name is a view; attach ${name%@*} instead" 2
+  [ -n "$id" ] || { fail "no such session: $name" 2; return; }
+  ! is_view "$name" "$id" || { fail "$name is a view; attach ${name%@*} instead" 2; return; }
   vname=$(free_view_name "$name")
   vid=$(tm new-session -d -P -F '#{session_id}' -t "$id" -s "$vname")
   tm set-option -t "$vid" @device "$(device)"
@@ -258,7 +290,7 @@ cmd_kill() {
   done
   [ -n "$name" ] || usage
   id=$(session_id "$name") || true
-  [ -n "$id" ] || die "no such session: $name" 2
+  [ -n "$id" ] || { fail "no such session: $name" 2; return; }
   cwd=$(tm display-message -p -t "$id" '#{@cwd}' 2>/dev/null || true)
   repo=$(tm display-message -p -t "$id" '#{@repo}' 2>/dev/null || true)
   branch=$(tm display-message -p -t "$id" '#{@branch}' 2>/dev/null || true)
@@ -393,7 +425,7 @@ pick_filter() {
 # menu <prompt> <filter>: one fzf pass. With AGENT_PICK_FILTER set there is no tty, so --filter does the
 # choosing; an empty filter matches everything and the first row wins.
 menu() {
-  local prompt=$1 filter=${2:-} preview
+  local prompt=$1 filter=${2:-} preview hdr=()
   if [ -n "${AGENT_PICK_FILTER:-}" ]; then
     fzf --filter="$filter" | head -1
     return 0
@@ -401,8 +433,22 @@ menu() {
   # {1} is the first column: a session name on a session row, a glyph on the five verb rows, where
   # capture-pane simply fails and the preview stays empty. No "=" prefix: -t here is a pane target.
   preview="tmux ${TMUX_ARGS[*]} capture-pane -p -e -t {1} 2>/dev/null || true"
-  fzf --prompt="$prompt " --height=100% --reverse --no-sort --no-multi \
+  [ -z "$PICK_NOTE" ] || hdr=(--header="$PICK_NOTE")
+  fzf --prompt="$prompt " --height=100% --reverse --no-sort --no-multi "${hdr[@]}" \
       --preview="$preview" --preview-window='right,50%,border-left' || return $?
+}
+
+# prompt_text <prompt> <header>: one line of free text. fzf is the only thing the picker can count on being
+# installed, so it is fzf with nothing to match and --print-query, which makes the typed text the answer.
+# The header is not decoration: without it the empty "0/0" list reads as a menu that failed to load rather
+# than as a question. Enter accepts (fzf exits 1, "no match", which is the normal path here), Esc exits 130
+# and cancels the flow; "" is a legitimate answer and each caller decides what it means.
+prompt_text() {
+  local out rc=0
+  [ -z "${AGENT_PICK_FILTER:-}" ] || return 0
+  out=$(: | fzf --print-query --prompt="$1" --header="$2" --height=100% --reverse --info=hidden) || rc=$?
+  [ "$rc" = 0 ] || [ "$rc" = 1 ] || return 1
+  printf '%s' "$out" | head -1
 }
 
 repo_list() {
@@ -415,82 +461,84 @@ repo_list() {
   done
 }
 
-# pick_new_session <switch>: like pick_new_shell, the session is created detached and only then entered,
-# so that inside the prefix-g popup the harness lands in the client behind the popup and the popup closes,
-# instead of the harness starting in the popup itself and dying with it.
+# The three pick_* flows return 0 only when the operator ended up somewhere: a session created and entered.
+# Backing out of any of their menus, or a flow that could not finish, returns non-zero, which is what keeps
+# the popup open on a cancelled flow and closes it on a finished one.
 pick_new_session() {
-  local switch=$1 repo harness slug name
-  repo=$(repo_list | menu 'repo>' "$(pick_filter 1)") || return 0
-  [ -n "$repo" ] || return 0
-  harness=$(printf 'claude\nomp\nopencode\nshell\n' | menu 'harness>' "$(pick_filter 2)") || return 0
-  [ -n "$harness" ] || return 0
-  if [ -n "${AGENT_PICK_FILTER:-}" ]; then
-    slug=""
-  else
-    # --print-query with nothing to match: the typed text is the answer, empty means the main checkout.
-    slug=$(: | fzf --print-query --prompt='slug (empty: work in the main checkout)> ' | head -1) || true
-  fi
-  local args=("$repo" --harness "$harness" --no-attach)
-  [ -z "$slug" ] || args+=(--slug "$slug")
-  name=$(cmd_new "${args[@]}") || return 0
-  [ -n "$name" ] || return 0
-  entered=1
-  if [ "$switch" = 1 ]; then cmd_switch_to "$name"; else cmd_attach "$name"; fi
+  local repos repo harness slug args
+  repos=$(repo_list)
+  if [ -z "$repos" ]; then PICK_NOTE="no git repos in $WORKSPACE"; return 1; fi
+  repo=$(printf '%s\n' "$repos" | menu 'repo>' "$(pick_filter 1)") || return 1
+  [ -n "$repo" ] || return 1
+  harness=$(printf 'claude\nomp\nopencode\nshell\n' | menu 'harness>' "$(pick_filter 2)") || return 1
+  [ -n "$harness" ] || return 1
+  slug=$(prompt_text 'slug (empty: work in the main checkout)> ' \
+                     'a slug gets its own worktree and agent/<slug> branch; Esc backs out') || return 1
+  args=("$repo" --harness "$harness")
+  [ -z "$slug" ] || args+=(--slug "$(sanitise "$slug")")
+  cmd_new "${args[@]}"
 }
 
-# `entered` is set by the two rows that create a session, and only once they really enter it. Under
-# --switch the picker runs in the prefix-g popup, so it has to return the moment the client is on another
-# session: anything else redraws the menu over the session the operator just asked for. Backing out of the
-# repo or harness menu leaves it 0 and comes back to the session list.
+# The picker runs in one of two places, and the difference is the whole of `switch`:
+#   switch=0  the login shell's own `agent pick`, outside tmux. It attaches, and the attach only returns when
+#             the operator detaches -- so drawing the menu again on the next pass is the right thing.
+#   switch=1  a client that already exists: the prefix-g popup, or `agent pick` typed in a pane. It switches
+#             that client, and then it is done. Looping here would leave the popup sitting on top of the
+#             session it just moved to, redrawing the same menu -- which is what it used to do.
+# switch is not only the flag. Inside tmux an attach cannot work at all (tmux refuses to nest one), so the
+# mechanism is dictated by the environment and the flag only says that a popup expects the menu to be brief.
 cmd_pick() {
-  local switch=0 sel rc name entered
+  local switch=0 asked=0 sel rc name
   case ${1:-} in
-    --switch) switch=1; shift ;;
+    --switch) switch=1; asked=1; shift ;;
     "") ;;
     *) usage ;;
   esac
   [ $# = 0 ] || usage
-  command -v fzf >/dev/null 2>&1 || die "fzf is not installed (install-host.sh phase 1)" 2
-  [ "$switch" = 0 ] || [ -n "${TMUX:-}" ] || die "--switch only works inside tmux" 2
+  command -v fzf >/dev/null 2>&1 || { fail "fzf is not installed (install-host.sh phase 1)" 2; return; }
+  [ "$asked" = 0 ] || [ -n "${TMUX:-}" ] || { fail "--switch only works inside tmux" 2; return; }
+  [ -z "${TMUX:-}" ] || switch=1
   # A mark left on this tty by an earlier login (a popup whose client was never in a picker loop) is stale:
   # this picker is the one that would have claimed it, and it has only just started.
   [ "$switch" = 1 ] || logout_drop
   while :; do
     rc=0
-    entered=0
     sel=$(pick_rows | menu 'session>' "$(pick_filter 0)") || rc=$?
+    PICK_NOTE=""                                       # the menu that was going to show it has been drawn
     if [ "$rc" != 0 ] || [ -z "$sel" ]; then
       # fzf aborted (Esc, Ctrl+C) or matched nothing: in the popup that just closes it, at the login
       # prompt there is nothing else to do, so it means log out.
       [ "$switch" = 0 ] || return 0
       return 3
     fi
+    # Each of these is a question: did the operator end up in a session? If so the picker has done its job
+    # and a popup gets out of the way; a login picker stays, because its attach has already come back.
     case $sel in
-      '+ new session')      pick_new_session "$switch" || true ;;
-      '+ new shell')        pick_new_shell "$switch" || true ;;
+      '+ new session')      if pick_new_session; then [ "$switch" = 0 ] || return 0; fi ;;
+      '+ new shell')        if pick_new_shell;   then [ "$switch" = 0 ] || return 0; fi ;;
       '- kill session')     pick_kill || true ;;
       '> plain shell here') return 0 ;;
       'x log out')          [ "$switch" = 0 ] || { pick_log_out; return 0; }; return 3 ;;
       *)
         name=${sel%% *}
-        if [ "$switch" = 1 ]; then cmd_switch_to "$name" || true; return 0; fi
-        cmd_attach "$name" || true
+        if enter_session "$name"; then [ "$switch" = 0 ] || return 0
+        else PICK_NOTE="could not enter $name"; fi
         ;;
     esac
     # The attach above (or the one inside new/new shell) has just returned. If it returned because a popup
     # on this client chose "log out", that is this loop's answer, not another round of the menu.
     if [ "$switch" = 0 ] && logout_claim; then return 3; fi
-    [ "$switch" = 0 ] || [ "$entered" = 0 ] || return 0
     [ -z "${AGENT_PICK_FILTER:-}" ] || return 0
   done
 }
 
 pick_new_shell() {
-  local switch=$1 name
-  name=$(unique_name shell-scratch)
-  session_create "$name" shell "" "$WORKSPACE" -
-  entered=1
-  if [ "$switch" = 1 ]; then cmd_switch_to "$name"; else cmd_attach "$name"; fi
+  local want name
+  want=$(prompt_text 'name (empty: shell-scratch)> ' 'a plain shell in ~/workspace; Esc backs out') || return 1
+  [ -n "$want" ] || want=shell-scratch
+  name=$(unique_name "$(sanitise "$want")")
+  session_create "$name" shell "" "$WORKSPACE" - || return 1
+  enter_session "$name"
 }
 
 # Kill is the one verb that destroys work, so it never acts on whatever row happened to be highlighted:
@@ -501,11 +549,11 @@ pick_new_shell() {
 pick_kill() {
   local list sel name
   list=$(ls_human 0)
-  if [ -z "$list" ]; then note 'no sessions to kill'; return 0; fi
-  sel=$(printf '%s\n' "$list" | menu 'kill (ends the harness, every view of it and its worktree)>' "$(pick_filter 1)") || return 0
-  [ -n "$sel" ] || return 0
+  if [ -z "$list" ]; then PICK_NOTE='no sessions to kill'; return 1; fi
+  sel=$(printf '%s\n' "$list" | menu 'kill (ends the harness, every view of it and its worktree)>' "$(pick_filter 1)") || return 1
+  [ -n "$sel" ] || return 1
   name=${sel%% *}
-  cmd_kill "$name"
+  cmd_kill "$name" || PICK_NOTE="could not kill $name"
 }
 
 # Inside tmux the popup cannot end the login shell itself, so it marks the client's tty and detaches it;
