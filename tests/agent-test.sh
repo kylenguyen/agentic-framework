@@ -192,6 +192,32 @@ else
   check "pick: log out exits 3" 3 "$(AGENT_PICK_FILTER='log out' "$AGENT" pick >/dev/null 2>&1; echo $?)"
   check "pick: plain shell here exits 0" 0 "$(AGENT_PICK_FILTER='plain shell here' "$AGENT" pick >/dev/null 2>&1; echo $?)"
   check "pick: --switch outside tmux exits 2" 2 "$(env -u TMUX "$AGENT" pick --switch >/dev/null 2>&1; echo $?)"
+  # The kill row asks a second time, so the filter is a queue: verb, then the session to kill.
+  "$AGENT" new demo --harness shell --name killme --no-attach >/dev/null
+  before=$(names)
+  AGENT_PICK_FILTER='kill session;nosuchsession' "$AGENT" pick >/dev/null 2>&1
+  check "pick: kill with nothing matching leaves every session alone" "$before" "$(names)"
+  AGENT_PICK_FILTER='kill session;killme' "$AGENT" pick >/dev/null 2>&1
+  check "pick: kill session removes the chosen session" "" "$(sid killme)"
+  check "pick: it kills only that one" 1 "$([ -n "$(sid claude-demo)" ] && echo 1 || echo 0)"
+  "$AGENT" new demo --harness shell --name killview --no-attach >/dev/null
+  if [ "$HAVE_PTY" = 0 ]; then
+    skip "pick: kill takes the views with it" "script(1) is not available, so no pty for a tmux client"
+  else
+    env -u TMUX SSH_CLIENT="10.5.5.5 51000 22" timeout 60 script -qfc "$AGENT attach killview" /dev/null >/dev/null 2>&1 &
+    kv_pid=$!
+    if wait_until 15 have_session 'killview@1'; then
+      AGENT_PICK_FILTER='kill session;killview' "$AGENT" pick >/dev/null 2>&1
+      wait_until 15 no_session 'killview@1' \
+        && ok "pick: kill takes the views with it" || bad "pick: kill takes the views with it" "$(names)"
+      check "pick: the killed base is gone too" "" "$(sid killview)"
+    else
+      skip "pick: kill takes the views with it" "no pty client"
+    fi
+    "$AGENT" kill killview >/dev/null 2>&1 || true
+    kill "$kv_pid" 2>/dev/null || true
+    wait "$kv_pid" 2>/dev/null || true
+  fi
   if [ "$HAVE_PTY" = 0 ]; then
     skip "pick: attaching" "script(1) is not available, so no pty for a tmux client"
   else

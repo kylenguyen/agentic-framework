@@ -75,10 +75,13 @@ attaches the base itself, so window size follows the attached views (`window-siz
 **Picker.** `agent pick` is an fzf loop: build the list (`agent ls --porcelain`), show it with a preview of the
 session's last screen (`tmux capture-pane -p -e -t <id>`), act, repeat. Rows, in order: `new session`, `new shell`,
 one row per base session (harness, repo, branch, `wt` if a worktree, age, `running`/`exited`, attached devices),
-`plain shell here`, `log out`. Attach runs in the foreground; when it returns (detach, kill, harness death after a
+`kill session`, `plain shell here`, `log out`. Attach runs in the foreground; when it returns (detach, kill, harness death after a
 kill) the loop shows the list again. `new session` asks in fzf for the repo (directories under `~/workspace` with a
 `.git`, `.wt` trees excluded), then the harness (`claude`, `omp`, `opencode`, `shell`), then an optional slug; a
-slug means a worktree. `plain shell here` exits 0 and the login shell continues outside tmux; `log out` exits 3 and
+slug means a worktree. `kill session` (added 17 Sep 2026, after the first version shipped with no way to remove a
+session from the picker) shows the same list again under its own prompt and runs `agent kill` on the row chosen
+there: never the highlighted row, so a stray Enter on the main list cannot destroy a harness, and Esc backs out.
+`plain shell here` exits 0 and the login shell continues outside tmux; `log out` exits 3 and
 the login fragment logs out. Inside tmux, prefix `g` opens the same picker in `display-popup -E` with `--switch`,
 which creates the target view and `switch-client`s to it; the abandoned view is destroyed by `destroy-unattached`.
 
@@ -157,6 +160,9 @@ touched. Cases:
 - `pick` with `AGENT_PICK_FILTER` selecting a session row creates a view (detached client is fine here: assert
   the `new-session -t` happened by checking the view exists immediately with `destroy-unattached` off during the
   test, or by `agent ls --porcelain` devices), selecting `log out` returns 3, `plain shell here` returns 0.
+- `pick` with `AGENT_PICK_FILTER='kill session;<name>'` kills that session and its views and leaves the others;
+  a second filter matching nothing kills nothing. (`AGENT_PICK_FILTER` is ";"-separated, one filter per menu of
+  the flow, because the kill row asks twice.)
 - landing fragment sourced in bash and zsh with `SSH_TTY` set and unset, interactive and not, `TMUX` set,
   `NO_TMUX=1`: `agent pick` is invoked exactly in the interactive+SSH_TTY+no-TMUX case (stub `agent` on PATH
   that records its argv).

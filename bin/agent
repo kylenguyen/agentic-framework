@@ -22,9 +22,11 @@
 # Names are for display; every command resolves a name to a session id once and then uses the id.
 #
 # AGENT_TMUX_SOCKET routes every tmux call to that socket (-L), which is how the tests stay off the live
-# server. AGENT_PICK_FILTER makes `pick` non-interactive: the first menu runs `fzf --filter=<value>` and
-# takes the first match, any later menu takes its first row, and the loop runs once. Nothing else is
-# test-only; --porcelain is the interface phase 5 and the tests consume, so keep its columns stable.
+# server. AGENT_PICK_FILTER makes `pick` non-interactive: it is a ";"-separated list of fzf filters, one
+# per menu in the order that flow's menus appear, so "kill session;shell-scratch" walks the kill flow the
+# way a pair of keystrokes would. Each menu takes the first match of its filter; a menu with no filter of
+# its own takes its first row, and the loop runs once. Nothing else is test-only; --porcelain is the
+# interface phase 5 and the tests consume, so keep its columns stable.
 set -euo pipefail
 
 WORKSPACE=$HOME/workspace
@@ -268,12 +270,23 @@ cmd_ls() {
 
 # --- picker -------------------------------------------------------------------------------------------
 
-# Rows carry their own meaning: the four verbs are prefixed with a glyph, every other row starts with a
+# Rows carry their own meaning: the five verbs are prefixed with a glyph, every other row starts with a
 # session name, so the selected line parses without hidden fields and fzf's filter sees what the eye sees.
+# `kill session` sits below the list, away from the rows it destroys and next to the other two ways out.
 pick_rows() {
   printf '+ new session\n+ new shell\n'
   ls_human 0
-  printf '> plain shell here\nx log out\n'
+  printf -- '- kill session\n> plain shell here\nx log out\n'
+}
+
+# pick_filter <n>: the nth filter in AGENT_PICK_FILTER, counting the menus of one flow from the row that
+# starts it. Every menu runs inside a command substitution, so they cannot share a queue to pop from and
+# each call site names its own position instead; past the end is empty, which matches everything.
+pick_filter() {
+  local f=()
+  [ -n "${AGENT_PICK_FILTER:-}" ] || return 0
+  IFS=';' read -r -a f <<<"$AGENT_PICK_FILTER"
+  printf '%s' "${f[$1]-}"
 }
 
 # menu <prompt> <filter>: one fzf pass. With AGENT_PICK_FILTER set there is no tty, so --filter does the
@@ -284,7 +297,7 @@ menu() {
     fzf --filter="$filter" | head -1
     return 0
   fi
-  # {1} is the first column: a session name on a session row, a glyph on the four verb rows, where
+  # {1} is the first column: a session name on a session row, a glyph on the five verb rows, where
   # capture-pane simply fails and the preview stays empty. No "=" prefix: -t here is a pane target.
   preview="tmux ${TMUX_ARGS[*]} capture-pane -p -e -t {1} 2>/dev/null || true"
   fzf --prompt="$prompt " --height=100% --reverse --no-sort --no-multi \
@@ -303,9 +316,9 @@ repo_list() {
 
 pick_new_session() {
   local repo harness slug
-  repo=$(repo_list | menu 'repo>') || return 0
+  repo=$(repo_list | menu 'repo>' "$(pick_filter 1)") || return 0
   [ -n "$repo" ] || return 0
-  harness=$(printf 'claude\nomp\nopencode\nshell\n' | menu 'harness>') || return 0
+  harness=$(printf 'claude\nomp\nopencode\nshell\n' | menu 'harness>' "$(pick_filter 2)") || return 0
   [ -n "$harness" ] || return 0
   if [ -n "${AGENT_PICK_FILTER:-}" ]; then
     slug=""
@@ -330,7 +343,7 @@ cmd_pick() {
   [ "$switch" = 0 ] || [ -n "${TMUX:-}" ] || die "--switch only works inside tmux" 2
   while :; do
     rc=0
-    sel=$(pick_rows | menu 'session>' "${AGENT_PICK_FILTER:-}") || rc=$?
+    sel=$(pick_rows | menu 'session>' "$(pick_filter 0)") || rc=$?
     if [ "$rc" != 0 ] || [ -z "$sel" ]; then
       # fzf aborted (Esc, Ctrl+C) or matched nothing: in the popup that just closes it, at the login
       # prompt there is nothing else to do, so it means log out.
@@ -340,6 +353,7 @@ cmd_pick() {
     case $sel in
       '+ new session')      pick_new_session || true ;;
       '+ new shell')        pick_new_shell "$switch" || true ;;
+      '- kill session')     pick_kill || true ;;
       '> plain shell here') return 0 ;;
       'x log out')          return 3 ;;
       *)
@@ -357,6 +371,20 @@ pick_new_shell() {
   name=$(unique_name shell-scratch)
   session_create "$name" shell "" "$WORKSPACE" -
   if [ "$switch" = 1 ]; then cmd_switch_to "$name"; else cmd_attach "$name"; fi
+}
+
+# Kill is the one verb that destroys work, so it never acts on whatever row happened to be highlighted:
+# the session is chosen a second time, in a list of its own, under a prompt that says what will happen.
+# Esc backs out. Killing the session behind the popup you are standing in is allowed and ends the popup
+# with it; the harness is gone either way, so there is nothing to go back to.
+pick_kill() {
+  local list sel name
+  list=$(ls_human 0)
+  if [ -z "$list" ]; then note 'no sessions to kill'; return 0; fi
+  sel=$(printf '%s\n' "$list" | menu 'kill (ends the harness and every view of it)>' "$(pick_filter 1)") || return 0
+  [ -n "$sel" ] || return 0
+  name=${sel%% *}
+  cmd_kill "$name"
 }
 
 # --- dispatch -----------------------------------------------------------------------------------------
