@@ -25,7 +25,7 @@
       "Read(~/.ssh/**)"
     ]
   },
-  "model": "claude-fable-5-1[1m]",
+  "model": "opus[1m]",
   "statusLine": {
     "type": "command",
     "command": "bash ~/.claude/statusline-command.sh"
@@ -33,6 +33,18 @@
   "tui": "fullscreen",
   "theme": "dark",
   "autoMode": {
+    "allow": [
+      "$defaults",
+      "Bash(shellcheck:*) — lint shell scripts in /home/kyle/workspace/agentic-framework",
+      "Bash(tailscale status:*) — read tailnet state on the agent host",
+      "Bash(tailscale ip:*) — read the host's tailnet address for .env derivation",
+      "Bash(hostname:*) — derive AGENT_HOST during install-script work"
+    ],
+    "soft_deny": [
+      "$defaults",
+      "Bash(tailscale down:*) — drops the tailnet link that is the only remote path to the agent host",
+      "Bash(tailscale logout:*) — de-authenticates the host from the tailnet"
+    ],
     "environment": [
       "### Org-wide",
       "**Organization**: None configured",
@@ -59,18 +71,6 @@
       "**Trusted repo**: /home/kyle/workspace/agentic-framework and its configured remote github.com:kylenguyen/agentic-framework. Visibility unconfirmed, so treat it as private for confidential material but do not publish anything read from outside this repo. Secrets and sensitive data are never cleared into it by visibility.",
       "**Org-specific CLIs**: tailscale, omp (Oh My Pi), uv, mise, shellcheck — all observed in this project or in shell history.",
       "**Routine under this repo's prefix**: shellcheck runs over bin/, lib/, config/ and the install scripts; tailscale status/ip reads; hostname and id lookups during parameter derivation."
-    ],
-    "allow": [
-      "$defaults",
-      "Bash(shellcheck:*) — lint shell scripts in /home/kyle/workspace/agentic-framework",
-      "Bash(tailscale status:*) — read tailnet state on the agent host",
-      "Bash(tailscale ip:*) — read the host's tailnet address for .env derivation",
-      "Bash(hostname:*) — derive AGENT_HOST during install-script work"
-    ],
-    "soft_deny": [
-      "$defaults",
-      "Bash(tailscale down:*) — drops the tailnet link that is the only remote path to the agent host",
-      "Bash(tailscale logout:*) — de-authenticates the host from the tailnet"
     ]
   }
 }
