@@ -84,6 +84,11 @@ there: never the highlighted row, so a stray Enter on the main list cannot destr
 `plain shell here` exits 0 and the login shell continues outside tmux; `log out` exits 3 and
 the login fragment logs out. Inside tmux, prefix `g` opens the same picker in `display-popup -E` with `--switch`,
 which creates the target view and `switch-client`s to it; the abandoned view is destroyed by `destroy-unattached`.
+`log out` in that popup (fixed 17 Sep 2026, after the first version where it only closed the popup) cannot exit the
+login shell itself, because that shell is in another process tree: the popup sets `AGENT_LOGOUT_<client tty>` in the
+tmux server environment and detaches the client, and the login shell's picker loop — which the detach returns from
+its foreground attach — claims that mark on its way round and exits 3, so the connection closes. A picker claims a
+mark once and removes it; a fresh login on that tty drops any mark left by a popup nobody was there to hear.
 
 **Landing.** `config/bashrc.d/tmux-autoattach.sh` keeps its guard (`$- == *i*`, `SSH_TTY` set, `TMUX` empty,
 `NO_TMUX` empty, command present) and runs `agent pick` instead of `exec tmux new -As main`. Non-interactive
@@ -160,6 +165,9 @@ touched. Cases:
 - `pick` with `AGENT_PICK_FILTER` selecting a session row creates a view (detached client is fine here: assert
   the `new-session -t` happened by checking the view exists immediately with `destroy-unattached` off during the
   test, or by `agent ls --porcelain` devices), selecting `log out` returns 3, `plain shell here` returns 0.
+- `log out` in a `--switch` picker, driven into a pane of an attached session: the client detaches and the pty
+  running the login-side `agent pick` exits 3, the view is gone, the base survives, and no `AGENT_LOGOUT_*` is
+  left in the server environment.
 - `pick` with `AGENT_PICK_FILTER='kill session;<name>'` kills that session and its views and leaves the others;
   a second filter matching nothing kills nothing. (`AGENT_PICK_FILTER` is ";"-separated, one filter per menu of
   the flow, because the kill row asks twice.)
@@ -199,6 +207,7 @@ pty does not survive backgrounding, wrap in `script -qfc`. The existing `run` / 
 | `new session`, repo `agentic-framework`, `claude` | Claude Code starts in the repo dir with the API key env present |
 | second Mac, pick the same session | both see the harness; switching windows on one does not move the other |
 | Ctrl+B `g` | popup picker; choosing another session switches; `tmux ls` shows the old view gone |
+| Ctrl+B `g`, then `log out` | the client detaches and the ssh/mosh connection closes; `tmux ls` on a new login still shows the session |
 | Cmd+V of an image in that session | still `[Image #1]` (clipboard bridge unaffected) |
 | `/exit` in the harness | row shows `exited`, last screen visible; `agent kill` clears it |
 | `mac$ ssh <host> 'echo $TMUX'` | empty line |

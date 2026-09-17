@@ -288,6 +288,40 @@ else
   wait "$sw_pid" 2>/dev/null || true
 fi
 
+echo "# log out from the popup ends the login, not just the popup"
+if [ "$HAVE_FZF" = 0 ] || [ "$HAVE_PTY" = 0 ]; then
+  skip "popup log out" "needs both fzf and a pty"
+else
+  # The whole point of the case is the two process trees: a login shell sitting in `agent pick` (here a pty
+  # running with a filter, so it attaches once and then blocks in the attach), and a picker started inside
+  # tmux the way the prefix-g popup starts it. The second one detaches the first, and the first has to come
+  # out of its loop with 3 (log out) instead of drawing the menu again.
+  "$AGENT" new demo --harness shell --name outsrc --no-attach >/dev/null
+  env -u TMUX SSH_CLIENT="10.9.9.9 51000 22" timeout 60 \
+    script -qfc "env AGENT_PICK_FILTER=outsrc '$AGENT' pick; echo \$? > '$T/logout.rc'" "$T/logout.pty" >/dev/null 2>&1 &
+  out_pid=$!
+  if wait_until 15 have_session 'outsrc@1'; then
+    tm send-keys -t 'outsrc@1' \
+      "export PATH='$PATH' AGENT_TMUX_SOCKET='$AGENT_TMUX_SOCKET'; AGENT_PICK_FILTER='log out' '$AGENT' pick --switch" Enter
+    wait_until 20 test -s "$T/logout.rc" \
+      && check "popup log out: the login picker exits 3" 3 "$(tr -d ' \n' < "$T/logout.rc")" \
+      || bad "popup log out: the login picker exits 3" \
+             "picker still running; sessions: $(names); pane: $(tm capture-pane -p -t outsrc 2>/dev/null | grep -v '^$' | tail -4 | tr '\n' '|')"
+    wait_until 15 no_session 'outsrc@1' \
+      && ok "popup log out: the view is gone with the client" || bad "popup log out: the view is gone with the client" "$(names)"
+    check "popup log out: the session it was attached to survives" 1 "$([ -n "$(sid outsrc)" ] && echo 1 || echo 0)"
+    # Claimed, not left behind: a mark still in the server environment would log the next picker on that
+    # tty straight out again.
+    check "popup log out: the mark is claimed, not left in the environment" 0 \
+      "$(tm show-environment -g 2>/dev/null | grep -c '^AGENT_LOGOUT_' || true)"
+  else
+    skip "popup log out" "no pty client"
+  fi
+  "$AGENT" kill outsrc >/dev/null 2>&1 || true
+  kill "$out_pid" 2>/dev/null || true
+  wait "$out_pid" 2>/dev/null || true
+fi
+
 echo "# the login fragment runs the picker, and only for interactive ssh logins"
 FRAG=$REPO/config/bashrc.d/tmux-autoattach.sh
 cat > "$HOME/bin/agent" <<'STUB'

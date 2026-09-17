@@ -95,6 +95,30 @@ device() {                                                       # the Mac's add
   printf '%s' "${d:-local}"
 }
 
+# --- logging out from inside tmux ---------------------------------------------------------------------
+
+# "log out" chosen in the prefix-g popup has to reach a process it cannot see: the login shell sitting in
+# its own `agent pick`, in another process tree, whose exit code is what tmux-autoattach.sh turns into a
+# logout. The popup can only detach the client, and on its own a detach just sends that login shell round
+# its loop and draws the picker again. So the popup leaves a mark in the tmux server environment, named
+# after the client's tty (one login shell, one tty, one mark), and the picker loop claims the mark on its
+# way round and returns 3. The mark dies with the server, like every other piece of state here.
+logout_var() {                                                   # <tty> -> environment variable name
+  local t=${1:-}
+  [ -n "$t" ] || t=$(tty 2>/dev/null) || t=""
+  printf 'AGENT_LOGOUT_%s' "${t//[^A-Za-z0-9]/_}"
+}
+
+logout_mark() { tm set-environment -g "$(logout_var "${1:-}")" 1 2>/dev/null || true; }
+logout_drop() { tm set-environment -gu "$(logout_var "${1:-}")" 2>/dev/null || true; }
+
+logout_claim() {                                                 # true once per mark, then it is gone
+  local v
+  v=$(logout_var "${1:-}")
+  tm show-environment -g "$v" >/dev/null 2>&1 || return 1
+  tm set-environment -gu "$v" 2>/dev/null || true
+}
+
 # --- sessions -----------------------------------------------------------------------------------------
 
 # session_create <name> <harness> <repo> <cwd> <branch>: the base session, with the facts the picker shows.
@@ -341,6 +365,9 @@ cmd_pick() {
   [ $# = 0 ] || usage
   command -v fzf >/dev/null 2>&1 || die "fzf is not installed (install-host.sh phase 1)" 2
   [ "$switch" = 0 ] || [ -n "${TMUX:-}" ] || die "--switch only works inside tmux" 2
+  # A mark left on this tty by an earlier login (a popup whose client was never in a picker loop) is stale:
+  # this picker is the one that would have claimed it, and it has only just started.
+  [ "$switch" = 1 ] || logout_drop
   while :; do
     rc=0
     sel=$(pick_rows | menu 'session>' "$(pick_filter 0)") || rc=$?
@@ -355,13 +382,16 @@ cmd_pick() {
       '+ new shell')        pick_new_shell "$switch" || true ;;
       '- kill session')     pick_kill || true ;;
       '> plain shell here') return 0 ;;
-      'x log out')          return 3 ;;
+      'x log out')          [ "$switch" = 0 ] || { pick_log_out; return 0; }; return 3 ;;
       *)
         name=${sel%% *}
         if [ "$switch" = 1 ]; then cmd_switch_to "$name" || true; return 0; fi
         cmd_attach "$name" || true
         ;;
     esac
+    # The attach above (or the one inside new/new shell) has just returned. If it returned because a popup
+    # on this client chose "log out", that is this loop's answer, not another round of the menu.
+    if [ "$switch" = 0 ] && logout_claim; then return 3; fi
     [ -z "${AGENT_PICK_FILTER:-}" ] || return 0
   done
 }
@@ -385,6 +415,18 @@ pick_kill() {
   [ -n "$sel" ] || return 0
   name=${sel%% *}
   cmd_kill "$name"
+}
+
+# Inside tmux the popup cannot end the login shell itself, so it marks the client's tty and detaches it;
+# the picker that shell is sitting in claims the mark and exits 3. Detaching also closes this popup.
+pick_log_out() {
+  local client rc=0
+  client=$(tm display-message -p '#{client_tty}' 2>/dev/null) || client=""
+  logout_mark "$client"
+  if [ -n "$client" ]; then tm detach-client -t "$client" || rc=$?; else tm detach-client || rc=$?; fi
+  # Nothing detached means nothing will claim the mark either, so take it back rather than leave it for
+  # the next picker on this tty.
+  [ "$rc" = 0 ] || { logout_drop "$client"; note 'log out: tmux would not detach this client'; }
 }
 
 # --- dispatch -----------------------------------------------------------------------------------------

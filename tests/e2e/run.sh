@@ -250,6 +250,30 @@ wait "$MAC2" 2>/dev/null; rc2=$?
   || bad "mac2: its ssh session ended when the session was killed" "exit $rc2, probably a timeout"
 check "box: ls is empty again" "" "$(bagent ls --porcelain)"
 
+say "sessions: log out from the prefix-g popup closes the connection"
+# The one thing only a real login can show: the popup runs in the tmux server's process tree, so choosing
+# "log out" there has to reach the ssh login shell sitting in its own picker. Everything here is real —
+# ssh with a pty, a real display-popup on that client — apart from the two AGENT_PICK_FILTERs standing in
+# for the keystrokes.
+timeout 180 docker exec -t -u macuser -e HOME=/home/macuser "$MAC" \
+  ssh -tt -o BatchMode=yes "$ALIAS" 'AGENT_PICK_FILTER="new shell" agent pick; echo picker-rc=$?' >"$T/mac3.ssh" 2>&1 &
+MAC3=$!
+if until_box 20 "tmux list-sessions -F '#{session_name}' | grep -qx 'shell-scratch@1'"; then
+  CLIENT=$(btmux list-clients -t 'shell-scratch@1' -F '#{client_tty}' | head -1)
+  box tmux display-popup -E -c "$CLIENT" "AGENT_PICK_FILTER='log out' $AGENTBIN pick --switch" >/dev/null 2>&1 || true
+  wait "$MAC3" 2>/dev/null; rc3=$?
+  [ "$rc3" -lt 124 ] && ok "mac: log out in the popup ends the ssh session" \
+    || bad "mac: log out in the popup ends the ssh session" "exit $rc3, probably a timeout"
+  has "picker-rc=3" "$(tr -d '\r' < "$T/mac3.ssh" | tail -5)" "mac: the login picker exited 3, which is what the landing fragment logs out on"
+  until_box 20 "! tmux has-session -t 'shell-scratch@1' 2>/dev/null" \
+    && ok "box: the view went with the detached client" || bad "box: the view went with the detached client" "$(btmux list-sessions -F '#{session_name}')"
+  check "box: the session it was attached to is still there" 0 "$(btmux has-session -t shell-scratch >/dev/null 2>&1; echo $?)"
+else
+  bad "mac: log out in the popup ends the ssh session" "no view to log out of: $(bagent ls --porcelain; tr -d '\r' < "$T/mac3.ssh" | tail -3)"
+  kill "$MAC3" 2>/dev/null || true
+fi
+bagent kill shell-scratch >/dev/null 2>&1 || true
+
 say "sessions: agent new runs a harness in the repo and keeps its last screen"
 # A stand-in "claude" on the box PATH: it records where it started, then becomes a process tmux can name.
 # It is a copy of /bin/sh rather than a link to sleep, because coreutils is one multi-call binary that
