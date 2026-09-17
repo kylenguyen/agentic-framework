@@ -81,6 +81,7 @@ kill) the loop shows the list again. `new session` asks in fzf for the repo (dir
 slug means a worktree. `kill session` (added 17 Sep 2026, after the first version shipped with no way to remove a
 session from the picker) shows the same list again under its own prompt and runs `agent kill` on the row chosen
 there: never the highlighted row, so a stray Enter on the main list cannot destroy a harness, and Esc backs out.
+The chosen session's worktree goes with it, with one more question on the terminal if it has uncommitted work.
 `plain shell here` exits 0 and the login shell continues outside tmux; `log out` exits 3 and
 the login fragment logs out. Inside tmux, prefix `g` opens the same picker in `display-popup -E` with `--switch`,
 which creates the target view and `switch-client`s to it; the abandoned view is destroyed by `destroy-unattached`.
@@ -113,7 +114,7 @@ set, in which case every tmux call gets `-L "$AGENT_TMUX_SOCKET"` (the tests use
 | `agent ls [--porcelain]` | one line per base session (grouped or not, excluding names matching `*@[0-9]*` that are in a group). Human: aligned columns. Porcelain: tab-separated `name harness repo branch cwd state created_epoch devices`, `devices` comma-separated `@device` values of the group's attached views, `-` if none; harness `shell` and repo `-` for sessions without `@harness` | 0; 0 with no output when no server |
 | `agent attach <name>` | create a view and attach; refuse if `<name>` is itself a view | 0 on detach; 2 unknown name |
 | `agent pick [--switch]` | the fzf loop; `--switch` only inside tmux | 0 plain shell / 3 log out / 2 no fzf |
-| `agent kill <name>` | `kill-session` on every view of the group, then on the base id; worktrees are not removed, print the `git worktree remove` command instead | 0; 2 unknown |
+| `agent kill <name> [--force] [--keep-worktree]` | `kill-session` on every view of the group, then on the base id; a worktree under `~/workspace/<repo>.wt/` goes with it, the `agent/<slug>` branch never does. A dirty worktree is asked about on `/dev/tty` first and kept on anything but yes, which includes having no terminal to ask; `--force` removes it without asking, `--keep-worktree` keeps it. A kept worktree prints the `git worktree remove` command | 0; 2 unknown |
 | `agent switch` | alias for `pick --switch` | as pick |
 
 Test seam: when `AGENT_PICK_FILTER` is set, `agent pick` runs fzf with `--filter="$AGENT_PICK_FILTER"` and takes the
@@ -158,10 +159,13 @@ touched. Cases:
   `SSH_CLIENT`; after `tmux detach-client -s <view>` the view is gone and the base remains. If `script` cannot
   provide a working client in the CI environment, the test must skip with an explicit `skip` line, not pass.
 - harness exit: the stand-in exits; base remains with `pane_dead` = 1 and `ls` says `exited`.
-- `kill` removes base and all views; worktree left in place and the removal command printed. (Implementation
+- `kill` removes base and all views, and with them a clean worktree; the branch survives. A dirty worktree is
+  kept when nobody can be asked (the test drops the controlling terminal with `setsid`), removed under
+  `--force`, and kept under `--keep-worktree`; a kept worktree prints the removal command. (Implementation
   note, 16 Sep 2026: the design's "views die with the base" is wrong for tmux 3.6. Grouped sessions share a
   window list, not a lifetime: killing the base leaves each view attached to a session nobody owns. `agent kill`
-  kills the views first, then the base.)
+  kills the views first, then the base. 17 Sep 2026: the first version kept every worktree and only printed the
+  removal command, which left `~/workspace/<repo>.wt/` filling up with checkouts whose session was long gone.)
 - `pick` with `AGENT_PICK_FILTER` selecting a session row creates a view (detached client is fine here: assert
   the `new-session -t` happened by checking the view exists immediately with `destroy-unattached` off during the
   test, or by `agent ls --porcelain` devices), selecting `log out` returns 3, `plain shell here` returns 0.

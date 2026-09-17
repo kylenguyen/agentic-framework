@@ -134,8 +134,12 @@ it that is yours alone, so a second Mac can sit on the same session with its own
 the harness running. Inside tmux, Ctrl+B `g` opens the same picker in a popup and switches; `log out` there detaches the client and
 closes the connection, leaving the harness sessions running. Sessions are made and
 removed with `agent new` / `agent kill`, never by hand; `agent ls` is the same list without the picker. `kill session`
-is the same `agent kill` from inside the picker: it asks which session in a second list, then takes that session and
-every view of it, leaving any worktree on disk. A session
+is the same `agent kill` from inside the picker: it asks which session in a second list, then takes that session,
+every view of it and, if it was started with a slug, its worktree. The `agent/<slug>` branch always stays, so the
+commits do; only the checkout under `~/workspace/<repo>.wt/` goes. A worktree with uncommitted or untracked work
+asks first (`Remove the worktree anyway? [y/N]`) and is kept unless answered yes — as it is with no terminal to
+ask, where the removal command is printed instead. `agent kill <name> --force` skips the question,
+`--keep-worktree` keeps the checkout for another session working in it. A session
 that was already there (an old `main`) is listed as a shell and left alone.
 
 Verify, from the open session and a new one:
@@ -185,6 +189,7 @@ mac$ ssh <host> 'claude --bare -p "reply with the single word ok"'    # needs th
 | Cmd+V of an image in that session | still `[Image #1]`: the clipboard bridge is unaffected |
 | `/exit` in the harness | the row says `exited` and the last screen is still there; `agent kill <name>` clears it |
 | `kill session` in the picker, pick that row | the row is gone from the list; Esc at that second list kills nothing |
+| `agent kill <name>` for a session started with a slug | says `worktree removed`, `~/workspace/<repo>.wt/<slug>` is gone and `git -C ~/workspace/<repo> branch --list agent/<slug>` still prints the branch; with uncommitted work it asks first |
 | `mac$ mosh <host>` | survives Wi-Fi off and on |
 | Cmd+Shift+A in WezTerm | new tab on <host> |
 | tmux copy mode (Ctrl+B `[`, Space, Enter), then `mac$ pbpaste` | the copied text |

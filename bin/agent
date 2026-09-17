@@ -9,14 +9,16 @@
 #   agent attach <name>
 #   agent pick [--switch]        # --switch only inside tmux (the Ctrl+B g popup)
 #   agent switch                 # alias for: agent pick --switch
-#   agent kill <name>
+#   agent kill <name> [--force] [--keep-worktree]
 #
 # Model: one harness run in one repo is one tmux "base" session. The base is never attached directly.
 # Each device attaches its own "view" session (<name>@<n>) grouped with the base, so several Macs share the
 # processes but keep their own current window, size and scroll. A view is destroyed the moment it has no
 # client (destroy-unattached), the base survives, and a finished or crashed harness leaves its last screen
 # behind (remain-on-exit) until `agent kill`. tmux is the only state: no registry file, nothing survives a
-# reboot, and re-attach is to live processes only.
+# reboot, and re-attach is to live processes only. A session `agent new --slug` gave a worktree to loses it
+# again on `agent kill`: the directory only, never the agent/<slug> branch, and never silently while it has
+# uncommitted changes.
 #
 # Session names never contain "." or ":": tmux rewrites the first and treats both as target separators.
 # Names are for display; every command resolves a name to a session id once and then uses the id.
@@ -53,7 +55,7 @@ usage: agent <command>
   attach <name>
   pick [--switch]
   switch
-  kill <name>
+  kill <name> [--force] [--keep-worktree]
 USAGE
   exit "${1:-2}"
 }
@@ -203,22 +205,97 @@ cmd_switch_to() {
   tm set-option -t "$vid" destroy-unattached on
 }
 
+# --- worktrees ----------------------------------------------------------------------------------------
+
+# The main checkout a worktree belongs to, asked of git rather than parsed out of the path: --git-common-dir
+# points at the main repo's .git from anywhere inside a linked worktree (and is the relative ".git" when the
+# directory is a main checkout, which is why it is resolved against the worktree first).
+main_checkout() {
+  local cwd=$1 common
+  common=$(git -C "$cwd" rev-parse --git-common-dir 2>/dev/null) || return 1
+  case $common in /*) ;; *) common=$cwd/$common ;; esac
+  (cd "$common/.." 2>/dev/null && pwd) || return 1
+}
+
+wt_dirty() { [ -n "$(git -C "$1" status --porcelain 2>/dev/null)" ]; }
+
+# confirm_dirty <cwd>: 0 means remove it anyway. The question goes to /dev/tty and not to stdin, because in
+# the picker stdin belongs to fzf. No terminal to ask (a script, the tests, a popup already closing) is a
+# "no", which is the safe half of the answer and the only one that cannot lose work; that case is detected
+# by opening /dev/tty rather than by testing it, since the device file is readable even where opening it
+# fails with ENXIO for want of a controlling terminal.
+confirm_dirty() {
+  local cwd=$1 ans=""
+  exec 3<>/dev/tty 2>/dev/null || return 1
+  {
+    printf '%s has uncommitted changes:\n' "$cwd"
+    git -C "$cwd" status --porcelain | sed 's/^/  /'
+    printf 'Remove the worktree anyway? [y/N] '
+  } >&3
+  read -r ans <&3 || ans=""
+  exec 3>&-
+  case $ans in [yY] | [yY][eE][sS]) return 0 ;; *) return 1 ;; esac
+}
+
+# --- kill ---------------------------------------------------------------------------------------------
+
+# A worktree exists for the session that works in it: `agent new --slug` created it, so `agent kill` takes it
+# away again and ~/workspace/<repo>.wt does not fill up with checkouts nobody is in. Only the directory goes.
+# The agent/<slug> branch is always kept, so every commit made in the worktree stays reachable, and so does
+# anything that was only committed locally.
+#
+# The worktree is decided on before anything is killed: the operator has to be able to answer while their
+# terminal is still there, and killing the session a picker popup is standing in ends the popup with it.
 cmd_kill() {
-  local name=${1:-} id cwd repo vid vname
+  local name="" force=0 keep=0 id cwd repo root="" branch vid vname is_wt=0 remove=0 hint="" rmargs=()
+  while [ $# -gt 0 ]; do
+    case $1 in
+      -f | --force)    force=1; shift ;;
+      --keep-worktree) keep=1;  shift ;;
+      -*) usage ;;
+      *) [ -z "$name" ] || usage; name=$1; shift ;;
+    esac
+  done
   [ -n "$name" ] || usage
   id=$(session_id "$name") || true
   [ -n "$id" ] || die "no such session: $name" 2
   cwd=$(tm display-message -p -t "$id" '#{@cwd}' 2>/dev/null || true)
   repo=$(tm display-message -p -t "$id" '#{@repo}' 2>/dev/null || true)
+  branch=$(tm display-message -p -t "$id" '#{@branch}' 2>/dev/null || true)
+  # Only a worktree still on disk is worth deciding about: a session in the main checkout, or one whose
+  # directory has already been removed by hand, leaves nothing to decide and nothing to say.
+  case $cwd in "$WORKSPACE"/*.wt/*) [ ! -d "$cwd" ] || is_wt=1 ;; esac
+  if [ "$is_wt" = 1 ]; then
+    root=$(main_checkout "$cwd" 2>/dev/null || true)
+    [ -n "$root" ] || root=$WORKSPACE/$repo
+    if [ "$keep" = 1 ]; then
+      remove=0
+    elif [ "$force" = 1 ] || ! wt_dirty "$cwd"; then
+      remove=1
+    elif confirm_dirty "$cwd"; then
+      remove=1; force=1
+    fi
+  fi
   # The views only share the base's windows; killing the base would leave each device attached to a
   # session nobody owns any more, so the whole group goes, views first.
   while IFS=$SEP read -r vid vname; do
     case $vname in "$name"@[0-9]*) tm kill-session -t "$vid" 2>/dev/null || true ;; esac
   done < <(tm list-sessions -F "#{session_id}${SEP}#{session_name}" 2>/dev/null)
   tm kill-session -t "$id"
-  case $cwd in
-    "$WORKSPACE"/*.wt/*) printf 'worktree kept: git -C %s worktree remove %s\n' "$WORKSPACE/$repo" "$cwd" ;;
-  esac
+  [ -n "$root" ] || return 0
+  if [ "$remove" = 1 ]; then
+    rmargs=(worktree remove)
+    [ "$force" = 0 ] || rmargs+=(--force)
+    if git -C "$root" "${rmargs[@]}" "$cwd" >&2; then
+      printf 'worktree removed: %s (branch %s kept)\n' "$cwd" "${branch:--}"
+      return 0
+    fi
+    note "worktree removal failed"
+  fi
+  # Kept, either because it was asked for or because nobody was there to be asked: the command to finish the
+  # job by hand, with the --force the dirty case will need.
+  if wt_dirty "$cwd"; then hint="--force "; fi
+  printf 'worktree kept: git -C %s worktree remove %s%s\n' "$root" "$hint" "$cwd"
 }
 
 # --- listing ------------------------------------------------------------------------------------------
@@ -406,12 +483,13 @@ pick_new_shell() {
 # Kill is the one verb that destroys work, so it never acts on whatever row happened to be highlighted:
 # the session is chosen a second time, in a list of its own, under a prompt that says what will happen.
 # Esc backs out. Killing the session behind the popup you are standing in is allowed and ends the popup
-# with it; the harness is gone either way, so there is nothing to go back to.
+# with it; the harness is gone either way, so there is nothing to go back to. A worktree with uncommitted
+# changes asks once more, on the terminal, before it goes.
 pick_kill() {
   local list sel name
   list=$(ls_human 0)
   if [ -z "$list" ]; then note 'no sessions to kill'; return 0; fi
-  sel=$(printf '%s\n' "$list" | menu 'kill (ends the harness and every view of it)>' "$(pick_filter 1)") || return 0
+  sel=$(printf '%s\n' "$list" | menu 'kill (ends the harness, every view of it and its worktree)>' "$(pick_filter 1)") || return 0
   [ -n "$sel" ] || return 0
   name=${sel%% *}
   cmd_kill "$name"
@@ -437,7 +515,7 @@ case ${1:-} in
   attach) shift; cmd_attach "${1:-}" ;;
   pick)   shift; cmd_pick "$@" ;;
   switch) shift; [ $# = 0 ] || usage; cmd_pick --switch ;;
-  kill)   shift; cmd_kill "${1:-}" ;;
+  kill)   shift; cmd_kill "$@" ;;
   -h|--help|help) usage 0 ;;
   *) usage ;;
 esac

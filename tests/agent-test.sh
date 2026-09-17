@@ -164,12 +164,45 @@ check "exit: ls says exited" exited "$("$AGENT" ls --porcelain | awk -F'\t' '$1=
 check "exit: the last screen is still readable" 1 "$(tm capture-pane -p -t "$(sid claude-demo)" | grep -c . || true)"
 
 echo "# kill"
-killout=$("$AGENT" kill claude-demo-feat)
-has "worktree kept" "$killout" "kill: prints the worktree removal command instead of running it"
-has "git -C $HOME/workspace/demo worktree remove $HOME/workspace/demo.wt/feat" "$killout" "kill: the exact command"
-check "kill: the worktree is still on disk" 1 "$([ -d "$HOME/workspace/demo.wt/feat" ] && echo 1 || echo 0)"
+# claude-demo-feat-2 is the second session in the same worktree; --keep-worktree is how the one that goes
+# first leaves the checkout for it.
+keepout=$("$AGENT" kill claude-demo-feat --keep-worktree)
+has "worktree kept" "$keepout" "kill --keep-worktree: says the worktree stays"
+has "git -C $HOME/workspace/demo worktree remove $HOME/workspace/demo.wt/feat" "$keepout" "kill --keep-worktree: the exact command"
+check "kill --keep-worktree: the worktree is still on disk" 1 "$([ -d "$HOME/workspace/demo.wt/feat" ] && echo 1 || echo 0)"
 check "kill: the session is gone" "" "$(sid claude-demo-feat)"
+# Dirty and nobody to ask: setsid drops the controlling terminal, which is what a script or a cron run looks
+# like, and the answer nobody gave has to be "keep".
+echo dirt > "$HOME/workspace/demo.wt/feat/dirt"
+if command -v setsid >/dev/null 2>&1; then
+  dirtyout=$(setsid "$AGENT" kill claude-demo-feat-2 </dev/null 2>/dev/null)
+  has "worktree kept" "$dirtyout" "kill: a dirty worktree with no terminal to ask is kept"
+  has "worktree remove --force $HOME/workspace/demo.wt/feat" "$dirtyout" "kill: the kept command carries --force"
+  check "kill: the dirty worktree is still on disk" 1 "$([ -d "$HOME/workspace/demo.wt/feat" ] && echo 1 || echo 0)"
+  check "kill: the session went anyway" "" "$(sid claude-demo-feat-2)"
+else
+  skip "kill: a dirty worktree with no terminal to ask is kept" "setsid is not available"
+  "$AGENT" kill claude-demo-feat-2 --keep-worktree >/dev/null 2>&1 || true
+fi
+# --force is the operator answering yes up front: the uncommitted file goes with the worktree.
+"$AGENT" new demo --slug feat --harness shell --name forcekill --no-attach >/dev/null 2>&1
+forceout=$("$AGENT" kill forcekill --force)
+has "worktree removed" "$forceout" "kill --force: removes a dirty worktree"
+check "kill --force: the worktree is gone" 0 "$([ -d "$HOME/workspace/demo.wt/feat" ] && echo 1 || echo 0)"
+check "kill --force: the branch is kept" agent/feat "$(git -C "$HOME/workspace/demo" branch --list agent/feat --format '%(refname:short)')"
+# The ordinary case: a clean worktree goes with the session, no flags and no questions.
+"$AGENT" new demo --slug clean --harness shell --name cleankill --no-attach >/dev/null 2>&1
+cleanout=$("$AGENT" kill cleankill)
+has "worktree removed: $HOME/workspace/demo.wt/clean" "$cleanout" "kill: a clean worktree is removed with the session"
+check "kill: the clean worktree is gone from disk" 0 "$([ -d "$HOME/workspace/demo.wt/clean" ] && echo 1 || echo 0)"
+check "kill: git no longer lists it" 0 "$(git -C "$HOME/workspace/demo" worktree list | grep -c 'demo.wt/clean' || true)"
+check "kill: the branch is kept" agent/clean "$(git -C "$HOME/workspace/demo" branch --list agent/clean --format '%(refname:short)')"
+# A session in the main checkout has no worktree to take away and says nothing about one.
+"$AGENT" new demo --harness shell --name mainkill --no-attach >/dev/null 2>&1
+check "kill: a session in the main checkout mentions no worktree" "" "$("$AGENT" kill mainkill)"
+check "kill: the main checkout is untouched" 1 "$([ -d "$HOME/workspace/demo" ] && echo 1 || echo 0)"
 check "kill: unknown name exits 2" 2 "$("$AGENT" kill nosuch >/dev/null 2>&1; echo $?)"
+check "kill: an unknown flag exits 2" 2 "$("$AGENT" kill claude-demo --nope >/dev/null 2>&1; echo $?)"
 if [ "$HAVE_PTY" = 1 ]; then
   env -u TMUX SSH_CLIENT="10.8.8.8 51000 22" timeout 60 script -qfc "$AGENT attach claude-demo-2" /dev/null >/dev/null 2>&1 &
   kill_pid=$!
@@ -221,12 +254,13 @@ else
   if [ "$HAVE_PTY" = 0 ]; then
     skip "pick: attaching" "script(1) is not available, so no pty for a tmux client"
   else
-    env -u TMUX SSH_CLIENT="10.7.7.7 51000 22" timeout 60 script -qfc "env AGENT_PICK_FILTER=claude-demo-feat-2 $AGENT pick" "$T/pick1.pty" >/dev/null 2>&1 &
+    # "mine" and not one of the worktree sessions: the kill cases above take those, and their worktrees, away.
+    env -u TMUX SSH_CLIENT="10.7.7.7 51000 22" timeout 60 script -qfc "env AGENT_PICK_FILTER=mine $AGENT pick" "$T/pick1.pty" >/dev/null 2>&1 &
     pick_pid=$!
-    if wait_until 15 have_session 'claude-demo-feat-2@1'; then
+    if wait_until 15 have_session 'mine@1'; then
       ok "pick: choosing a session row creates a view of it"
-      check "pick: the view carries the device" 10.7.7.7 "$("$AGENT" ls --porcelain | awk -F'\t' '$1=="claude-demo-feat-2"{print $8}')"
-      tm detach-client -s 'claude-demo-feat-2@1'
+      check "pick: the view carries the device" 10.7.7.7 "$("$AGENT" ls --porcelain | awk -F'\t' '$1=="mine"{print $8}')"
+      tm detach-client -s 'mine@1'
     else
       bad "pick: choosing a session row creates a view of it" "sessions: $(names); pty: $(tr -d '\r' < "$T/pick1.pty" | tr -s '\n' ' ' | tail -c 300)"
     fi
