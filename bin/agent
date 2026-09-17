@@ -415,8 +415,11 @@ repo_list() {
   done
 }
 
+# pick_new_session <switch>: like pick_new_shell, the session is created detached and only then entered,
+# so that inside the prefix-g popup the harness lands in the client behind the popup and the popup closes,
+# instead of the harness starting in the popup itself and dying with it.
 pick_new_session() {
-  local repo harness slug
+  local switch=$1 repo harness slug name
   repo=$(repo_list | menu 'repo>' "$(pick_filter 1)") || return 0
   [ -n "$repo" ] || return 0
   harness=$(printf 'claude\nomp\nopencode\nshell\n' | menu 'harness>' "$(pick_filter 2)") || return 0
@@ -427,13 +430,20 @@ pick_new_session() {
     # --print-query with nothing to match: the typed text is the answer, empty means the main checkout.
     slug=$(: | fzf --print-query --prompt='slug (empty: work in the main checkout)> ' | head -1) || true
   fi
-  local args=("$repo" --harness "$harness")
+  local args=("$repo" --harness "$harness" --no-attach)
   [ -z "$slug" ] || args+=(--slug "$slug")
-  cmd_new "${args[@]}"
+  name=$(cmd_new "${args[@]}") || return 0
+  [ -n "$name" ] || return 0
+  entered=1
+  if [ "$switch" = 1 ]; then cmd_switch_to "$name"; else cmd_attach "$name"; fi
 }
 
+# `entered` is set by the two rows that create a session, and only once they really enter it. Under
+# --switch the picker runs in the prefix-g popup, so it has to return the moment the client is on another
+# session: anything else redraws the menu over the session the operator just asked for. Backing out of the
+# repo or harness menu leaves it 0 and comes back to the session list.
 cmd_pick() {
-  local switch=0 sel rc name
+  local switch=0 sel rc name entered
   case ${1:-} in
     --switch) switch=1; shift ;;
     "") ;;
@@ -447,6 +457,7 @@ cmd_pick() {
   [ "$switch" = 1 ] || logout_drop
   while :; do
     rc=0
+    entered=0
     sel=$(pick_rows | menu 'session>' "$(pick_filter 0)") || rc=$?
     if [ "$rc" != 0 ] || [ -z "$sel" ]; then
       # fzf aborted (Esc, Ctrl+C) or matched nothing: in the popup that just closes it, at the login
@@ -455,7 +466,7 @@ cmd_pick() {
       return 3
     fi
     case $sel in
-      '+ new session')      pick_new_session || true ;;
+      '+ new session')      pick_new_session "$switch" || true ;;
       '+ new shell')        pick_new_shell "$switch" || true ;;
       '- kill session')     pick_kill || true ;;
       '> plain shell here') return 0 ;;
@@ -469,6 +480,7 @@ cmd_pick() {
     # The attach above (or the one inside new/new shell) has just returned. If it returned because a popup
     # on this client chose "log out", that is this loop's answer, not another round of the menu.
     if [ "$switch" = 0 ] && logout_claim; then return 3; fi
+    [ "$switch" = 0 ] || [ "$entered" = 0 ] || return 0
     [ -z "${AGENT_PICK_FILTER:-}" ] || return 0
   done
 }
@@ -477,6 +489,7 @@ pick_new_shell() {
   local switch=$1 name
   name=$(unique_name shell-scratch)
   session_create "$name" shell "" "$WORKSPACE" -
+  entered=1
   if [ "$switch" = 1 ]; then cmd_switch_to "$name"; else cmd_attach "$name"; fi
 }
 

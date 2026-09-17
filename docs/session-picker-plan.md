@@ -90,6 +90,10 @@ login shell itself, because that shell is in another process tree: the popup set
 tmux server environment and detaches the client, and the login shell's picker loop — which the detach returns from
 its foreground attach — claims that mark on its way round and exits 3, so the connection closes. A picker claims a
 mark once and removes it; a fresh login on that tty drops any mark left by a popup nobody was there to hear.
+`new session` and `new shell` go the same way under `--switch` (fixed 17 Sep 2026, after the first version
+attached them instead): the session is created detached, the client behind the popup switches to it, and the
+picker returns so the popup closes. Attaching there would have started the harness inside the popup, where it
+would die with it.
 
 **Landing.** `config/bashrc.d/tmux-autoattach.sh` keeps its guard (`$- == *i*`, `SSH_TTY` set, `TMUX` empty,
 `NO_TMUX` empty, command present) and runs `agent pick` instead of `exec tmux new -As main`. Non-interactive
@@ -212,6 +216,7 @@ pty does not survive backgrounding, wrap in `script -qfc`. The existing `run` / 
 | second Mac, pick the same session | both see the harness; switching windows on one does not move the other |
 | Ctrl+B `g` | popup picker; choosing another session switches; `tmux ls` shows the old view gone |
 | Ctrl+B `g`, then `log out` | the client detaches and the ssh/mosh connection closes; `tmux ls` on a new login still shows the session |
+| Ctrl+B `g`, then `new session` | popup closes, the harness runs in the terminal behind it |
 | Cmd+V of an image in that session | still `[Image #1]` (clipboard bridge unaffected) |
 | `/exit` in the harness | row shows `exited`, last screen visible; `agent kill` clears it |
 | `mac$ ssh <host> 'echo $TMUX'` | empty line |

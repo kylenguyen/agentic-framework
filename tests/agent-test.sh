@@ -279,6 +279,22 @@ else
     fi
     kill "$pick_pid" 2>/dev/null || true
     wait "$pick_pid" 2>/dev/null || true
+    # new session: repo and harness are the second and third filters of the flow. The slug prompt is
+    # skipped under AGENT_PICK_FILTER, so this is the main checkout.
+    env -u TMUX SSH_CLIENT="10.8.8.8 51000 22" timeout 60 \
+      script -qfc "env AGENT_PICK_FILTER='new session;demo;shell' $AGENT pick" "$T/pick3.pty" >/dev/null 2>&1 &
+    pick_pid=$!
+    if wait_until 15 have_session 'shell-demo@1'; then
+      ok "pick: new session creates the session and attaches to it"
+      check "pick: the new session runs in the repo, not in a worktree" "$HOME/workspace/demo" "$(opt shell-demo @cwd)"
+      tm detach-client -s 'shell-demo@1'
+    else
+      bad "pick: new session creates the session and attaches to it" \
+        "sessions: $(names); pty: $(tr -d '\r' < "$T/pick3.pty" | tr -s '\n' ' ' | tail -c 300)"
+    fi
+    kill "$pick_pid" 2>/dev/null || true
+    wait "$pick_pid" 2>/dev/null || true
+    "$AGENT" kill shell-demo >/dev/null 2>&1 || true
   fi
 fi
 # The picker is the login landing, so a host without fzf has to say so rather than drop the operator nowhere.
@@ -354,6 +370,49 @@ else
   "$AGENT" kill outsrc >/dev/null 2>&1 || true
   kill "$out_pid" 2>/dev/null || true
   wait "$out_pid" 2>/dev/null || true
+fi
+
+echo "# switch: a session made from the popup runs behind it, not inside it"
+if [ "$HAVE_FZF" = 0 ] || [ "$HAVE_PTY" = 0 ]; then
+  skip "popup new session" "needs both fzf and a pty"
+else
+  # The real prefix-g binding, not send-keys: `display-popup -E` on the attached client, which is the only
+  # way to catch a picker that attaches the new harness in the popup instead of switching the client behind
+  # it. The popup closes when its command returns, so the marker file is how a script sees it close.
+  "$AGENT" kill shell-demo >/dev/null 2>&1 || true
+  cat > "$T/popup-new.sh" <<POPUP
+#!/bin/sh
+export PATH='$PATH' AGENT_TMUX_SOCKET='$AGENT_TMUX_SOCKET'
+AGENT_PICK_FILTER='new session;demo;shell' '$AGENT' pick --switch
+echo closed > '$T/popup.closed'
+POPUP
+  chmod +x "$T/popup-new.sh"
+  "$AGENT" new demo --harness shell --name popsrc --no-attach >/dev/null
+  env -u TMUX SSH_CLIENT="10.3.3.3 51000 22" timeout 60 script -qfc "$AGENT attach popsrc" /dev/null >/dev/null 2>&1 &
+  pop_pid=$!
+  if wait_until 15 have_session 'popsrc@1'; then
+    popup_client=$(tm list-clients -F '#{client_name}' -t 'popsrc@1' 2>/dev/null | head -1)
+    tm display-popup -c "$popup_client" -E "$T/popup-new.sh" 2>/dev/null || true
+    if wait_until 20 have_session 'shell-demo@1'; then
+      ok "popup: new session lands in the client behind the popup"
+      check "popup: that view holds the client" 1 "$(opt 'shell-demo@1' session_attached)"
+      wait_until 20 test -e "$T/popup.closed" \
+        && ok "popup: the picker returns, so the popup closes" \
+        || bad "popup: the picker returns, so the popup closes" "no marker; sessions: $(names)"
+      wait_until 15 no_session 'popsrc@1' \
+        && ok "popup: the view it came from is destroyed" || bad "popup: the view it came from is destroyed" "$(names)"
+      tm detach-client -s 'shell-demo@1' 2>/dev/null || true
+    else
+      bad "popup: new session lands in the client behind the popup" \
+        "sessions: $(names); pane: $(tm capture-pane -p -t popsrc 2>/dev/null | grep -v '^$' | tail -4 | tr '\n' '|')"
+    fi
+  else
+    skip "popup new session" "no pty client"
+  fi
+  "$AGENT" kill shell-demo >/dev/null 2>&1 || true
+  "$AGENT" kill popsrc >/dev/null 2>&1 || true
+  kill "$pop_pid" 2>/dev/null || true
+  wait "$pop_pid" 2>/dev/null || true
 fi
 
 echo "# the login fragment runs the picker, and only for interactive ssh logins"

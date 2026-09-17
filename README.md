@@ -131,8 +131,10 @@ the `.env` lines for the Macs.
 Log out and back in. The new login lands in the session picker (`agent pick`): every running harness session on
 the host, plus `new session`, `new shell`, `kill session`, `plain shell here` and `log out`. Choosing a session attaches a view of
 it that is yours alone, so a second Mac can sit on the same session with its own current window; detaching leaves
-the harness running. Inside tmux, Ctrl+B `g` opens the same picker in a popup and switches; `log out` there detaches the client and
-closes the connection, leaving the harness sessions running. Sessions are made and
+the harness running. Inside tmux, Ctrl+B `g` opens the same picker in a popup and switches: picking a session, or
+making one with `new session` or `new shell`, closes the popup and leaves the terminal itself on that session, never
+the harness inside the popup; `log out` there detaches the client and closes the connection, leaving the harness
+sessions running. Sessions are made and
 removed with `agent new` / `agent kill`, never by hand; `agent ls` is the same list without the picker. `kill session`
 is the same `agent kill` from inside the picker: it asks which session in a second list, then takes that session,
 every view of it and, if it was started with a slug, its worktree. The `agent/<slug>` branch always stays, so the
@@ -186,6 +188,7 @@ mac$ ssh <host> 'claude --bare -p "reply with the single word ok"'    # needs th
 | second Mac, pick the same session | both see the harness; changing window on one does not move the other |
 | Ctrl+B `g` | popup picker; choosing another session switches to it, and `agent ls` shows the old view gone |
 | Ctrl+B `g`, then `log out` | the connection closes; log back in and the session is still in the picker |
+| Ctrl+B `g`, then `new session` | the popup closes and the new harness runs in the terminal behind it, not inside the popup |
 | Cmd+V of an image in that session | still `[Image #1]`: the clipboard bridge is unaffected |
 | `/exit` in the harness | the row says `exited` and the last screen is still there; `agent kill <name>` clears it |
 | `kill session` in the picker, pick that row | the row is gone from the list; Esc at that second list kills nothing |
