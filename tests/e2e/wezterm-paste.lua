@@ -2,7 +2,8 @@
 -- Lua 5.4 with a stub `wezterm` table, so the Cmd+V decision runs exactly as WezTerm would run it, against the real
 -- clip-push and the real host. Everything WezTerm would do is printed as one line per event for the shell to check:
 --   action PasteFrom Clipboard        the pane got an ordinary paste
---   action SendKey CTRL v             Ctrl+V was sent (Claude Code then reads the pushed image through xclip)
+--   paste <text>                      pane:paste(text): the path clip-put printed, pasted as one bracketed paste
+--   action SendKey ...                a key was sent (nothing does this any more; printed so a regression shows)
 --   toast <title>: <message>          a notification, nothing sent
 --   domain / key / term / scheme      what apply() put into the config (scenario "apply")
 -- Usage: lua5.4 tests/e2e/wezterm-paste.lua <scenario>
@@ -61,6 +62,7 @@ local domain = config.ssh_domains[1].name
 local pane = {
   get_domain_name = function() return scenario == "domain" and domain or "local" end,
   get_foreground_process_name = function() return scenario == "domain" and "/usr/bin/zsh" or "/usr/bin/" .. proc end,
+  paste = function(_, text) print("paste " .. text) end,
 }
 local window = {
   perform_action = function(_, a) print("action " .. describe(a)) end,

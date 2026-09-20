@@ -7,10 +7,12 @@ local M = {}
 
 -- Cmd+V in a pane connected to the host (its SSH domain, or a local pane whose foreground process is ssh or
 -- mosh-client). A pty carries text only, so an image cannot be pasted the normal way: clip-push --if-image ships
--- it over SSH into clip-put on the host and reports the type; for an image we then send Ctrl+V, which is the key
--- Claude Code reads the clipboard on (it calls the xclip shim, which serves the pushed file). Text never
--- touches the host: it is pasted natively, so plain Cmd+V costs nothing. run_child_process is synchronous, so the
--- image is on the host before Claude Code sees the key. Any other pane gets the ordinary paste.
+-- it over SSH into clip-put on the host, which stores it as its own ~/.clip/<stamp>.png and prints that path; we
+-- then paste the path into the pane (pane:paste honours bracketed paste, so it arrives as one paste, not
+-- keystrokes). Claude Code, Oh My Pi and OpenCode all attach a pasted image path as an image, so the same key works
+-- in every harness, and a shell simply gets the path. Text never touches the host: it is pasted natively, so plain
+-- Cmd+V costs nothing. run_child_process is synchronous, so the file is on the host before the path is pasted.
+-- Any other pane gets the ordinary paste.
 local HOST = "@AGENT_HOST@"
 local function paste_via_host(window, pane)
   local paste_text = wezterm.action.PasteFrom("Clipboard")
@@ -23,18 +25,23 @@ local function paste_via_host(window, pane)
   end
   local called, ok, stdout, stderr =
     pcall(wezterm.run_child_process, { wezterm.home_dir .. "/.local/bin/clip-push", "--if-image" })
-  local kind = called and (stdout or ""):match("^%S+") or ""
+  stdout = called and (stdout or "") or ""
+  local kind = stdout:match("^%S+") or ""            -- line 1: image/png or text/plain
+  local path = stdout:match("\n(%S+)") or ""          -- line 2: where clip-put stored the image
   if kind ~= "image/png" and (kind ~= "" or called and ok) then
     window:perform_action(paste_text, pane)   -- text: native bracketed paste, nothing was pushed
     return
   end
-  if not called or not ok then
-    -- Do not send Ctrl+V: Claude Code would paste whatever the host still holds from last time.
-    local why = called and (stderr or "") or tostring(ok)
+  if not called or not ok or path == "" then
+    -- Paste nothing: a stale or guessed path would attach the wrong image.
+    local why
+    if not called then why = tostring(ok)                                 -- clip-push could not be run at all
+    elseif not ok then why = (stderr or "")                               -- it ran and failed; it said why
+    else why = "host clip-put is older than this Mac's config; git pull on the host" end
     window:toast_notification(HOST .. " clipboard", "clip-push failed: " .. why, nil, 5000)
     return
   end
-  window:perform_action(wezterm.action.SendKey { key = "v", mods = "CTRL" }, pane)
+  pane:paste(path)
 end
 
 function M.apply(config)

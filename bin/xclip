@@ -3,8 +3,10 @@
 # Installed as ~/.local/bin/xclip (ahead of /usr/bin; do NOT apt install xclip).
 #
 # Data flow: Cmd+V in WezTerm runs clip-push on the Mac; when the Mac clipboard holds an image it is piped over
-# SSH into clip-put on this host, which writes the spool file ~/.clip/latest, and WezTerm then sends Ctrl+V,
-# the key Claude Code reads the clipboard on. Claude Code calls xclip:
+# SSH into clip-put on this host, which stores it as ~/.clip/<stamp>.png, points the spool ~/.clip/latest at it and
+# prints the path, and WezTerm pastes that path into the pane: every harness attaches a pasted image path. So the
+# image half of this shim is no longer on the Cmd+V path; it still answers Ctrl+V in Claude Code (the key it reads
+# the clipboard on), and the copy half below is what carries copies back to the Mac. Claude Code calls xclip:
 #
 # Claude Code calls:                                    shim:
 #   xclip -selection clipboard -t TARGETS -o          -> image/png if the spool starts with the PNG magic, else text/plain UTF8_STRING

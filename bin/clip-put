@@ -1,22 +1,48 @@
 #!/usr/bin/env bash
-# clip-put: store a clipboard payload from stdin where the xclip shim reads it (~/.clip/latest).
+# clip-put: store a clipboard payload from stdin under ~/.clip and print where it went.
 # Called over SSH by clip-push on the Mac (Cmd+V in WezTerm). Installed to ~/.local/bin/clip-put by install-host.sh
 # and invoked by that absolute path, so the minimal PATH of a non-interactive SSH command does not matter.
-# Usage: clip-put            stdin -> spool, atomic replace, directory 700, file 600
-#        clip-put --clear    remove the spool (the pasted content stays on disk until then)
-# CLIP_BRIDGE_SPOOL overrides the spool path; it must match what the shim uses.
+#
+# A PNG becomes its own file, ~/.clip/<UTC stamp>-<random>.png, and its absolute path is printed: WezTerm pastes that
+# path into the pane, and Claude Code, Oh My Pi and OpenCode all attach a pasted image path as an image. One file per
+# paste, so a second push can never overwrite a file a harness has not read yet. ~/.clip/latest is repointed at the
+# new file (a symlink) so the xclip shim keeps serving the most recent image too. Text replaces ~/.clip/latest as a
+# regular file and prints nothing; WezTerm never pushes text, but a plain `clip-push` does.
+# Every push prunes .png files older than 24 hours. There is no timer, so a file survives until the next push more
+# than 24 h after it was written: a quiet weekend keeps Friday's screenshot until Monday's first paste. Screenshots
+# are Confidential more often than not, so `clip-put --clear` (or `clip-push --clear` on the Mac) is the way to
+# remove one now rather than eventually.
+#
+# Usage: clip-put            stdin -> ~/.clip; prints the .png path for an image, nothing for text
+#        clip-put --clear    remove everything under ~/.clip; the only way to remove a pushed image at a chosen moment
+# CLIP_BRIDGE_SPOOL overrides the `latest` path (and so the directory); it must match what the xclip shim uses, and
+# it must name a directory used for nothing else: every push deletes *.png and .put.* older than the retention there.
+# CLIP_KEEP_MINUTES overrides the retention (default 1440).
 set -euo pipefail
 spool=${CLIP_BRIDGE_SPOOL:-$HOME/.clip/latest}
+dir=$(dirname "$spool")
 case "${1:-}" in
-  --clear) rm -f "$spool"; exit 0 ;;
+  --clear) rm -f "$spool" "$dir"/*.png "$dir"/.put.* 2>/dev/null || true; exit 0 ;;
   "") ;;
   *) echo 'usage: clip-put [--clear]   (payload on stdin)' >&2; exit 2 ;;
 esac
-dir=$(dirname "$spool")
+is_png() { head -c 8 "$1" 2>/dev/null | od -An -tx1 | tr -d ' \n' | grep -q '^89504e470d0a1a0a$'; }
+
 install -d -m 700 "$dir"
 tmp=$(mktemp "$dir/.put.XXXXXX")
 trap 'rm -f "$tmp"' EXIT
 cat > "$tmp"
 chmod 600 "$tmp"
-mv -f "$tmp" "$spool"
+if is_png "$tmp"; then
+  # Stamp first so `ls` sorts by time; the mktemp suffix keeps two pushes in one second apart. No spaces: the path
+  # is pasted as text and Oh My Pi splits a pasted line on whitespace.
+  png="$dir/$(date -u +%Y%m%dT%H%M%SZ)-${tmp##*.}.png"
+  mv -f "$tmp" "$png"
+  link=$(mktemp -u "$dir/.put.XXXXXX")
+  ln -s "$png" "$link" && mv -fT "$link" "$spool"
+  printf '%s\n' "$png"
+else
+  mv -f "$tmp" "$spool"
+fi
 trap - EXIT
+find "$dir" -maxdepth 1 \( -name '*.png' -o -name '.put.*' \) -mmin "+${CLIP_KEEP_MINUTES:-1440}" -delete 2>/dev/null || true

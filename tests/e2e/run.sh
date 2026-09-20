@@ -6,7 +6,8 @@
 # slipped past tests/params-test.sh fails here. What a container cannot do (systemd, tailscale) is shimmed
 # and logged; see tests/e2e/shims. The clipboard bridge is driven the way WezTerm drives it: the rendered module runs
 # under Lua 5.4 (tests/e2e/wezterm-paste.lua) and its Cmd+V decision calls the real clip-push, which pushes over ssh
-# to the real host; the shell then makes the xclip calls Claude Code makes after Ctrl+V and compares bytes. A second
+# to the real host and pastes back the path clip-put printed; the shell checks that file byte for byte. Driving the
+# three harnesses with that pasted path needs their installers and is tests/e2e/harness-paste.sh. A second
 # Mac (macuser2, same .env, own key) installs and pushes too, since the design is many Macs against one host.
 # Needs docker without sudo; network only for the image builds. KEEP=1 leaves the containers running for a look
 # around. Exit 0 when every check passes.
@@ -109,12 +110,24 @@ check "clip: xclip -o over ssh serves it" plain "$(mac ssh -o BatchMode=yes "$AL
 check "clip: --if-image with text pushes nothing" text/plain "$(mac sh -c 'printf other > /tmp/clipboard.txt; /home/macuser/.local/bin/clip-push --if-image' 2>&1)"
 check "clip: spool unchanged by --if-image text" plain "$(box cat "/home/$LOGIN/.clip/latest")"
 mac sh -c "echo iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg== | base64 -d > /tmp/clipboard.png; echo png > /tmp/clipboard.kind"
-check "clip: image is reported and pushed" image/png "$(mac /home/macuser/.local/bin/clip-push --if-image 2>&1)"
-has "PNG image data, 1 x 1" "$(box file "/home/$LOGIN/.clip/latest")" "clip: spool holds the PNG"
+pushed=$(mac /home/macuser/.local/bin/clip-push --if-image 2>&1 | tr -d '\r')
+check "clip: image is reported" image/png "$(printf '%s\n' "$pushed" | sed -n 1p)"
+PNG1=$(printf '%s\n' "$pushed" | sed -n 2p)
+case "$PNG1" in /home/$LOGIN/.clip/????????T??????Z-??????.png) ok "clip: the push prints the image's own path ($(basename "$PNG1"))";; *) bad "clip: the push prints the image's own path" "[$PNG1]";; esac
+has "PNG image data, 1 x 1" "$(box file "$PNG1")" "clip: that file holds the PNG"
+check "clip: latest points at it, so the xclip shim still serves the newest image" "$PNG1" "$(box readlink "/home/$LOGIN/.clip/latest")"
 check "clip: xclip TARGETS over ssh" image/png "$(mac ssh -o BatchMode=yes "$ALIAS" 'xclip -selection clipboard -t TARGETS -o' 2>/dev/null)"
-check "clip: spool mode 600" 600 "$(box stat -c %a "/home/$LOGIN/.clip/latest")"
+check "clip: image file mode 600" 600 "$(box stat -c %a "$PNG1")"
+check "clip: directory mode 700" 700 "$(box stat -c %a "/home/$LOGIN/.clip")"
+PNG2=$(mac /home/macuser/.local/bin/clip-push --if-image 2>&1 | tr -d '\r' | sed -n 2p)
+[ -n "$PNG2" ] && [ "$PNG2" != "$PNG1" ] && ok "clip: a second push gets its own file, the first is untouched" || bad "clip: a second push gets its own file" "[$PNG1] [$PNG2]"
+check "clip: both files present" 2 "$(box sh -c "ls /home/$LOGIN/.clip/*.png | wc -l")"
+box touch -d '25 hours ago' "$PNG1"
+mac /home/macuser/.local/bin/clip-push --if-image >/dev/null 2>&1
+box test -e "$PNG1" && bad "clip: a push prunes images older than 24 h" "$(basename "$PNG1") still there" || ok "clip: a push prunes images older than 24 h"
+box test -e "$PNG2" && ok "clip: and keeps the younger ones" || bad "clip: and keeps the younger ones" "$(basename "$PNG2") gone"
 mac /home/macuser/.local/bin/clip-push --clear >/dev/null 2>&1
-check "clip: --clear empties the spool dir" "" "$(box ls "/home/$LOGIN/.clip")"
+check "clip: --clear empties the spool dir" "" "$(box ls -A "/home/$LOGIN/.clip")"
 
 say "mac: Cmd+V as WezTerm runs it (rendered module under Lua 5.4, real clip-push, real host)"
 # wez <scenario> [proc]: run the module's Cmd+V handler in the mac container; PUSH_HOST reaches clip-push as CLIP_PUSH_HOST.
@@ -134,20 +147,25 @@ check "wez: spool untouched by text pastes" before "$(spool)"
 mac sh -c "echo png > /tmp/clipboard.kind"
 check "wez: image into a local pane -> plain paste (never pushed)" "action PasteFrom Clipboard" "$(wez local zsh)"
 check "wez: spool untouched by a local image paste" before "$(spool)"
-check "wez: image into the host domain -> push, then Ctrl+V" "action SendKey CTRL v" "$(wez domain)"
 png_sha=$(mac sha256sum /tmp/clipboard.png | cut -c1-64)
-check "wez: the PNG landed in the spool byte for byte" "$png_sha" "$(box sha256sum "/home/$LOGIN/.clip/latest" | cut -c1-64)"
-# What Claude Code does when it receives that Ctrl+V: ask xclip for TARGETS, then for the PNG.
-check "claude: xclip TARGETS after Ctrl+V" image/png "$(mac ssh -o BatchMode=yes "$ALIAS" 'xclip -selection clipboard -t TARGETS -o' 2>/dev/null)"
+# pasted <scenario...>: run Cmd+V with an image on the Mac clipboard; the one line WezTerm would act on is
+# "paste <path>", and the path must be a .png on the host holding the pushed bytes.
+pasted() { local name=$1; shift; local out path
+  out=$(wez "$@"); path=${out#paste }
+  case "$out" in "paste /home/$LOGIN/.clip/"*.png) ok "wez: $name -> push, then paste the host path";; *) bad "wez: $name -> push, then paste the host path" "$out"; return;; esac
+  check "wez: $name: the pasted path holds the PNG byte for byte" "$png_sha" "$(box sha256sum "$path" | cut -c1-64)"
+  case "$path" in *" "*) bad "wez: $name: path has no spaces" "$path";; *) ok "wez: $name: path has no spaces (one paste, one path in every harness)";; esac
+}
+pasted "image into the host domain" domain
+# Ctrl+V in Claude Code still works while the shim is there: latest follows the newest image.
+check "claude: xclip TARGETS after the push" image/png "$(mac ssh -o BatchMode=yes "$ALIAS" 'xclip -selection clipboard -t TARGETS -o' 2>/dev/null)"
 check "claude: xclip image/png returns the same bytes" "$png_sha" "$(mac ssh -o BatchMode=yes "$ALIAS" 'xclip -selection clipboard -t image/png -o | sha256sum' 2>/dev/null | cut -c1-64)"
 mac ssh -o BatchMode=yes "$ALIAS" 'xclip -selection clipboard -t text/plain -o' >/dev/null 2>&1 && bad "claude: text request on a PNG spool exits 1" || ok "claude: text request on a PNG spool exits 1"
-preset; check "wez: local pane running ssh -> push, then Ctrl+V" "action SendKey CTRL v" "$(wez local ssh)"
-check "wez: spool holds the PNG after the ssh-pane push" "$png_sha" "$(box sha256sum "/home/$LOGIN/.clip/latest" | cut -c1-64)"
-preset; check "wez: local pane running mosh-client -> push, then Ctrl+V" "action SendKey CTRL v" "$(wez local mosh-client)"
-check "wez: spool holds the PNG after the mosh-pane push" "$png_sha" "$(box sha256sum "/home/$LOGIN/.clip/latest" | cut -c1-64)"
+preset; pasted "local pane running ssh" local ssh
+preset; pasted "local pane running mosh-client" local mosh-client
 preset; out=$(PUSH_HOST=nowhere-clip wez domain)
 has "toast $ALIAS clipboard: clip-push failed" "$out" "wez: push failure -> toast"
-case "$out" in *action*) bad "wez: push failure sends no key (no stale paste)" "$out";; *) ok "wez: push failure sends no key (no stale paste)";; esac
+case "$out" in *action*|*paste*) bad "wez: push failure pastes nothing (no stale path)" "$out";; *) ok "wez: push failure pastes nothing (no stale path)";; esac
 check "wez: spool untouched by the failed push" before "$(spool)"
 
 say "host -> mac: copy inside the host reaches the Mac clipboard as OSC 52"
@@ -177,10 +195,10 @@ mac sh -c "printf from-mac2 > /tmp/clipboard.txt; echo text > /tmp/clipboard.kin
 check "mac2: pushes text" text/plain "$(mac2 /home/macuser2/.local/bin/clip-push 2>&1)"
 check "host: last pusher wins, mac1 reads mac2's paste" from-mac2 "$(mac ssh -o BatchMode=yes "$ALIAS" 'xclip -selection clipboard -o' 2>/dev/null)"
 mac sh -c "echo png > /tmp/clipboard.kind"
-check "mac1: pushes an image over it" image/png "$(mac /home/macuser/.local/bin/clip-push --if-image 2>&1)"
+check "mac1: pushes an image over it" image/png "$(mac /home/macuser/.local/bin/clip-push --if-image 2>&1 | head -1)"
 check "host: mac2 now sees the image" image/png "$(mac2 ssh -o BatchMode=yes "$ALIAS" 'xclip -selection clipboard -t TARGETS -o' 2>/dev/null)"
 mac2 /home/macuser2/.local/bin/clip-push --clear >/dev/null 2>&1
-check "mac2: --clear empties the spool for everyone" "" "$(box ls "/home/$LOGIN/.clip")"
+check "mac2: --clear empties the spool for everyone" "" "$(box ls -A "/home/$LOGIN/.clip")"
 
 say "sessions: the picker, and two devices on one harness session"
 # Two Mac users are the two devices; each gets its own view of one base session, which is the whole point
