@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # bin/agent: harness sessions on the host, and the picker every login lands in.
-# Installed to ~/.local/bin/agent by install-host.sh (phase 4); config/bashrc.d/tmux-autoattach.sh runs
-# `agent pick` for interactive SSH/mosh logins, so this file is the first thing the operator sees.
+# Installed to ~/.local/bin/agent by install-host.sh; config/bashrc.d/tmux-autoattach.sh runs `agent pick`
+# for interactive SSH/mosh logins.
 #
 # Usage:
 #   agent new <repo> [--harness claude|codex|omp|opencode|shell] [--slug <slug>] [--name <name>] [--no-attach]
@@ -11,39 +11,35 @@
 #   agent switch                 # alias for: agent pick --switch
 #   agent kill <name> [--force] [--keep-worktree]
 #
-# Model: one harness run in one repo is one tmux "base" session. The base is never attached directly.
-# Each device attaches its own "view" session (<name>@<n>) grouped with the base, so several Macs share the
-# processes but keep their own current window, size and scroll. A view is destroyed the moment it has no
-# client (destroy-unattached), the base survives, and a finished or crashed harness leaves its last screen
-# behind (remain-on-exit) until `agent kill`. tmux is the only state: no registry file, nothing survives a
-# reboot, and re-attach is to live processes only. A session `agent new --slug` gave a worktree to loses it
-# again on `agent kill`: the directory only, never the agent/<slug> branch, and never silently while it has
+# Model: one harness run in one repo is one tmux "base" session, never attached directly. Each device
+# attaches its own "view" session (<name>@<n>) grouped with the base: shared processes, own current window,
+# size and scroll. A view is destroyed when it loses its client (destroy-unattached); the base survives, and
+# a finished or crashed harness keeps its last screen (remain-on-exit) until `agent kill`. tmux is the only
+# state: no registry file, nothing survives a reboot. A worktree made by `agent new --slug` is removed by
+# `agent kill`: the directory only, never the agent/<slug> branch, and never silently while it has
 # uncommitted changes.
 #
 # Session names never contain "." or ":": tmux rewrites the first and treats both as target separators.
 # Names are for display; every command resolves a name to a session id once and then uses the id.
 #
-# Whichever menu row leads to a session, the picker's job ends when the operator is in it: enter_session
-# switches the client when one already exists ($TMUX) and attaches a new one when it does not, and the popup
-# closes rather than redrawing its list over the session it just moved to. Nothing in a picker flow may exit
-# the process -- see fail() -- because that process is the operator's login shell.
+# The picker's job ends when the operator is in a session: enter_session switches the client when one exists
+# ($TMUX) and attaches a new one otherwise, and a popup closes rather than redrawing over the session it
+# moved to. Nothing in a picker flow may exit the process (see fail): that process is the login shell.
 #
-# AGENT_TMUX_SOCKET routes every tmux call to that socket (-L), which is how the tests stay off the live
-# server. AGENT_PICK_FILTER makes `pick` non-interactive: it is a ";"-separated list of fzf filters, one
-# per menu in the order that flow's menus appear, so "kill session;scratch" walks the kill flow the
-# way a pair of keystrokes would. Each menu takes the first match of its filter; a menu with no filter of
-# its own takes its first row, and the loop runs once. Nothing else is test-only; --porcelain is the
-# interface phase 5 and the tests consume, so keep its columns stable.
+# Test hooks: AGENT_TMUX_SOCKET routes every tmux call to that socket (-L), keeping the tests off the live
+# server. AGENT_PICK_FILTER makes `pick` non-interactive: a ";"-separated list of fzf filters, one per menu
+# in the order a flow's menus appear ("kill session;scratch" walks the kill flow). Each menu takes the first
+# match of its filter, a menu without one takes its first row, and the loop runs once. --porcelain is the
+# interface phase 5 and the tests consume: keep its columns stable.
 set -euo pipefail
 
 WORKSPACE=$HOME/workspace
 HARNESSES="claude codex omp opencode shell"
-# Field separator, both for tmux format output and for the rows built from it. It has to be a printable
-# character: tmux 3.4 (Ubuntu 24.04) rewrites tab and newline in a format result to "_" and escapes every
-# other non-printable byte as \NNN, so an ASCII unit separator arrives as four characters and nothing
-# splits. Session names are sanitised to exclude it, and the two path fields come last in the tmux format
-# so the final read variable absorbs anything odd; a repo directory with a "|" in its name would still
-# confuse the rows, which is the one case this does not survive.
+# Field separator for tmux format output and the rows built from it. Printable on purpose: tmux 3.4 rewrites
+# tab and newline in a format result to "_" and escapes other non-printable bytes as \NNN, so nothing would
+# split. Session names are sanitised to exclude it, and the two path fields come last in the tmux format so
+# the final read variable absorbs anything odd. A repo directory with "|" in its name is the one case this
+# does not survive.
 SEP='|' 
 TMUX_ARGS=()
 if [ -n "${AGENT_TMUX_SOCKET:-}" ]; then TMUX_ARGS=(-L "$AGENT_TMUX_SOCKET"); fi
@@ -51,14 +47,12 @@ if [ -n "${AGENT_TMUX_SOCKET:-}" ]; then TMUX_ARGS=(-L "$AGENT_TMUX_SOCKET"); fi
 tm()   { tmux "${TMUX_ARGS[@]}" "$@"; }
 note() { printf '%s\n' "$*" >&2; }
 die()  { printf 'agent: %s\n' "$1" >&2; exit "${2:-1}"; }
-# fail is die for anything the picker can reach. `die` exits, and an exit inside a picker flow takes the
-# login shell's `agent pick` with it, which drops the operator at a bare shell instead of back at the menu;
-# every caller here is either a `if cmd; then` in the picker or a bare call from the dispatch at the bottom,
-# where set -e turns the same non-zero status into the same exit code the CLI used to give.
+# fail is die for anything the picker can reach: an exit inside a picker flow takes the login shell's
+# `agent pick` with it and drops the operator at a bare shell instead of the menu. Every caller is either an
+# `if cmd; then` in the picker or a bare call from the dispatch, where set -e turns the status into the exit.
 fail() { printf 'agent: %s\n' "$1" >&2; return "${2:-1}"; }
 # PICK_NOTE carries one line of bad news from a flow that gave up to the menu that draws next, as fzf's
-# header. Without it a failed flow is invisible: fzf repaints the screen over whatever was printed, and a
-# menu that simply draws itself again looks exactly like a menu that did nothing.
+# header. Without it a failed flow is invisible: fzf repaints the screen over whatever was printed.
 PICK_NOTE=""
 
 usage() {
@@ -78,8 +72,7 @@ USAGE
 
 # "." and ":" because tmux rewrites the first and splits targets on the second; "|" and "," because they
 # are this script's field separator and the separator inside a list-sessions filter; whitespace because the
-# picker reads a row's name as its first word (`${sel%% *}`), so a session called "my notes" could be listed
-# and never chosen. Operators name shells themselves now, so this is reachable rather than theoretical.
+# picker reads a row's name as its first word (`${sel%% *}`).
 sanitise() { printf '%s' "${1//[[:space:].:|,]/_}"; }
 
 # Names are resolved through a list-sessions filter, never through a -t target: a bare name in -t is a
@@ -116,11 +109,10 @@ device() {                                                       # the Mac's add
 # --- logging out from inside tmux ---------------------------------------------------------------------
 
 # "log out" chosen in the prefix-g popup has to reach a process it cannot see: the login shell sitting in
-# its own `agent pick`, in another process tree, whose exit code is what tmux-autoattach.sh turns into a
-# logout. The popup can only detach the client, and on its own a detach just sends that login shell round
-# its loop and draws the picker again. So the popup leaves a mark in the tmux server environment, named
-# after the client's tty (one login shell, one tty, one mark), and the picker loop claims the mark on its
-# way round and returns 3. The mark dies with the server, like every other piece of state here.
+# its own `agent pick`, whose exit code tmux-autoattach.sh turns into a logout. The popup can only detach
+# the client, and a detach alone sends that shell round its loop and draws the picker again. So the popup
+# leaves a mark in the tmux server environment, named after the client's tty (one login shell, one tty, one
+# mark), and the picker loop claims the mark on its way round and returns 3. The mark dies with the server.
 logout_var() {                                                   # <tty> -> environment variable name
   local t=${1:-}
   [ -n "$t" ] || t=$(tty 2>/dev/null) || t=""
@@ -141,8 +133,8 @@ logout_claim() {                                                 # true once per
 
 # session_create <name> <harness> <repo> <cwd> <branch>: the base session, with the facts the picker shows.
 # The harness is the session command, so tmux runs it through default-shell -c (zsh), which reads ~/.zshenv
-# and therefore gets PATH and ~/.config/agents/env. remain-on-exit is a window option and is set on the
-# harness window only: extra windows the operator opens close normally, the harness leaves its last screen.
+# and so gets PATH and ~/.config/agents/env. remain-on-exit is set on the harness window only: extra windows
+# the operator opens close normally.
 session_create() {
   local name=$1 harness=$2 repo=$3 cwd=$4 branch=$5 sid wid
   local new=(new-session -d -P -F "#{session_id}${SEP}#{window_id}" -s "$name" -c "$cwd")
@@ -177,10 +169,9 @@ cmd_new() {
   cwd=$root
   if [ -n "$slug" ]; then
     cwd=$WORKSPACE/$repo.wt/$slug
-    # Three cases, because `agent kill` removes a worktree directory and deliberately keeps its branch: the
-    # worktree is still there (pick it up), only the branch is left (check it out again, which is the same
-    # piece of work being resumed), or neither exists yet (start both). Only the third can use -b, and using
-    # it on the second is what used to abort the flow.
+    # Three cases, because `agent kill` removes a worktree directory and keeps its branch: the worktree
+    # exists (pick it up), only the branch is left (check it out again: the same work resumed), or neither
+    # exists (start both). Only the third can use -b.
     if [ -d "$cwd" ]; then
       note "reusing worktree $cwd"
     elif git -C "$root" rev-parse --verify -q "refs/heads/agent/$slug" >/dev/null 2>&1; then
@@ -214,17 +205,15 @@ cmd_attach() {
      ';' set-option @device "$(device)"
 }
 
-# enter_session <name>: put this terminal in that session, by whichever of the two mechanisms can work here.
-# Inside tmux there is already a client, and `new-session -t` refuses to nest ("sessions should be nested
-# with care"), so the client is switched; outside tmux there is no client yet, so one attaches. Every way of
-# arriving at a session goes through here -- the picker's rows, + new shell, + new session and `agent new` --
-# because the choice depends on where the command was typed, not on which menu row led to it.
+# enter_session <name>: put this terminal in that session. Inside tmux there is already a client and
+# `new-session -t` refuses to nest, so the client is switched; outside tmux one attaches. Every way of
+# arriving at a session goes through here, because the choice depends on where the command was typed.
 enter_session() {
   if [ -n "${TMUX:-}" ]; then cmd_switch_to "$1"; else cmd_attach "$1"; fi
 }
 
-# Inside tmux the view cannot be created attached, so it is created detached with destroy-unattached still
-# off, switched to, and only then armed. The view the client came from loses its client and destroys itself.
+# Inside tmux the view cannot be created attached, so it is created detached with destroy-unattached off,
+# switched to, and only then armed. The view the client came from loses its client and destroys itself.
 cmd_switch_to() {
   local name=$1 id vname vid
   id=$(session_id "$name") || true
@@ -251,11 +240,10 @@ main_checkout() {
 
 wt_dirty() { [ -n "$(git -C "$1" status --porcelain 2>/dev/null)" ]; }
 
-# confirm_dirty <cwd>: 0 means remove it anyway. The question goes to /dev/tty and not to stdin, because in
-# the picker stdin belongs to fzf. No terminal to ask (a script, the tests, a popup already closing) is a
-# "no", which is the safe half of the answer and the only one that cannot lose work; that case is detected
-# by opening /dev/tty rather than by testing it, since the device file is readable even where opening it
-# fails with ENXIO for want of a controlling terminal.
+# confirm_dirty <cwd>: 0 means remove it anyway. The question goes to /dev/tty, not stdin, because in the
+# picker stdin belongs to fzf. No terminal to ask (a script, the tests, a closing popup) is a "no", the only
+# answer that cannot lose work; it is detected by opening /dev/tty rather than testing it, since the device
+# file is readable even where opening it fails with ENXIO for want of a controlling terminal.
 confirm_dirty() {
   local cwd=$1 ans=""
   exec 3<>/dev/tty 2>/dev/null || return 1
@@ -271,13 +259,12 @@ confirm_dirty() {
 
 # --- kill ---------------------------------------------------------------------------------------------
 
-# A worktree exists for the session that works in it: `agent new --slug` created it, so `agent kill` takes it
-# away again and ~/workspace/<repo>.wt does not fill up with checkouts nobody is in. Only the directory goes.
-# The agent/<slug> branch is always kept, so every commit made in the worktree stays reachable, and so does
-# anything that was only committed locally.
+# `agent new --slug` created the worktree, so `agent kill` removes it and ~/workspace/<repo>.wt does not fill
+# with checkouts nobody is in. The directory only: the agent/<slug> branch is kept, so every commit made in
+# the worktree stays reachable.
 #
 # The worktree is decided on before anything is killed: the operator has to be able to answer while their
-# terminal is still there, and killing the session a picker popup is standing in ends the popup with it.
+# terminal exists, and killing the session a picker popup stands in ends the popup with it.
 cmd_kill() {
   local name="" force=0 keep=0 id cwd repo root="" branch vid vname is_wt=0 remove=0 hint="" rmargs=()
   while [ $# -gt 0 ]; do
@@ -294,8 +281,8 @@ cmd_kill() {
   cwd=$(tm display-message -p -t "$id" '#{@cwd}' 2>/dev/null || true)
   repo=$(tm display-message -p -t "$id" '#{@repo}' 2>/dev/null || true)
   branch=$(tm display-message -p -t "$id" '#{@branch}' 2>/dev/null || true)
-  # Only a worktree still on disk is worth deciding about: a session in the main checkout, or one whose
-  # directory has already been removed by hand, leaves nothing to decide and nothing to say.
+  # Only a worktree on disk is worth deciding about: a session in the main checkout, or one whose directory
+  # was removed by hand, leaves nothing to decide and nothing to say.
   case $cwd in "$WORKSPACE"/*.wt/*) [ ! -d "$cwd" ] || is_wt=1 ;; esac
   if [ "$is_wt" = 1 ]; then
     root=$(main_checkout "$cwd" 2>/dev/null || true)
@@ -324,8 +311,8 @@ cmd_kill() {
     fi
     note "worktree removal failed"
   fi
-  # Kept, either because it was asked for or because nobody was there to be asked: the command to finish the
-  # job by hand, with the --force the dirty case will need.
+  # Kept, by request or because nobody was there to ask: print the command to finish by hand, with the
+  # --force the dirty case needs.
   if wt_dirty "$cwd"; then hint="--force "; fi
   printf 'worktree kept: git -C %s worktree remove %s%s\n' "$root" "$hint" "$cwd"
 }
@@ -333,8 +320,8 @@ cmd_kill() {
 # --- listing ------------------------------------------------------------------------------------------
 
 # rows: name harness repo branch wt cwd state created devices, SEP-separated, oldest first.
-# One line per base session. A pre-existing session with no @harness (today's "main") is a shell session
-# and is listed, never killed. Views are not listed; their @device lands in their base's devices column.
+# One line per base session. A session with no @harness (made by hand) is a shell session and is listed,
+# never killed. Views are not listed; their @device lands in their base's devices column.
 rows() {
   local fmt raw dead sid name grouped created created_opt harness repo branch cwd hwin dev attached path base wt state
   fmt="#{session_id}${SEP}#{session_name}${SEP}#{session_grouped}${SEP}#{session_created}${SEP}#{@harness}"
@@ -381,11 +368,10 @@ age_of() {
 # --- table --------------------------------------------------------------------------------------------
 
 # The picker's palette, as SGR parameters for paint(). Five colours carry meaning and nothing else is
-# coloured: green is a thing that starts or runs, red a thing that ends, amber a warning, blue the accent
-# (prompt, pointer, matches, the neutral "plain shell" verb) and grey whatever is context rather than
-# content. 256-colour codes, because every terminal that reaches this menu has them (tmux-256color
-# inside tmux, xterm-256color from WezTerm and Termius outside it) and the same values read on a light
-# theme as on a dark one. Harnesses get a hue each so a mixed list scans by colour before it is read.
+# coloured: green starts or runs, red ends, amber warns, blue is the accent (prompt, pointer, matches, the
+# neutral "plain shell" verb), grey is context. 256-colour codes read the same on a light theme as a dark
+# one, and every terminal that reaches this menu has them. Harnesses get a hue each so a mixed list scans
+# by colour before it is read.
 C_DIM='38;5;245' C_RULE='38;5;240' C_ACCENT='38;5;39' C_OK='32' C_BAD='31' C_WARN='38;5;214'
 COLOUR=0                                                         # 1 while the picker draws
 harness_colour() {
@@ -415,22 +401,19 @@ cell() {
 # ls_human [header]: the aligned columns `agent ls` prints: plain, every column, any width.
 ls_human() { COLOUR=0 CLIP=0 table "${1:-0}" 0 0; }
 
-# How every fzf here matches, in the interactive menus and in --filter mode alike. --ansi so painted rows
-# match and return as their plain text. The delimiter and --nth make a row that starts with two spaces
-# unsearchable: its first field is the blank margin, and a query of letters cannot match that. The
-# picker's column header is the one such row (table's <indent>): it sits in the list between the verbs
-# and the sessions, and fuzzy matching would otherwise find "notes" in NAME REPO WT AGE STATE and land the
-# cursor on the header instead of the session. Every other row starts with a glyph or a name, so its first
-# field is the whole line and typing a repo or branch still finds a session.
+# How every fzf here matches, interactive and --filter alike. --ansi so painted rows match and return as
+# plain text. The delimiter and --nth make a row that starts with two spaces unsearchable: its first field
+# is the blank margin. The picker's column header is the one such row (table's <indent>); fuzzy matching
+# would otherwise find "notes" in NAME REPO WT AGE STATE and land the cursor on the header instead of the
+# session. Every other row starts with a glyph or a name, so its first field is the whole line.
 FZF_MATCH=(--ansi --delimiter='^  ' --nth=1)
 
-# table <header> <cols> <indent>: the session rows as aligned columns, one line per base session, plus the
-# column header when asked, indented by the two-space margin FZF_MATCH keeps unsearchable when <indent> is 1
-# (its NAME cell is two narrower, so the columns still line up). <cols> is the width a row has to fit, 0 for "every column, any width" (agent ls). The
-# picker passes what its list can show (UI_TEXT), and the narrower that is the fewer columns there are: a
-# phone in Termius has about 50 and gets NAME AGE STATE, a laptop-sized popup gets HARNESS and BRANCH back,
-# and a full terminal the whole of `agent ls`. The name is the one column that can be any length, so it is the
-# one that gives way, cut with an ellipsis to what the fixed columns leave and never below 8.
+# table <header> <cols> <indent>: the session rows as aligned columns, plus the column header when asked,
+# indented by the two-space margin FZF_MATCH keeps unsearchable when <indent> is 1 (its NAME cell is two
+# narrower, so the columns line up). <cols> is the width a row has to fit, 0 for every column at any width
+# (agent ls). The picker passes what its list can show (UI_TEXT): a phone (about 50) gets NAME AGE STATE, a
+# laptop-sized popup adds HARNESS and BRANCH, a full terminal the whole of `agent ls`. NAME is the one
+# column that gives way, cut with an ellipsis to what the fixed columns leave and never below 8.
 table() {
   local header=$1 cols=$2 indent=${3:-0} all tier=wide w=4 bw=18 fixed=0 sw=7 margin=''
   [ "$indent" = 0 ] || margin='  '
@@ -494,11 +477,9 @@ cmd_ls() {
 # --- picker -------------------------------------------------------------------------------------------
 
 # Rows carry their own meaning: the five verbs are prefixed with a glyph, every other row starts with a
-# session name, so the selected line parses without hidden fields and fzf's filter sees what the eye sees.
-# `kill session` sits below the list, away from the rows it destroys and next to the other two ways out.
-# Between the three groups sits a rule, and above the sessions their column header; both are rows too,
-# since fzf has no other kind, and choosing one is a no-op that draws the menu again. Neither contains a
-# letter sequence any verb or name needs, so typing a filter makes them disappear rather than match.
+# session name, so the selected line parses without hidden fields. `kill session` sits below the list, away
+# from the rows it destroys. The rule between the groups and the column header are rows too, since fzf has
+# no other kind: choosing one is a no-op, and neither matches a filter any verb or name needs.
 pick_rows() {
   local list rule
   printf -v rule '%*s' $((UI_TEXT > 10 ? UI_TEXT : 10)) ''
@@ -512,8 +493,8 @@ pick_rows() {
 }
 
 # pick_filter <n>: the nth filter in AGENT_PICK_FILTER, counting the menus of one flow from the row that
-# starts it. Every menu runs inside a command substitution, so they cannot share a queue to pop from and
-# each call site names its own position instead; past the end is empty, which matches everything.
+# starts it. Menus run inside command substitutions and cannot share a queue, so each call site names its
+# own position; past the end is empty, which matches everything.
 pick_filter() {
   local f=()
   [ -n "${AGENT_PICK_FILTER:-}" ] || return 0
@@ -529,12 +510,9 @@ term_cols() {
 }
 
 # ui_init: the fzf options every menu of one picker run shares, decided once from where it is drawn. The
-# list is the whole screen (no preview), the header sits above the prompt so the eye lands on the title
-# and the key hints first, and the rows keep their own colours (--ansi). A border, with the host in its
-# label, only when the picker owns the screen and the screen is wide enough to spare the columns: inside
-# tmux the popup already draws one, and on a phone the two columns and two rows are worth more than a
-# frame. Colours are the palette above; fg/bg -1 keeps the terminal's own theme, so the menu is at home
-# on WezTerm's dark theme and Termius's light one alike.
+# list is the whole screen (no preview) and the header sits above the prompt. A border, with the host in
+# its label, only when the picker owns the screen and it is wide enough: inside tmux the popup draws one,
+# and on a phone the columns are worth more than a frame. fg/bg -1 keeps the terminal's own theme.
 ui_init() {
   local host
   UI_COLS=$(term_cols)
@@ -559,11 +537,10 @@ ui_init() {
 }
 
 # menu <prompt> <filter> <header-lines> [header line...]: one fzf pass. With AGENT_PICK_FILTER set there is
-# no tty, so --filter does the choosing; an empty filter matches everything and the first row wins. The
-# header lines are the menu's own words (what it is, which keys do what); a PICK_NOTE from the flow before
-# joins them, painted as the warning it is. MENU_DANGER=1 turns the prompt and pointer red for the one
-# menu that destroys something. <header-lines> is how many input lines are a column header: shown, never
-# chosen, and left out of --filter's matches.
+# no tty, so --filter chooses; an empty filter matches everything and the first row wins. A PICK_NOTE from
+# the flow before joins the header lines, painted as a warning. MENU_DANGER=1 turns the prompt and pointer
+# red for the one menu that destroys something. <header-lines> input lines are a column header: shown,
+# never chosen, left out of --filter's matches.
 menu() {
   local prompt=$1 filter=${2:-} hlines=${3:-0} hdr='' l opts=()
   shift 3
@@ -580,11 +557,9 @@ menu() {
 }
 
 # prompt_text <prompt> [header line...]: one line of free text. fzf is the only thing the picker can count
-# on being installed, so it is fzf with nothing to match and --print-query, which makes the typed text the
-# answer. The header is not decoration: without it the empty list reads as a menu that failed to load
-# rather than as a question, so the first line says what the answer means and the last which keys do what.
-# Enter accepts (fzf exits 1, "no match", which is the normal path here), Esc exits 130 and cancels the
-# flow; "" is a legitimate answer and each caller decides what it means.
+# on, so it is fzf with nothing to match and --print-query. The header says what the answer means and which
+# keys do what; without it the empty list reads as a menu that failed to load. Enter accepts (fzf exits 1,
+# "no match", the normal path here), Esc exits 130 and cancels; "" is a legitimate answer for the caller.
 prompt_text() {
   local prompt=$1 out rc=0 hdr='' l
   shift
@@ -628,14 +603,12 @@ pick_new_session() {
 
 # The picker runs in one of two places, and the difference is the whole of `switch`:
 #   switch=0  the login shell's own `agent pick`, outside tmux. It attaches, and the attach only returns when
-#             the operator detaches -- so drawing the menu again on the next pass is the right thing.
+#             the operator detaches, so the menu is drawn again on the next pass.
 #   switch=1  a client that already exists: the prefix-g popup, or `agent pick` typed in a pane. It switches
-#             that client, and then it is done. Looping here would leave the popup sitting on top of the
-#             session it just moved to, redrawing the same menu -- which is what it used to do.
-# switch is not only the flag. Inside tmux an attach cannot work at all (tmux refuses to nest one), so the
-# mechanism is dictated by the environment and the flag only says that a popup expects the menu to be brief.
-# The key hints say what Esc does here, because it differs: at the login picker it is the way out of the
-# connection, in a popup it only closes the popup.
+#             that client and is done; looping would leave the popup on top of the session it moved to.
+# Inside tmux an attach cannot work at all (tmux refuses to nest one), so the environment dictates the
+# mechanism and the flag only says that a popup expects the menu to be brief. The key hints spell out Esc
+# because it differs: at the login picker it ends the connection, in a popup it closes the popup.
 HINT_TYPE='enter accept   esc back'
 cmd_pick() {
   local switch=0 asked=0 sel rc name hints
@@ -696,11 +669,10 @@ pick_new_shell() {
   enter_session "$name"
 }
 
-# Kill is the one verb that destroys work, so it never acts on whatever row happened to be highlighted:
-# the session is chosen a second time, in a list of its own, under a red prompt and a header that says
-# what will happen. Esc backs out. Killing the session behind the popup you are standing in is allowed and
-# ends the popup with it; the harness is gone either way, so there is nothing to go back to. A worktree
-# with uncommitted changes asks once more, on the terminal, before it goes.
+# Kill is the one verb that destroys work, so it never acts on the row that happened to be highlighted: the
+# session is chosen again in a list of its own, under a red prompt and a header that says what will happen.
+# Killing the session behind the popup you stand in is allowed and ends the popup with it. A worktree with
+# uncommitted changes asks once more, on the terminal.
 pick_kill() {
   local list sel name
   list=$(table 1 "$UI_TEXT" 0)

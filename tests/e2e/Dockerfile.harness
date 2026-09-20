@@ -1,13 +1,11 @@
-# e2e "harness host": the e2e host image (Dockerfile.host) plus the three harnesses, installed as the login the
-# way install-host.sh installs them (mise for Node and Bun, npm for Oh My Pi, the OpenCode and Claude Code
-# installers). Oh My Pi's launcher is a `#!/usr/bin/env bun` script, so Bun is not optional here.
-# Only tests/e2e/harness-paste.sh uses it: the installs need the network and several hundred MB, which run.sh
-# does not, so they live in an image of their own layered on the one run.sh already builds.
+# e2e "harness host": Dockerfile.host plus the three harnesses, installed as the login the way install-host.sh
+# installs them (mise for Node and Bun, npm for Oh My Pi, the OpenCode and Claude Code installers). Oh My Pi's
+# launcher is a `#!/usr/bin/env bun` script, so Bun is required. Only tests/e2e/harness-paste.sh uses this image:
+# the installs need the network and several hundred MB, so they stay out of the image run.sh builds.
 #
-# Every version is pinned, and the defaults are what the live host runs (20 Sep 2026). The indicator each harness
-# prints for an attached image is version-specific, so an unpinned image would turn the test red on a harness
-# release with no change here; harness-paste.sh prints the three versions next to its result for the same reason.
-# To check a newer harness before it goes on the host, override the arg rather than editing this file:
+# Every version is pinned; the defaults are what the live host runs. The indicator each harness prints for an
+# attached image is version-specific, so an unpinned image would turn the test red on a harness release with no
+# change here. To check a newer harness before it goes on the host, override the arg instead of editing this file:
 #   docker build -f tests/e2e/Dockerfile.harness --build-arg OMP=18.3.0 ...
 # Claude Code's binary updates itself, which would quietly undo the CLAUDE pin, so the updater is off.
 ARG BASE=af-e2e-host

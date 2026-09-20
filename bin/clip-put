@@ -3,21 +3,19 @@
 # Called over SSH by clip-push on the Mac (Cmd+V in WezTerm). Installed to ~/.local/bin/clip-put by install-host.sh
 # and invoked by that absolute path, so the minimal PATH of a non-interactive SSH command does not matter.
 #
-# A PNG becomes its own file, ~/.clip/<UTC stamp>-<random>.png, and its absolute path is printed: WezTerm pastes that
-# path into the pane, and Claude Code, Oh My Pi and OpenCode all attach a pasted image path as an image. One file per
-# paste, so a second push can never overwrite a file a harness has not read yet. ~/.clip/latest is repointed at the
-# new file (a symlink) so the xclip shim keeps serving the most recent image too. Text replaces ~/.clip/latest as a
-# regular file and prints nothing; WezTerm never pushes text, but a plain `clip-push` does.
-# Every push prunes .png files older than 24 hours. There is no timer, so a file survives until the next push more
-# than 24 h after it was written: a quiet weekend keeps Friday's screenshot until Monday's first paste. Screenshots
-# are Confidential more often than not, so `clip-put --clear` (or `clip-push --clear` on the Mac) is the way to
-# remove one now rather than eventually.
+# A PNG becomes its own file, ~/.clip/<UTC stamp>-<random>.png, and its absolute path is printed; WezTerm pastes that
+# path into the pane and the harness attaches it as an image. One file per paste, so a second push can never
+# overwrite a file a harness has not read yet. ~/.clip/latest is a symlink repointed at the new file, which is what
+# the xclip shim serves to Claude Code on Ctrl+V. Text replaces ~/.clip/latest as a regular file and prints nothing;
+# WezTerm never pushes text, but a plain `clip-push` does.
+# Every push prunes .png files older than CLIP_KEEP_MINUTES (default 1440). There is no timer, so a file survives
+# until the first push made after its retention; screenshots are often Confidential, so `clip-put --clear` (or
+# `clip-push --clear` on the Mac) removes them at a chosen moment.
 #
 # Usage: clip-put            stdin -> ~/.clip; prints the .png path for an image, nothing for text
-#        clip-put --clear    remove everything under ~/.clip; the only way to remove a pushed image at a chosen moment
+#        clip-put --clear    remove everything under ~/.clip
 # CLIP_BRIDGE_SPOOL overrides the `latest` path (and so the directory); it must match what the xclip shim uses, and
 # it must name a directory used for nothing else: every push deletes *.png and .put.* older than the retention there.
-# CLIP_KEEP_MINUTES overrides the retention (default 1440).
 set -euo pipefail
 spool=${CLIP_BRIDGE_SPOOL:-$HOME/.clip/latest}
 dir=$(dirname "$spool")

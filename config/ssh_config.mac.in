@@ -16,8 +16,8 @@ Host @AGENT_HOST@-lan
   ServerAliveInterval 30
   ForwardAgent no
 
-# Used by clip-push when Cmd+V pastes an image into the host. Kept apart from the main Host so interactive sessions and mosh are
-# untouched: BatchMode never prompts, ConnectTimeout keeps a failed push short, ControlMaster reuses one
+# Used by clip-push when Cmd+V pushes an image to the host. Kept apart from the main Host so interactive sessions and
+# mosh are untouched: BatchMode never prompts, ConnectTimeout keeps a failed push short, ControlMaster reuses one
 # connection for 10 minutes so pushes after the first take milliseconds.
 Host @AGENT_HOST@-clip
   HostName @AGENT_HOST_ADDRESS@

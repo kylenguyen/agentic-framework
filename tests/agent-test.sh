@@ -31,8 +31,8 @@ no_session()   { [ -z "$(sid "$1")" ]; }
 opt_is()       { [ "$(opt "$1" "$2")" = "$3" ]; }
 
 # --- a host of our own --------------------------------------------------------------------------------
-# fzf has to be resolved to a real binary before HOME moves: `fzf` on this host is usually a mise shim,
-# and a shim looks its version up against $HOME, which the throwaway HOME does not have.
+# Resolve fzf to a real binary before HOME moves: a mise shim looks its version up against $HOME, which the
+# throwaway HOME does not have.
 FZF=$(command -v fzf 2>/dev/null || true)
 case $FZF in */shims/*) FZF=$(mise which fzf 2>/dev/null || true) ;; esac
 [ -z "$FZF" ] || FZF=$(readlink -f "$FZF")
@@ -56,8 +56,8 @@ pwd > "$HOME/standin.cwd"
 exec claude-proc -c 'read line'
 STANDIN
 chmod +x "$HOME/bin/claude"
-# Every harness name in HARNESSES is run as a command by tmux, so a second stand-in proves the newest one
-# is wired the same way as the first; the two record the same file, since one runs at a time.
+# Every harness name in HARNESSES is run as a command by tmux, so a second stand-in proves another name is
+# wired the same way; both record the same file, since one runs at a time.
 cp "$HOME/bin/claude" "$HOME/bin/codex"
 [ -z "$FZF" ] || ln -sf "$FZF" "$HOME/bin/fzf"
 # Prove it actually runs here, rather than trusting the path: a picker case that silently gets no fzf
@@ -241,7 +241,7 @@ check "name: the tmux and field separators go too" "a_b_c_d_e" \
 
 echo "# new --slug: a branch that outlived its worktree"
 # `agent kill` takes the worktree directory and keeps the branch, so the second `new --slug reuse` meets an
-# agent/reuse that already exists. It used to die there, and dying inside the picker ends the login shell.
+# agent/reuse that already exists. Guards against dying there: an exit inside the picker ends the login shell.
 "$AGENT" new demo --slug reuse --name wt1 --no-attach >/dev/null
 check "new --slug: the worktree is made" ok "$([ -d "$HOME/workspace/demo.wt/reuse" ] && echo ok)"
 check "new --slug: on the agent/ branch" "agent/reuse" "$(git -C "$HOME/workspace/demo.wt/reuse" rev-parse --abbrev-ref HEAD)"
@@ -258,9 +258,9 @@ echo "# pick"
 if [ "$HAVE_FZF" = 0 ]; then
   skip "pick" "fzf is not installed (install-host.sh phase 1 installs it)"
 else
-  # env -u TMUX on every one of these: they are the *login* picker, and $TMUX is what tells the picker it has
-  # a client to switch instead of a client to attach. Left in, the developer's own tmux would change the
-  # answers (log out would mark and detach rather than exit 3), which is right for a pane and wrong here.
+  # env -u TMUX on every one of these: they are the *login* picker, and $TMUX tells the picker it has a client
+  # to switch instead of one to attach. Left in, the developer's own tmux changes the answers (log out would
+  # mark and detach rather than exit 3), which is right for a pane and wrong here.
   check "pick: log out exits 3" 3 "$(env -u TMUX AGENT_PICK_FILTER='log out' "$AGENT" pick >/dev/null 2>&1; echo $?)"
   check "pick: plain shell here exits 0" 0 "$(env -u TMUX AGENT_PICK_FILTER='plain shell here' "$AGENT" pick >/dev/null 2>&1; echo $?)"
   check "pick: --switch outside tmux exits 2" 2 "$(env -u TMUX "$AGENT" pick --switch >/dev/null 2>&1; echo $?)"

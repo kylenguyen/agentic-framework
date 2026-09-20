@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Idempotent macOS client setup for the agent host (phases 1 to 4, including putting the Mac key on the host). Run on
-# the Mac from a clone of this repo. No sudo. Asks for the host password once, only when no local key is trusted there.
+# Idempotent macOS client setup for the agent host, including key login to it. Run on the Mac from a clone of this
+# repo. No sudo. Asks for the host password once, only when no local key is trusted there.
 # Usage: ./install-mac.sh
 # Parameters (lib/params.sh): .env in this checkout names the host (AGENT_HOST, the ssh alias), its address, the login
-# and, optionally, its LAN address. With no .env and a terminal, the script asks and writes .env; without a terminal
-# it exits 2 before touching anything.
+# and optionally its LAN address. With no .env and a terminal the script asks and writes .env; without a terminal it
+# exits 2 before touching anything.
 set -euo pipefail
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 MACUSER=$(id -un)
@@ -59,19 +59,17 @@ say "Phase 2: WezTerm"
 install -d "$HOME/.config/wezterm"
 WEZ_MOD=wezterm-agent-host                       # module name; the file is rendered from config/$WEZ_MOD.lua.in
 params_render "$REPO/config/$WEZ_MOD.lua.in" "$HOME/.config/wezterm/$WEZ_MOD.lua" || { fail "config/$WEZ_MOD.lua.in did not render"; exit 1; }
-# The include line must be in the config WezTerm actually loads, or Cmd+V stays a plain paste and images never reach
-# the host. WezTerm reads, in order: $WEZTERM_CONFIG_FILE, ~/.config/wezterm/wezterm.lua, ~/.wezterm.lua. Creating the
-# second while only the third exists would shadow the user's config, so an existing file wins here too.
-# ~/.config/wezterm is on WezTerm's package.path whichever file is loaded, so the require resolves from all three.
+# The include must go in the config WezTerm actually loads, or Cmd+V stays a plain paste. WezTerm reads, in order:
+# $WEZTERM_CONFIG_FILE, ~/.config/wezterm/wezterm.lua, ~/.wezterm.lua; creating the second while only the third exists
+# would shadow the user's config, so an existing file wins. ~/.config/wezterm is on package.path whichever is loaded.
 if [ -n "${WEZTERM_CONFIG_FILE:-}" ] && [ -f "$WEZTERM_CONFIG_FILE" ]; then WEZ=$WEZTERM_CONFIG_FILE
 elif [ -f "$HOME/.config/wezterm/wezterm.lua" ] || [ ! -f "$HOME/.wezterm.lua" ]; then WEZ="$HOME/.config/wezterm/wezterm.lua"
 else WEZ="$HOME/.wezterm.lua"; fi
 WEZ_OK=1
-# wez_include <file>: make sure the config includes $WEZ_MOD. A missing file gets the minimal config from
-# README.md, section 2. An existing file is edited in place, once: the require line goes in just before the final
-# `return <config>` line, whatever the variable is called, and the original is kept next to it as <file>.before-agent-host.
-# A config that ends some other way (returns a table literal, builds the config in another module) cannot be edited
-# safely; the line to add is printed instead and the script exits 1 at the end so the gap is not missed.
+# wez_include <file>: make sure the config includes $WEZ_MOD. A missing file gets a minimal config. An existing file
+# is edited once: the require line goes just before the final `return <config>` line, whatever the variable is
+# called, with the original kept as <file>.before-agent-host. A config that ends some other way cannot be edited
+# safely: the line to add is printed and the script exits 1 at the end so the gap is not missed.
 wez_include() {
   local file=$1 var
   if [ ! -f "$file" ]; then
@@ -113,14 +111,14 @@ CLIP_TMP=$(mktemp); params_render "$REPO/bin/clip-push-mac.sh.in" "$CLIP_TMP" ||
 install -m 755 "$CLIP_TMP" "$HOME/.local/bin/clip-push"; rm -f "$CLIP_TMP"
 note "installed ~/.local/bin/clip-push (pushes to $H-clip)"
 # A fresh Mac has no ~/.local/bin on PATH. WezTerm calls clip-push by absolute path, but the verify commands in the
-# docs, and the phase 5 `agent` alias, are typed in a shell. Same marker mechanism as ~/.ssh/config.
+# docs are typed in a shell. Same marker mechanism as ~/.ssh/config.
 touch "$HOME/.zshrc"
 block "$HOME/.zshrc" path 'case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) export PATH="$HOME/.local/bin:$PATH" ;; esac'
 case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) note "open a new shell so clip-push is on PATH" ;; esac
 
 say "Phase 1, continued: key login to $H (asks for $RUSER's password on $H once, only if it has to)"
-# Goal: `ssh $H true` runs with no prompt of any kind. mosh, the clipboard push and every `ssh $H <cmd>`
-# depend on it. Never deletes anything: a stored host key that no longer matches is for a human to judge.
+# Goal: `ssh $H true` runs with no prompt of any kind; mosh, the clipboard push and every `ssh $H <cmd>` depend on
+# it. Never deletes anything: a stored host key that does not match is for a human to judge.
 PUB="$HOME/.ssh/id_ed25519.pub"
 key_ok() { ssh -o BatchMode=yes -o ConnectTimeout=5 "$H" true 2>/dev/null; }
 # probe <key>: can this key alone log in? Host key deliberately ignored and not recorded: authentication only.
@@ -146,8 +144,8 @@ setup_host_login() {
        note "check the Tailscale menu bar icon and that $H is online, then re-run ./install-mac.sh"; return 1 ;;
   esac
 
-  # Host key. BatchMode refuses an unknown host, so store it now (trust on first use, fingerprint shown for the
-  # record). A stored key that no longer matches is never replaced here.
+  # Host key: BatchMode refuses an unknown host, so store it on first use, fingerprint shown for the record. A stored
+  # key that does not match is never replaced here.
   reply=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -o PreferredAuthentications=none -o LogLevel=ERROR "$H" true 2>&1 || true)
   if [[ $reply != *"Permission denied"* ]]; then
     if ssh-keygen -F "$ADDR" >/dev/null 2>&1; then

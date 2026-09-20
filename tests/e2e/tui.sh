@@ -1,19 +1,18 @@
 #!/usr/bin/env bash
-# tests/e2e/tui.sh: the session picker as a human meets it. Two containers on a private network, "box" (the
-# host: real sshd, real tmux, real fzf, install-host.sh) and "mac" (the client: install-mac.sh, its ssh config
-# and key). The client holds a tmux server of its own whose one pane runs `ssh -tt box`, so the login lands in
-# `agent pick` through the real config/bashrc.d/tmux-autoattach.sh fragment, on a real pty. From there
-# send-keys IS typing and capture-pane IS the screen the operator would be looking at.
+# tests/e2e/tui.sh: the session picker as a human meets it. Two containers on a private network: "box" (the
+# host: real sshd, tmux and fzf, install-host.sh as alice) and "mac" (install-mac.sh as macuser and macuser2, own
+# ssh config and keys). Each Mac user holds a tmux server whose one pane runs `ssh -tt box`, so the login lands
+# in `agent pick` through the real config/bashrc.d/tmux-autoattach.sh fragment on a real pty: send-keys is
+# typing and capture-pane is the screen.
 #
-# This is deliberately not how tests/e2e/run.sh drives the picker. That one sets AGENT_PICK_FILTER, which
-# replaces interactive fzf with `fzf --filter`, skips every free-text prompt and leaves the picker loop after
-# one pass. Useful for the session plumbing, blind to the flow: three of the bugs this file covers (the popup
-# redrawing its own list, `agent pick` inside tmux attaching nothing, a slug clash killing the picker) all sat
-# under a green run.sh. So: no AGENT_PICK_FILTER here, ever.
+# No AGENT_PICK_FILTER here, ever. run.sh uses it to replace interactive fzf with `fzf --filter`, skip every
+# free-text prompt and leave the picker loop after one pass, which tests the session plumbing and nothing about
+# the flow: a popup that redraws its own list, an `agent pick` inside tmux that attaches nothing, or a slug
+# clash that kills the picker all pass under it.
 #
-# Cases are named for the flows in docs/session-picker-plan.md. L is the login picker (`agent pick`), P is the
-# prefix-g popup (`agent pick --switch`); a flow that exists in both is tested in both, because they are two
-# different code paths through the same menu.
+# Cases are named for the flows in docs/session-picker-plan.md. L is the login picker (`agent pick`), P the
+# prefix-g popup (`agent pick --switch`); a flow that exists in both is tested in both, as two code paths
+# through the same menu.
 # Needs docker without sudo; network only for the image builds. KEEP=1 leaves the containers up.
 # Usage: bash tests/e2e/tui.sh
 # A && ok || bad is the intended pattern here:
@@ -55,31 +54,30 @@ keys2()  { ct2 send-keys -t term2 "$@"; }
 screen() { ct  capture-pane -p -t term  2>/dev/null | tr -d '\r' | sed 's/[[:space:]]*$//'; }
 screen2(){ ct2 capture-pane -p -t term2 2>/dev/null | tr -d '\r' | sed 's/[[:space:]]*$//'; }
 
-# await <needle> [secs] [screenfn]: poll the screen until the text shows up. Everything the picker does is
-# asynchronous from here (ssh, tmux, fzf, a harness starting), so nothing is asserted without waiting first.
+# await <needle> [secs] [screenfn]: poll the screen until the text shows up. Everything here is asynchronous
+# (ssh, tmux, fzf, a harness starting), so nothing is asserted without waiting first.
 await()  { local n=$1 s=${2:-15} f=${3:-screen} i=0
            while [ "$i" -lt $((s * 4)) ]; do case "$($f)" in *"$n"*) return 0;; esac; sleep 0.25; i=$((i + 1)); done; return 1; }
 # unaware <needle> [secs]: poll until the text is gone (a popup that closed, a session that went away).
 unaware(){ local n=$1 s=${2:-15} i=0
            while [ "$i" -lt $((s * 4)) ]; do case "$(screen)" in *"$n"*) ;; *) return 0;; esac; sleep 0.25; i=$((i + 1)); done; return 1; }
-# dump: both ends of the screen. fzf draws its prompt at the top and the shell's last output sits at the
-# bottom, and which of the two is there is usually the whole answer, so a failure prints some of each.
+# dump: both ends of the screen. fzf's prompt is at the top and the shell's last output at the bottom, and which
+# of the two is there is usually the whole answer.
 dump()   { local f=${1:-screen} all; all=$($f | grep -v '^$'); printf '\n%s\n    ...\n%s' "$(printf '%s\n' "$all" | head -6)" "$(printf '%s\n' "$all" | tail -10)"; }
 saw()    { if await "$1" "${3:-15}"; then ok "$2"; else bad "$2" "screen has no [$1]:$(dump)"; fi; }
 saw2()   { if await "$1" "${3:-15}" screen2; then ok "$2"; else bad "$2" "screen2 has no [$1]:$(dump screen2)"; fi; }
 went()   { if unaware "$1" "${3:-15}"; then ok "$2"; else bad "$2" "screen still has [$1]:$(dump)"; fi; }
 # host_wait <shell test>: the same patience, for state on the box rather than pixels on the client.
 host_wait(){ local i=0; while [ "$i" -lt 60 ]; do box sh -c "$1" >/dev/null 2>&1 && return 0; sleep 0.25; i=$((i + 1)); done; return 1; }
-# pick <text>: narrow the menu the way a human does, then take the row. Not a filter: fzf is really running.
-# C-u first is fzf's clear-query: what the last case typed is still in the box until that fzf exits.
+# pick <text>: narrow the menu the way a human does, then take the row; fzf is really running. C-u first is
+# fzf's clear-query, since the previous case's text sits in the query box until that fzf exits.
 clearq() { keys C-u; sleep 0.5; }
 pick()   { clearq; keys "$1"; sleep 1; keys Enter; sleep 1; }
 typ()    { clearq; keys "$1"; sleep 1; keys Enter; sleep 1; }  # a free-text prompt (name, slug)
 
-# at_picker: put the client back at the login picker, whatever the last flow left behind. Cases here run in
-# sequence against one long-lived login, so without this a single broken flow reports itself once and then
-# again as every later case, and the real result is buried. Escape backs out of any menu, C-b d leaves a
-# session, and a login that has ended is simply made again.
+# at_picker: put the client back at the login picker, whatever the last flow left behind, so one broken flow
+# fails once instead of as every later case. Escape backs out of any menu, C-b d leaves a session, and a login
+# that has ended is made again.
 at_picker() {
   local i
   for i in 1 2 3; do
@@ -91,8 +89,8 @@ at_picker() {
   return 1
 }
 
-# in_session <name>: at the picker, then inside that session, with the client attached to a view of it. The
-# popup flows all start from inside a session, since prefix-g is only reachable from a tmux client.
+# in_session <name>: at the picker, then inside that session. The popup flows start from inside a session,
+# since prefix-g is only reachable from a tmux client.
 in_session() { at_picker; pick "$1"; await "[$1@" 25; }
 
 # popup: open the prefix-g picker on whatever session the client is in.
@@ -129,8 +127,8 @@ docker exec -t -u macuser2 -e HOME=/home/macuser2 -e SSH_ASKPASS=/usr/local/bin/
        -e "E2E_PASSWORD=$PASSWORD" -w "$MAC2_REPO" "$MAC" ./install-mac.sh >"$T/install-mac2.log" 2>&1
 check "mac2: install-mac.sh exit 0" 0 "$?"
 
-# Two repos to choose between, and a stand-in harness: it records where it started, then becomes a process
-# that sits still and can be killed, so "the harness is running" and "the harness exited" are both provable.
+# Two repos to choose between, and a stand-in harness that records where it started, then sits until killed,
+# so "running" and "exited" are both provable.
 docker exec -i -u "$LOGIN" -e "HOME=/home/$LOGIN" "$BOX" sh -s <<'STUB'
 set -e
 cp "$(readlink -f /bin/sh)" "$HOME/.local/bin/claude-proc"
@@ -227,11 +225,9 @@ saw 'Remove the worktree anyway?' "L5b: a dirty worktree asks before it goes"
 keys 'n' Enter; sleep 2
 check "L5b: answering no keeps the worktree" ok "$(box sh -c "test -f /home/$LOGIN/workspace/demo.wt/feature/scratch.txt && echo ok")"
 saw 'worktree kept' "L5b: and says how to remove it by hand"
-# Asked of the host, not of the screen, and alone in this file in that. `confirm_dirty` reads the answer
-# from /dev/tty while fzf is not running, and the redraw that follows is the one thing capture-pane will not
-# show through this container's ssh pty: fzf covers the screen with --height and, in this case only, what
-# comes back is the state from before the question. The menu is a process on the box either way, so that is
-# what is asserted; the same sequence driven against a local tmux does show the menu return.
+# Asserted on the host, not the screen, alone in this file: `confirm_dirty` reads its answer from /dev/tty
+# while fzf is not running, and through this container's ssh pty capture-pane shows the state from before the
+# question rather than the redrawn menu (a local tmux does show it). The menu is a process on the box either way.
 host_wait "pgrep -f 'fzf --prompt=session' >/dev/null" \
   && ok "L5: the picker is back at its menu after a kept worktree" \
   || bad "L5: the picker is back at its menu after a kept worktree" \

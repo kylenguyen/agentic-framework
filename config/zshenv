@@ -1,6 +1,5 @@
-# Sourced by EVERY zsh, interactive or not, before .zshrc. Installed as ~/.zshenv (symlink).
-# This is zsh's equivalent of the "env" block at the top of ~/.bashrc: with zsh as the login
-# shell, `ssh <host> <command>` runs `zsh -c`, which reads only this file, so PATH, mise shims and
-# the agent secrets must be set here or headless jobs launched from a Mac would not find them.
+# Sourced by every zsh, interactive or not, before .zshrc. Installed as ~/.zshenv (symlink).
+# zsh's equivalent of the "env" block at the top of ~/.bashrc: `ssh <host> <command>` runs `zsh -c`, which reads
+# only this file, so PATH, mise shims and the agent secrets must be set here for headless jobs to find them.
 # shellcheck shell=sh
 [ -r "$HOME/.bashrc.d/agents-env.sh" ] && . "$HOME/.bashrc.d/agents-env.sh"

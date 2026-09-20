@@ -2,7 +2,7 @@
 # Claude Code status line.
 #   line 1: robbyrussell-style identity  -> dir, git branch, model, effort, fast mode
 #   line 2: usage                        -> context tokens + bar + %, 5h and 7d rate limits
-# Input schema: JSON on stdin, see `claude` statusline docs (fields verified against 2.1.227).
+# Input: the status line JSON Claude Code writes to stdin (see its statusLine docs).
 
 input=$(cat)
 

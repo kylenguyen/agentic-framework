@@ -1,15 +1,13 @@
 #!/usr/bin/env bash
-# Idempotent host setup, phases 1 to 4 in one script. Safe to re-run. Run as the login the host is for, never with sudo.
+# Idempotent host setup, phases 1 to 4. Safe to re-run. Run as the host login, never with sudo.
 # Usage: ./install-host.sh [--no-tools] [--no-root]
 #   --no-tools   skip network installs (oh-my-zsh, mise toolchains, uv, the four harnesses)
 #   --no-root    skip phase 1 (the steps that need sudo)
-# Phase 1 (apt packages, zsh as login shell, linger, Tailscale auto-update, unattended-upgrades) runs one
-# command at a time through the as_root helper, and only when the host is not already in the wanted state.
-# sudo asks for your password the first time a root step is actually needed; a host that is already
-# configured never prompts. Everything else runs as you. sshd and the firewall are left as the OS installed them.
-# Parameters (lib/params.sh): the login is the one running the script; host name, address and LAN address come from
-# the system, or from .env when set there. .env is written from the derived values on the first run and its
-# contents printed at the end for the Macs. Password prompts aside, nothing is interactive.
+# Phase 1 (apt packages, zsh as login shell, linger, Tailscale auto-update, unattended-upgrades) runs one command at
+# a time through as_root, only when the host is not already in the wanted state, so a configured host never prompts.
+# sshd and the firewall are left as the OS installed them. Parameters (lib/params.sh): the login is the one running
+# the script; host name, address and LAN address come from .env or the system. .env is written on the first run and
+# printed at the end for the Macs. Password prompts aside, nothing is interactive.
 set -euo pipefail
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 TOOLS=1; ROOT=1
@@ -33,8 +31,7 @@ USER_NAME=$AGENT_HOST_USER
 say "Parameters: host $AGENT_HOST ($AGENT_HOST_ADDRESS), login $USER_NAME, LAN ${AGENT_HOST_LAN_IP:-none}"
 if [ -f "$REPO/.env" ]; then note "ok   .env"; else params_env_text > "$REPO/.env"; note "wrote .env from the values above (edit to override, then re-run)"; fi
 
-# as_root <cmd...>: run one command with sudo. The first call explains the password prompt; sudo caches
-# the credential for the rest of the run, so later calls are silent.
+# as_root <cmd...>: one command under sudo. The first call explains the prompt; sudo caches the credential after it.
 SUDO_PRIMED=0
 as_root() {
   if [ "$SUDO_PRIMED" = 0 ]; then
@@ -56,7 +53,7 @@ link() { # link <target> <linkpath>: symlink, backing up a real file that is in 
   ln -sfn "$target" "$linkpath"; note "link $linkpath -> $target"
 }
 
-# block <file> <marker> <content>: insert/replace a marked block. mode top|bottom
+# block <file> <marker> <top|bottom> <content>: insert or replace a marked block.
 block() {
   local file=$1 marker=$2 mode=$3 content=$4 begin end tmp
   begin="# >>> agentic-framework:$marker >>>"; end="# <<< agentic-framework:$marker <<<"
@@ -77,8 +74,7 @@ block() {
 
 if [ "$ROOT" = 1 ]; then
   say "Phase 1: packages: tmux mosh gh zsh fzf, plus git curl file jq unattended-upgrades"
-  # tmux and fzf are the whole of phase 2 (sessions and the picker); the rest are what the later
-  # phases, the shim tests and the status line call.
+  # tmux and fzf serve phase 2 (sessions and the picker); the rest serve later phases, the shim tests and the status line.
   MISSING=()
   for pkg in tmux mosh gh zsh fzf git curl file jq unattended-upgrades; do
     [ "$(dpkg-query -W -f='${db:Status-Status}' "$pkg" 2>/dev/null)" = installed ] || MISSING+=("$pkg")
@@ -124,8 +120,7 @@ fi
 say "Phase 2: tmux + shell"
 link "$REPO/config/tmux.conf" "$HOME/.tmux.conf"
 link "$REPO/config/bashrc.d" "$HOME/.bashrc.d"
-# zsh is the login shell (chsh happens in phase 1). Both shells share bashrc.d; bash
-# stays fully configured as the escape hatch and for scripts.
+# Both shells share bashrc.d; bash stays fully configured as the escape hatch and for scripts.
 link "$REPO/config/zshenv" "$HOME/.zshenv"
 link "$REPO/config/zshrc" "$HOME/.zshrc"
 if [ "$(getent passwd "$USER_NAME" | cut -d: -f7)" != "$(command -v zsh || true)" ]; then
@@ -150,10 +145,10 @@ fi
 install -d "$HOME/workspace"
 link "$REPO/config/workspace/CLAUDE.md" "$HOME/workspace/CLAUDE.md"
 link "$REPO/config/workspace/CLAUDE.md" "$HOME/workspace/AGENTS.md"
-# Codex never looks above the git root, so ~/workspace/AGENTS.md does not reach it; its global scope is
-# ~/.codex/AGENTS.md. Its config.toml is not a symlink: Codex writes into that file itself (trusted projects,
-# model choice), so the repo owns one marker block at the top, where a top-level key stays out of any table.
-# project_doc_max_bytes: Codex stops reading instructions at 32 KiB combined; AGENTS.md files here are larger.
+# Codex reads instructions from the git root down, never ~/workspace, so the house rules reach it through its global
+# ~/.codex/AGENTS.md. Its config.toml is not a symlink (Codex writes trusted projects and model choice into it), so
+# the repo owns one marker block at the top, where a top-level key stays out of any table. project_doc_max_bytes:
+# Codex truncates combined instructions at 32 KiB by default; the house rules plus a repo AGENTS.md are larger.
 install -d "$HOME/.codex"
 link "$REPO/config/workspace/CLAUDE.md" "$HOME/.codex/AGENTS.md"
 touch "$HOME/.codex/config.toml"
@@ -168,14 +163,13 @@ say "Phase 4: clipboard bridge (clip-put writes the spool, the xclip shim serves
 install -d "$HOME/.local/bin"
 link "$REPO/bin/xclip" "$HOME/.local/bin/xclip"
 link "$REPO/bin/clip-put" "$HOME/.local/bin/clip-put"
-# The picker is what every interactive login lands in (config/bashrc.d/tmux-autoattach.sh), so it has to
-# be on PATH before the next login, not only after a re-login.
+# Every interactive login lands in the picker (config/bashrc.d/tmux-autoattach.sh), so it must be on PATH.
 link "$REPO/bin/agent" "$HOME/.local/bin/agent"
 
 if [ "$TOOLS" = 1 ]; then
   say "Phase 2: oh-my-zsh"
-  # Plain clone instead of the upstream install.sh: no chsh, no generated ~/.zshrc (ours is a
-  # symlink into the repo), nothing to undo on re-run. Updates: `omz update`.
+  # Plain clone instead of the upstream install.sh: no chsh, no generated ~/.zshrc (ours is a symlink into the
+  # repo), nothing to undo on re-run. Updates: `omz update`.
   if [ ! -d "$HOME/.oh-my-zsh" ]; then
     git clone --depth=1 https://github.com/ohmyzsh/ohmyzsh.git "$HOME/.oh-my-zsh"
   else

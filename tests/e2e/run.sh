@@ -1,16 +1,14 @@
 #!/usr/bin/env bash
-# tests/e2e/run.sh: two Docker containers on a private network, "box" (the host, real sshd, install-host.sh as alice
-# with sudo) and "mac" (install-mac.sh as macuser, brew/osascript/pbpaste/pngpaste stubbed). The Mac script runs
-# first through the password path (SSH_ASKPASS answers for the human), then once more for idempotency; the host
-# script runs twice as well. Values are deliberately not the live ones (alias box, login alice), so a literal that
-# slipped past tests/params-test.sh fails here. What a container cannot do (systemd, tailscale) is shimmed
-# and logged; see tests/e2e/shims. The clipboard bridge is driven the way WezTerm drives it: the rendered module runs
-# under Lua 5.4 (tests/e2e/wezterm-paste.lua) and its Cmd+V decision calls the real clip-push, which pushes over ssh
-# to the real host and pastes back the path clip-put printed; the shell checks that file byte for byte. Driving the
-# three harnesses with that pasted path needs their installers and is tests/e2e/harness-paste.sh. A second
-# Mac (macuser2, same .env, own key) installs and pushes too, since the design is many Macs against one host.
-# Needs docker without sudo; network only for the image builds. KEEP=1 leaves the containers running for a look
-# around. Exit 0 when every check passes.
+# tests/e2e/run.sh: both install scripts, the clipboard bridge and the session plumbing, in two Docker containers
+# on a private network: "box" (the host: real sshd, install-host.sh as alice with sudo; systemd and tailscale are
+# shims that log to /var/log/e2e-shims.log) and "mac" (install-mac.sh as macuser and macuser2, same .env, own keys;
+# brew, osascript, pbpaste and pngpaste stubbed). Each script runs twice: the Mac one first through the password
+# path (SSH_ASKPASS answers for the human), then for idempotency. Alias box and login alice are not the live
+# values, so a literal that slipped past tests/params-test.sh fails here. Cmd+V runs the way WezTerm runs it: the
+# rendered module under Lua 5.4 (tests/e2e/wezterm-paste.lua) calls the real clip-push, which pushes over ssh to
+# the real host, and the shell checks the pasted path byte for byte. The pasted path going into the harnesses
+# themselves is tests/e2e/harness-paste.sh; the picker's menus are tests/e2e/tui.sh.
+# Needs docker without sudo; network only for the image builds. KEEP=1 leaves the containers running.
 # Usage: bash tests/e2e/run.sh
 # shellcheck disable=SC2015,SC2016
 set -u
@@ -69,8 +67,8 @@ check "host: login shell is zsh" /usr/bin/zsh "$(root getent passwd "$LOGIN" | c
 check "host: ~/.zshrc links into the repo" "$BOX_REPO/config/zshrc" "$(box readlink "/home/$LOGIN/.zshrc")"
 check "host: secrets file mode" 600 "$(box stat -c %a "/home/$LOGIN/.config/agents/env")"
 check "host: xclip shim linked" "$BOX_REPO/bin/xclip" "$(box readlink "/home/$LOGIN/.local/bin/xclip")"
-# Codex reads its global rules from ~/.codex, never from ~/workspace, and its config.toml is a file Codex writes
-# too, so the repo owns one marker block in it rather than the file.
+# Codex reads its global rules from ~/.codex, never above the git root, and writes into its own config.toml, so
+# the repo owns one marker block there rather than the file.
 check "host: Codex global AGENTS.md links into the repo" "$BOX_REPO/config/workspace/CLAUDE.md" "$(box readlink "/home/$LOGIN/.codex/AGENTS.md")"
 check "host: one codex block in ~/.codex/config.toml" 1 "$(box grep -c 'agentic-framework:codex >>>' "/home/$LOGIN/.codex/config.toml")"
 check "host: the codex block sets project_doc_max_bytes" 1 "$(box grep -c '^project_doc_max_bytes = ' "/home/$LOGIN/.codex/config.toml")"
@@ -162,7 +160,7 @@ pasted() { local name=$1; shift; local out path
   case "$path" in *" "*) bad "wez: $name: path has no spaces" "$path";; *) ok "wez: $name: path has no spaces (one paste, one path in every harness)";; esac
 }
 pasted "image into the host domain" domain
-# Ctrl+V in Claude Code still works while the shim is there: latest follows the newest image.
+# Ctrl+V in Claude Code reads the shim, and latest follows the newest image.
 check "claude: xclip TARGETS after the push" image/png "$(mac ssh -o BatchMode=yes "$ALIAS" 'xclip -selection clipboard -t TARGETS -o' 2>/dev/null)"
 check "claude: xclip image/png returns the same bytes" "$png_sha" "$(mac ssh -o BatchMode=yes "$ALIAS" 'xclip -selection clipboard -t image/png -o | sha256sum' 2>/dev/null | cut -c1-64)"
 mac ssh -o BatchMode=yes "$ALIAS" 'xclip -selection clipboard -t text/plain -o' >/dev/null 2>&1 && bad "claude: text request on a PNG spool exits 1" || ok "claude: text request on a PNG spool exits 1"
@@ -174,8 +172,8 @@ case "$out" in *action*|*paste*) bad "wez: push failure pastes nothing (no stale
 check "wez: spool untouched by the failed push" before "$(spool)"
 
 say "host -> mac: copy inside the host reaches the Mac clipboard as OSC 52"
-# xclip with stdin is what Claude Code and tmux run on copy; with a pty the shim emits OSC 52, which WezTerm turns into
-# a Mac clipboard write. Over ssh -tt the escape sequence comes back in the pty stream.
+# xclip with stdin is what Claude Code and tmux run on copy; with a pty the shim emits OSC 52, which WezTerm turns
+# into a Mac clipboard write. Over ssh -tt the escape sequence comes back in the pty stream.
 osc=$(mac ssh -tt -o BatchMode=yes "$ALIAS" 'printf hello-osc52 | xclip -selection clipboard' 2>/dev/null | od -An -c | tr -d ' \n')
 case "$osc" in *"033]52;c;$(printf hello-osc52 | base64)"*) ok "copy: xclip stdin -> OSC 52 with the base64 payload";; *) bad "copy: OSC 52" "$osc";; esac
 check "copy: the copy is also spooled on the host" hello-osc52 "$(spool)"
@@ -206,9 +204,8 @@ mac2 /home/macuser2/.local/bin/clip-push --clear >/dev/null 2>&1
 check "mac2: --clear empties the spool for everyone" "" "$(box ls -A "/home/$LOGIN/.clip")"
 
 say "sessions: the picker, and two devices on one harness session"
-# Two Mac users are the two devices; each gets its own view of one base session, which is the whole point
-# of the grouped-session design. The picker runs non-interactively through AGENT_PICK_FILTER, so the ssh
-# commands need a pty (for tmux to attach to) but no human.
+# The two Mac users are the two devices, each with its own view of one base session. The picker runs
+# non-interactively through AGENT_PICK_FILTER, so the ssh commands need a pty for tmux but no human.
 AGENTBIN=/home/$LOGIN/.local/bin/agent
 bagent() { box "$AGENTBIN" "$@"; }
 btmux()  { box tmux "$@"; }
@@ -274,10 +271,9 @@ wait "$MAC2" 2>/dev/null; rc2=$?
 check "box: ls is empty again" "" "$(bagent ls --porcelain)"
 
 say "sessions: log out from the prefix-g popup closes the connection"
-# The one thing only a real login can show: the popup runs in the tmux server's process tree, so choosing
-# "log out" there has to reach the ssh login shell sitting in its own picker. Everything here is real —
-# ssh with a pty, a real display-popup on that client — apart from the two AGENT_PICK_FILTERs standing in
-# for the keystrokes.
+# The popup runs in the tmux server's process tree, so "log out" chosen there has to reach the ssh login shell
+# sitting in its own picker. Real ssh with a pty and a real display-popup on that client; only the two
+# AGENT_PICK_FILTERs stand in for keystrokes.
 timeout 180 docker exec -t -u macuser -e HOME=/home/macuser "$MAC" \
   ssh -tt -o BatchMode=yes "$ALIAS" 'AGENT_PICK_FILTER="new shell" agent pick; echo picker-rc=$?' >"$T/mac3.ssh" 2>&1 &
 MAC3=$!
@@ -298,9 +294,8 @@ fi
 bagent kill scratch >/dev/null 2>&1 || true
 
 say "sessions: agent new runs a harness in the repo and keeps its last screen"
-# A stand-in "claude" on the box PATH: it records where it started, then becomes a process tmux can name.
-# It is a copy of /bin/sh rather than a link to sleep, because coreutils is one multi-call binary that
-# refuses to run under another argv[0].
+# A stand-in "claude" on the box PATH records where it started, then becomes a process tmux can name. It is a
+# copy of /bin/sh rather than a link to sleep: coreutils is one multi-call binary that refuses another argv[0].
 docker exec -i -u "$LOGIN" -e "HOME=/home/$LOGIN" "$BOX" sh -s <<'STUB'
 set -e
 cp "$(readlink -f /bin/sh)" "$HOME/.local/bin/claude-proc"

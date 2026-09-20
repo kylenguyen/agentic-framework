@@ -1,30 +1,23 @@
 #!/usr/bin/env bash
-# tests/e2e/harness-paste.sh: the last step of the clipboard bridge, the one tests/e2e/run.sh stops short of.
-# run.sh proves that Cmd+V on a Mac pushes the image and that WezTerm gets a host path back. This file takes
-# that path the rest of the way: into Claude Code, Oh My Pi and OpenCode, and checks each one attaches it as
-# an image. All three read a pasted absolute path to a .png that way, which is the only reason one key can
-# serve every harness; if one of them stops doing it, the bridge is broken for that harness and nothing else
-# in the suite notices.
+# tests/e2e/harness-paste.sh: the last step of the clipboard bridge. run.sh proves Cmd+V pushes the image and
+# hands WezTerm a host path; this file pastes that path into Claude Code, Oh My Pi and OpenCode and checks each
+# attaches it as an image. That shared behaviour is the only reason one key serves every harness, and nothing
+# else in the suite notices when one of them loses it.
 #
-# Two containers on a private network: "box" (tests/e2e/Dockerfile.harness -- the run.sh host image plus the
-# three harnesses, every version pinned) and "mac" (the run.sh Mac image). The Mac holds a tmux server of its
-# own whose one pane runs `ssh -tt box 'agent attach ...'`; that pane stands in for the WezTerm pane. Pastes
-# go into it with `tmux paste-buffer -p`, which wraps them in the bracketed-paste markers WezTerm's
-# pane:paste sends, so the bytes cross ssh and reach the host tmux the way a real client delivers them.
-# Injecting the paste on the box would skip that step, and the host tmux recognising a paste arriving from
-# its client is exactly the step that has to work live.
+# Two containers on a private network: "box" (tests/e2e/Dockerfile.harness: the run.sh host image plus the
+# three harnesses, versions pinned; login alice) and "mac" (the run.sh Mac image, as macuser). The Mac holds a
+# tmux server whose one pane runs `ssh -tt box 'agent attach ...'`, standing in for the WezTerm pane. Pastes go
+# in with `tmux paste-buffer -p`, which adds the bracketed-paste markers pane:paste sends, so the bytes cross
+# ssh and the host tmux the way a real client delivers them; injecting the paste on the box would skip the
+# step that has to work live. A command on the ssh line bypasses tmux-autoattach.sh, so the picker never draws.
 #
-# A command on the ssh line bypasses config/bashrc.d/tmux-autoattach.sh, so the picker never draws: what
-# happens after a paste is this file's subject and tests/e2e/tui.sh is the one that drives the picker.
+# No real credentials: ANTHROPIC_API_KEY is a placeholder in a throwaway container, nothing is sent to
+# Anthropic. It keeps the `sk-ant-` prefix because Claude Code 2.1.278 only offers its "use this API key?"
+# dialog for a value shaped that way, and without that dialog it stops at a login menu no script can answer.
 #
-# No real credentials: ANTHROPIC_API_KEY is a placeholder string in a throwaway container, nothing is sent to
-# Anthropic and nothing is billed. It keeps the `sk-ant-` prefix because Claude Code 2.1.278 only offers its
-# "use this API key?" dialog for a value shaped that way, and without that dialog it stops at a login menu
-# no script can answer. Each harness only has to draw its editor and show what was pasted into it.
-#
-# The prompt and indicator strings below are version-specific, so the run prints the three versions it saw
-# next to its result; a green run against versions the host no longer has proves nothing. Run this when a
-# harness is upgraded on the host, and move the pin in Dockerfile.harness once it passes.
+# The prompt and indicator strings are version-specific, so the run prints the three versions it saw next to
+# its result. Run this when a harness is upgraded on the host, and move the pin in Dockerfile.harness once it
+# passes.
 # Needs docker without sudo; the first build pulls several hundred MB. KEEP=1 leaves the containers up.
 # Usage: bash tests/e2e/harness-paste.sh
 # A && ok || bad is the intended pattern here:
@@ -53,9 +46,8 @@ btmux()  { box tmux "$@"; }
 bscreen(){ btmux capture-pane -p -t "$1" 2>/dev/null | tr -d '\r' | sed 's/[[:space:]]*$//'; }
 
 # --- the client's terminal ----------------------------------------------------------------------------
-# One tmux server on the Mac, one pane, one ssh client in it: the stand-in for a WezTerm pane connected to
-# the host. Everything `paste` sends is delivered there and everything `screen` shows is what the operator
-# would be looking at, both of them the far side of a real ssh connection.
+# One tmux server on the Mac, one pane, one ssh client in it: the stand-in for a WezTerm pane connected to the
+# host. `paste` delivers there and `screen` reads there, both across a real ssh connection.
 ct()     { docker exec -u macuser -e HOME=/home/macuser "$MAC" tmux -L hp "$@"; }
 keys()   { ct send-keys -t term "$@"; }
 screen() { ct capture-pane -p -t term 2>/dev/null | tr -d '\r' | sed 's/[[:space:]]*$//'; }
@@ -63,17 +55,16 @@ dump()   { local all; all=$(screen | grep -v '^$'); printf '\n%s\n    ...\n%s' "
 connect(){ ct kill-session -t term >/dev/null 2>&1
            ct new-session -d -x 120 -y 40 -s term \
               "ssh -tt -o BatchMode=yes -o StrictHostKeyChecking=accept-new $ALIAS 'agent attach $1'; echo SSH_DONE=\$?; sleep 3600"; }
-# await <needle> [secs]: poll the Mac's screen until the text appears. A harness starting, an ssh connection
-# and a paste being rendered are all asynchronous from here, so nothing is asserted without waiting first.
+# await <needle> [secs]: poll the Mac's screen until the text appears. Everything here is asynchronous, so
+# nothing is asserted without waiting first.
 await()  { local n=$1 s=${2:-20} i=0
            while [ "$i" -lt $((s * 4)) ]; do case "$(screen)" in *"$n"*) return 0;; esac; sleep 0.25; i=$((i + 1)); done; return 1; }
 saw()    { if await "$1" "${3:-20}"; then ok "$2"; else bad "$2" "screen has no [$1]:$(dump)"; fi; }
-# missing <needle> <name> [secs]: the text must still be absent after the wait. The only way to assert that
-# something did not happen is to give it time to happen first.
+# missing <needle> <name> [secs]: the text must be absent after the wait; something that did not happen has to
+# be given time to happen first.
 missing(){ if await "$1" "${3:-8}"; then bad "$2" "screen has [$1]:$(dump)"; else ok "$2"; fi; }
-# paste <text>: deliver text to the pane the way WezTerm's pane:paste delivers it, as one bracketed paste.
-# -p is what makes it a paste rather than typing: without it the harness sees keystrokes and runs its own
-# key handling, not the paste handler that turns a path into an attachment.
+# paste <text>: one bracketed paste, as WezTerm's pane:paste delivers it. Without -p the harness sees
+# keystrokes and runs its key handling, not the paste handler that turns a path into an attachment.
 paste()  { ct set-buffer -- "$1"; ct paste-buffer -p -t term; }
 
 say "images and containers"
@@ -105,7 +96,7 @@ check "mac: install-mac.sh exit 0" 0 "$?"
 
 say "host: what the three harnesses need to reach a prompt with nobody logged in"
 # ~/.config/agents/env is sourced by config/zshenv, so the harness `agent new` starts under zsh sees this;
-# putting it in the tmux server's environment would not survive, and exporting it here would not reach it.
+# neither the tmux server's environment nor an export here would reach it.
 box sh -c "printf 'ANTHROPIC_API_KEY=%s\n' 'sk-ant-e2e-placeholder-not-a-real-key' >> /home/$LOGIN/.config/agents/env"
 # Oh My Pi's provider wizard is skipped by a config that says setup has already been done.
 box sh -c "mkdir -p /home/$LOGIN/.omp/agent && printf 'setupVersion: 2\n' > /home/$LOGIN/.omp/agent/config.yml"
@@ -119,15 +110,14 @@ echo "    claude [$CLAUDE_V]  omp [$OMP_V]  opencode [$OPENCODE_V]"
 [ -n "$CLAUDE_V" ] && [ -n "$OMP_V" ] && [ -n "$OPENCODE_V" ] && ok "box: all three harnesses run" \
   || { bad "box: all three harnesses run" "claude [$CLAUDE_V] omp [$OMP_V] opencode [$OPENCODE_V]"; exit 1; }
 
-# The PNG a Cmd+V would push: 16x16 rather than the 1x1 run.sh uses, in case a harness declines to attach a
-# degenerate image. Nothing here looks at the pixels, only at the bytes arriving unchanged.
+# The PNG a Cmd+V would push: 16x16 rather than run.sh's 1x1, in case a harness declines a degenerate image.
 FIXTURE=iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAJElEQVR42mMQsTkBR/8DNOAIlzjDINRAjCJk8cGoYTQeBoUGAK3rR5BXQzlQAAAAAElFTkSuQmCC
 mac sh -c "echo $FIXTURE | base64 -d > /tmp/clipboard.png; echo png > /tmp/clipboard.kind"
 PNG_SHA=$(mac sha256sum /tmp/clipboard.png | cut -c1-64)
 
-# answer <session> <key...>: press the keys the dialog on screen needs, then wait for the screen to change.
-# Without that wait the next poll answers the same dialog again, and the extra Enter lands on the default of
-# whatever comes next -- which for two of Claude Code's three dialogs is the answer that quits.
+# answer <session> <key...>: press the keys the dialog needs, then wait for the screen to change. Without the
+# wait the next poll answers the same dialog again, and the extra Enter takes the default of whatever comes
+# next, which for two of Claude Code's three dialogs is the answer that quits.
 answer() {
   local name=$1 before k i=0; shift
   before=$(bscreen "$name")
@@ -135,9 +125,9 @@ answer() {
   while [ "$i" -lt 40 ]; do [ "$(bscreen "$name")" != "$before" ] && return 0; sleep 0.25; i=$((i + 1)); done
 }
 # ready <session> <prompt needle>: clear the first-run dialogs on the base session until the harness's own
-# prompt is on screen. Driven by what is there rather than by a fixed key sequence: the wording and the
-# order of these change between releases, and a scripted key into the wrong dialog hangs the whole run.
-# Verified against the pinned versions, 20 Sep 2026; Claude Code preselects "No"/"No, exit" in two of them.
+# prompt is on screen. Driven by what is there, not a fixed key sequence: wording and order change between
+# releases, and a scripted key into the wrong dialog hangs the run. Verified against the pinned versions;
+# Claude Code preselects "No"/"No, exit" in two of them.
 ready() {
   local name=$1 needle=$2 s end=$((SECONDS + 150))
   while [ "$SECONDS" -lt "$end" ]; do
@@ -156,7 +146,7 @@ ready() {
 }
 
 # harness <name> <prompt needle> <image indicator>: the whole flow for one harness, from `agent new` to a
-# pasted path showing up as an attachment. The three differ only in those strings.
+# pasted path shown as an attachment. The three differ only in those strings.
 harness() {
   local h=$1 prompt=$2 indicator=$3 second=${3/1/2} out path
   local name=$h-standin
@@ -174,8 +164,8 @@ harness() {
   paste " hello-from-mac"
   saw "hello-from-mac" "$h: text pasted on the Mac arrives in the editor"
 
-  # The real thing: Cmd+V with an image on the Mac clipboard, decided by the rendered WezTerm module, and the
-  # path it chose to paste delivered exactly as pane:paste would deliver it.
+  # Cmd+V with an image on the Mac clipboard, decided by the rendered WezTerm module; the path it chose to paste
+  # is then delivered as pane:paste would deliver it.
   out=$(docker exec -u macuser -e HOME=/home/macuser -w "$MAC_REPO" "$MAC" lua5.4 tests/e2e/wezterm-paste.lua domain 2>&1 | tr -d '\r')
   path=${out#paste }
   case "$out" in "paste /home/$LOGIN/.clip/"*.png) ok "$h: Cmd+V pushed the image and got a host path back" ;;
@@ -185,9 +175,9 @@ harness() {
   paste "$path"
   saw "$indicator" "$h: the pasted path is attached as an image ($indicator)"
 
-  # A path to no file must not attach anything, or the check above would pass on any paste at all. What the
-  # three then do with the text differs (Oh My Pi drops the token, the other two leave it in the editor), so
-  # the assertion is only that no second attachment appeared.
+  # A path to no file must attach nothing, or the check above would pass on any paste. What the three do with
+  # the text differs (Oh My Pi drops it, the other two leave it in the editor), so only "no second attachment"
+  # is asserted.
   paste "/home/$LOGIN/.clip/00000000T000000Z-absent.png"
   missing "$second" "$h: a path to no file attaches nothing (no $second)" 8
 
@@ -196,8 +186,8 @@ harness() {
   check "$h: the session is gone again" "" "$(bagent ls --porcelain | tr -d '\r')"
 }
 
-# The needle is the empty editor's own placeholder in each case, not anything in the footer: the footer is
-# config/claude-settings.json's status line for Claude Code, and it wraps away at a narrow width anyway.
+# Each needle is the empty editor's placeholder, not the footer: for Claude Code the footer is the status line
+# from config/claude-settings.json, and it wraps away at a narrow width.
 harness claude   'Try "'        '[Image #1]'
 harness omp      'π >'          '🖼 #1'
 harness opencode 'Ask anything' '[Image 1]'

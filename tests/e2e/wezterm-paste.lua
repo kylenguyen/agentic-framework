@@ -1,10 +1,10 @@
--- tests/e2e/wezterm-paste.lua: drive the rendered WezTerm module (~/.config/wezterm/wezterm-agent-host.lua) under plain
--- Lua 5.4 with a stub `wezterm` table, so the Cmd+V decision runs exactly as WezTerm would run it, against the real
+-- tests/e2e/wezterm-paste.lua: run the rendered WezTerm module (~/.config/wezterm/wezterm-agent-host.lua) under
+-- plain Lua 5.4 with a stub `wezterm` table, so the Cmd+V decision runs as WezTerm would run it, against the real
 -- clip-push and the real host. Everything WezTerm would do is printed as one line per event for the shell to check:
 --   action PasteFrom Clipboard        the pane got an ordinary paste
---   paste <text>                      pane:paste(text): the path clip-put printed, pasted as one bracketed paste
---   action SendKey ...                a key was sent (nothing does this any more; printed so a regression shows)
---   toast <title>: <message>          a notification, nothing sent
+--   paste <text>                      pane:paste(text): the path clip-put printed, as one bracketed paste
+--   action SendKey ...                a key was sent (the module sends none; printed so a regression shows)
+--   toast <title>: <message>          a notification, nothing pasted
 --   domain / key / term / scheme      what apply() put into the config (scenario "apply")
 -- Usage: lua5.4 tests/e2e/wezterm-paste.lua <scenario>
 --   apply                 print the ssh domain and key bindings apply() adds
@@ -15,9 +15,8 @@ local HOME = os.getenv("HOME")
 local scenario, proc = arg[1], arg[2] or "zsh"
 if not scenario then io.stderr:write("usage: wezterm-paste.lua apply | local [proc] | domain\n"); os.exit(2) end
 
--- Stub of the parts of the wezterm module the agent-host module touches. Actions are plain tables so the shell can
--- read them; run_child_process really runs the command, synchronously, and returns (success, stdout, stderr) like
--- WezTerm does.
+-- Stub of the parts of the wezterm module the agent-host module touches. Actions are plain tables the shell can
+-- read; run_child_process really runs the command and returns (success, stdout, stderr) like WezTerm does.
 local function shq(s) return "'" .. s:gsub("'", "'\\''") .. "'" end
 local wezterm = { home_dir = HOME }
 wezterm.action = setmetatable({}, { __index = function(_, name) return function(a) return { name = name, arg = a } end end })

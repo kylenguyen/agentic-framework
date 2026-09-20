@@ -6,13 +6,12 @@ local wezterm = require("wezterm")
 local M = {}
 
 -- Cmd+V in a pane connected to the host (its SSH domain, or a local pane whose foreground process is ssh or
--- mosh-client). A pty carries text only, so an image cannot be pasted the normal way: clip-push --if-image ships
--- it over SSH into clip-put on the host, which stores it as its own ~/.clip/<stamp>.png and prints that path; we
--- then paste the path into the pane (pane:paste honours bracketed paste, so it arrives as one paste, not
--- keystrokes). Claude Code, Oh My Pi and OpenCode all attach a pasted image path as an image, so the same key works
--- in every harness, and a shell simply gets the path. Text never touches the host: it is pasted natively, so plain
--- Cmd+V costs nothing. run_child_process is synchronous, so the file is on the host before the path is pasted.
--- Any other pane gets the ordinary paste.
+-- mosh-client). A pty carries text only, so an image cannot be pasted the normal way: clip-push --if-image ships it
+-- over SSH into clip-put on the host, which stores it as ~/.clip/<stamp>.png and prints that path, and the path is
+-- pasted into the pane (pane:paste honours bracketed paste, so it arrives as one paste, not keystrokes). The
+-- harnesses attach a pasted image path as an image; a shell simply gets the path. Text is pasted natively and never
+-- touches the host. run_child_process is synchronous, so the file is on the host before the path is pasted. Any
+-- other pane gets the ordinary paste.
 local HOST = "@AGENT_HOST@"
 local function paste_via_host(window, pane)
   local paste_text = wezterm.action.PasteFrom("Clipboard")
