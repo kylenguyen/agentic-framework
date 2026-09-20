@@ -1,51 +1,43 @@
 # Session picker: many Macs, many harness sessions, attach any from anywhere
 
-Implementation plan for the next change to this repo. Written 16 Sep 2026 after the operator answered the design
-questions in section 1; treat those answers as fixed unless the operator revises them. Read `AGENTS.md` first
-(house rules, install contract), then this file. `README.md` and `docs/remote-agent-host-plan.md` describe what
-exists today; this plan changes phase 2 (sessions) and is the base that phase 5 (`agent run`) later builds on.
+Design record for `bin/agent` and the login picker (phase 2, sessions). `README.md` section 3 is the user-facing
+description; `AGENTS.md` has the layout and the test suites; phase 5 (`agent run`) builds on the command contract
+in section 3.
 
 ## 1. Goal and decisions
 
-Goal: the operator logs in from any Mac and sees every running Claude Code / Codex / Oh My Pi / OpenCode session on the
-host, picks one, and gets it on that Mac's screen. Several Macs may be on the same or different sessions at once.
-
-Decisions (operator, 16 Sep 2026):
+Goal: the operator logs in from any Mac and sees every running Claude Code / Codex / Oh My Pi / OpenCode session on
+the host, picks one, and gets it on that Mac's screen. Several Macs may be on the same or different sessions at
+once.
 
 | Question | Decision |
 |---|---|
 | Unit of a session | one harness run in one repo, 1:1 with a tmux session |
 | Two devices on one session | independent views (tmux grouped sessions), not mirror, not take-over |
-| Picker location | on the host, as the landing of every interactive SSH/mosh login; no WezTerm launcher in v1 |
+| Picker location | on the host, as the landing of every interactive SSH/mosh login; no WezTerm launcher |
 | Resume depth | re-attach to live processes only; no conversation-ID registry, no restore after reboot |
 | Where a new session runs | `~/workspace/<repo>` by default; `~/workspace/<repo>.wt/<slug>` on branch `agent/<slug>` on request |
 | Picker detail | process facts only: harness, repo, branch, cwd, age, running/exited, attached devices; no hooks |
-| Plain shells | "shell" is a session type in the picker; `main` stops being the forced landing |
+| Plain shells | "shell" is a session type in the picker; a pre-existing plain session is listed as one and left alone |
 
-Non-goals for this change: harness conversation resume (`claude --resume`, `omp --resume`), "waiting for you"
-indicators, WezTerm-side pickers, session restore at boot, per-device identities beyond the client address.
+Non-goals: harness conversation resume (`claude --resume`, `omp --resume`), "waiting for you" indicators,
+WezTerm-side pickers, session restore at boot, per-device identities beyond the client address.
 
-Verified on the live host (tmux 3.6) during design, so the implementer need not re-derive them:
+tmux facts (3.4 on Ubuntu 24.04, 3.6 on the host) the design rests on:
 
-- tmux rewrites `.` in a session name to `_`, and `.` / `:` in a `-t` target are separators. Session names must
-  never contain them; target sessions by `#{session_id}` (`$N`) internally, never by name.
-- `tmux new-session -t <existing session>` puts the new session in a group named after the existing one
-  (`session_group` = its name, `session_grouped` = 1 on both). Grouped sessions share windows and processes;
-  current window, size and scroll position are per session.
+- tmux rewrites `.` in a session name to `_`, and `.` / `:` in a `-t` target are separators. Session names never
+  contain them; commands target sessions by `#{session_id}` (`$N`), never by name.
+- `tmux new-session -t <existing session>` puts the new session in a group with the existing one. Grouped sessions
+  share windows and processes; current window, size and scroll position are per session.
 - `-t` cannot be combined with `-n` or a shell command, so the base session is created plain with the harness as
   its command, and views are added afterwards.
-- When the harness process exits, its window closes in every session of the group; with nothing else in the
-  group, base and views all disappear. (`remain-on-exit`, below, is what stops that.)
-- `destroy-unattached on` on a view destroys it as soon as it has no client, including a view created detached.
-- fzf is not installed on the host; `apt` candidate is 0.67.0. `agent` is a free command name.
-
-Not verified, check first during implementation (both are one-minute manual checks on a real terminal):
-
-1. A view created attached (`tmux new-session -t ... \; set destroy-unattached on`, no `-d`) stays alive while its
-   client is attached and dies on detach. The design spike could not allocate a pty for a fake client.
-2. A harness started as the tmux session command (`tmux new-session -s <name> -c <cwd> claude`) inherits PATH and
-   the secrets file. tmux runs the command through `default-shell -c`, which is zsh on the host and reads
-   `~/.zshenv`, so it should; confirm with `tmux new-session -d -s t 'echo $PATH; env | grep -c ANTHROPIC' `.
+- Grouped sessions share a window list, not a lifetime: killing the base leaves each view attached to a session
+  nobody owns, so `agent kill` kills the views first, then the base.
+- When the harness process exits its window closes in every session of the group, and with nothing else in the
+  group base and views all disappear; `remain-on-exit` on the base is what stops that.
+- `destroy-unattached on` on a view destroys it as soon as it has no client.
+- A harness started as the tmux session command runs through `default-shell -c`, which is zsh on the host and
+  reads `~/.zshenv`, so PATH and the secrets file reach it.
 
 ## 2. Architecture
 
@@ -62,200 +54,119 @@ Mac C  ssh/mosh ─┘   (fzf loop)               │     │ base  ezbus       
                                                     └────────────────────────────────────────────┘
 ```
 
-**Base session.** `agent new` creates `tmux new-session -d -s <name> -c <cwd> <harness command>`, then sets on it:
+**Base session.** `agent new` creates `tmux new-session -d -s <name> -c <cwd> <harness command>`, then sets on it
 `remain-on-exit on` (a finished or crashed harness leaves its last screen and shows as exited in the picker until
-killed), and user options `@harness`, `@repo`, `@cwd`, `@branch`, `@created`. Window 1 is the harness; the operator
-opens more windows with the prefix, and they start in `#{pane_current_path}`. No registry file: tmux is the state.
+killed) and the user options `@harness`, `@repo`, `@cwd`, `@branch`, `@created`. Window 1 is the harness; further
+windows opened with the prefix start in `#{pane_current_path}`. No registry file: tmux is the state.
 
 **Views.** `agent attach <name>` runs `tmux new-session -t <base id> -s <name>@<n> \; set destroy-unattached on
-\; set @device <ip>` (foreground, so it attaches). `<n>` is the lowest free integer. `@device` is the first field of
-`SSH_CLIENT`, i.e. the Mac's Tailscale or LAN address. Detaching destroys the view; the base stays. Nobody ever
-attaches the base itself, so window size follows the attached views (`window-size latest`, tmux default).
+\; set @device <ip>` in the foreground. `<n>` is the lowest free integer; `@device` is the first field of
+`SSH_CLIENT`, the Mac's Tailscale or LAN address. Detaching destroys the view; the base stays. Nobody attaches the
+base itself, so window size follows the attached views.
 
-**Picker.** `agent pick` is an fzf loop: build the list (`agent ls --porcelain`), show it, act, repeat. The menu is
-the whole screen with no preview window (the preview of each session's last screen was dropped on 20 Sep 2026:
-picking only). Rows, in order: `new session`, `new shell`,
-one row per base session (harness, repo, branch, `wt` if a worktree, age, `running`/`exited`, attached devices),
-`kill session`, `plain shell here`, `log out`. Attach runs in the foreground; when it returns (detach, kill, harness death after a
-kill) the loop shows the list again. `new session` asks in fzf for the repo (directories under `~/workspace` with a
-`.git`, `.wt` trees excluded), then the harness (`claude`, `codex`, `omp`, `opencode`, `shell`), then an optional slug; a
-slug means a worktree. `kill session` (added 17 Sep 2026, after the first version shipped with no way to remove a
-session from the picker) shows the same list again under its own prompt and runs `agent kill` on the row chosen
-there: never the highlighted row, so a stray Enter on the main list cannot destroy a harness, and Esc backs out.
-The chosen session's worktree goes with it, with one more question on the terminal if it has uncommitted work.
-`plain shell here` exits 0 and the login shell continues outside tmux; `log out` exits 3 and
-the login fragment logs out. Inside tmux, prefix `g` opens the same picker in `display-popup -E` with `--switch`,
-which creates the target view and `switch-client`s to it; the abandoned view is destroyed by `destroy-unattached`.
+**Picker.** `agent pick` is an fzf loop: build the list from `agent ls --porcelain`, show it, act, repeat. Rows, in
+order: `new session`, `new shell`, one row per base session (harness, repo, branch, `wt` for a worktree, age,
+`running`/`exited`, attached devices), `kill session`, `plain shell here`, `log out`. No preview window. Attach runs
+in the foreground; when it returns (detach, kill, harness death) the loop shows the list again.
 
-**Look** (20 Sep 2026). The menu is read on a Mac in WezTerm and on a phone in Termius, so it is drawn from the width
-`tput cols` reports rather than assumed. Rows fit the width fzf leaves them (the screen minus its pointer column and
-right margin, minus a border where there is one): under 70 columns a session row is NAME AGE STATE, under 106 it gets
-HARNESS and BRANCH back, and wider than that it is the whole of `agent ls`; the name is the only column that gives
-way, cut with an ellipsis. Five colours carry meaning and nothing else is coloured: green starts or runs, red ends,
-amber warns, blue is the accent (prompt, pointer, matches, `plain shell here`), grey is context; each harness has a
-hue of its own. Rows are painted with SGR codes and fzf runs with `--ansi`, which strips them from the row it hands
-back, so `${sel%% *}` still reads the name. The verbs, the sessions and the ways out are three groups separated by
-rules, with a column header over the sessions; both are ordinary rows, since fzf has no other kind, and choosing one
-draws the menu again. The header starts with two spaces and fzf matches on the first `^  `-delimited field only, so
-no query can land on it (fuzzy matching would otherwise find "notes" in NAME REPO WT AGE STATE, ahead of the session). Every menu carries a header with what it is for and what the keys do, and the hint for Esc is
-honest about where it leads (log out at the login picker, close in the popup). A rounded border with `agent · <host>`
-in its label frames the login picker on 80 columns or more; inside tmux the popup's own border is the frame, and a
-client under 100 columns gets a full-screen popup. Long prompts moved into headers (`kill>` under a red prompt and an
-amber warning, `slug>`, `name>`) because a phone leaves a 60-character prompt no room for the answer. Floor is fzf
-0.44.1 (Ubuntu 24.04); the gutter colour is set explicitly because fzf 0.6x draws a `▌` rail on every row in it, and
-`gutter:-1` makes that rail the foreground colour.
+- `new session` asks for the repo (directories under `~/workspace` with a `.git`, `.wt` trees excluded), the
+  harness (`claude`, `codex`, `omp`, `opencode`, `shell`) and an optional slug; a slug means a worktree. A slug
+  whose `agent/<slug>` branch exists without a worktree is checked out again rather than passed to
+  `worktree add -b`.
+- `new shell` asks for a name (empty gives `scratch`).
+- `kill session` shows the session list again under its own prompt and runs `agent kill` on the row chosen there,
+  never on the highlighted row of the main list, so a stray Enter cannot destroy a harness; Esc backs out. The
+  session's worktree goes with it, after one question on the terminal if it has uncommitted work.
+- `plain shell here` exits 0 and the login shell continues outside tmux; `log out` exits 3 and the login fragment
+  logs out.
 
-**Landing in what you made** (fixed 17 Sep 2026). Every row that leads to a session ends the picker's job, and the
-two mechanisms are not a choice the menu makes: `new-session -t` refuses to nest, so a terminal already inside tmux
-can only have its client switched, and one outside tmux can only attach. `enter_session` picks by `$TMUX`, which is
-also what puts `pick` in switch mode when `--switch` was not passed — plain `agent pick` in a pane used to create a
-session, fail the attach, swallow the error and draw the menu again. In switch mode the loop then returns instead of
-going round, so the popup closes over the session it moved to rather than redrawing its list on top of it. `new
-shell` asks for a name first (empty is `scratch`), on the same `--print-query` prompt as the slug, now with a
-header so an empty `0/0` list reads as a question. The session is created detached either way and entered
-afterwards, so a `new session` chosen in the popup starts the harness in the client behind it and not in the popup,
-where it would die with the popup. Nothing in a picker flow may `exit`: that process is the login shell, so a flow
-that cannot finish sets a note, returns non-zero and the next menu shows the note as its header.
-A slug whose `agent/<slug>` branch exists but whose worktree was removed by an earlier `agent kill` is checked out
-again rather than passed to `worktree add -b`, which used to abort the flow and, through `exit`, the login itself.
-`log out` in that popup (fixed 17 Sep 2026, after the first version where it only closed the popup) cannot exit the
-login shell itself, because that shell is in another process tree: the popup sets `AGENT_LOGOUT_<client tty>` in the
-tmux server environment and detaches the client, and the login shell's picker loop — which the detach returns from
-its foreground attach — claims that mark on its way round and exits 3, so the connection closes. A picker claims a
-mark once and removes it; a fresh login on that tty drops any mark left by a popup nobody was there to hear.
+**Entering a session.** Every row that leads to a session ends the picker's job, and the mechanism is decided by
+`$TMUX`, not by the menu: `new-session -t` refuses to nest, so a terminal inside tmux can only have its client
+switched, and one outside can only attach. `enter_session` picks accordingly, which is also what puts `pick` in
+switch mode without `--switch`. In switch mode the loop returns instead of going round, so the popup closes over
+the session it moved to. A session is created detached and entered afterwards, so `new session` chosen in the
+popup starts the harness in the client behind it, not in the popup, where it would die with the popup. Nothing in
+a picker flow may `exit`: that process is the login shell, so a flow that cannot finish sets a note, returns
+non-zero, and the next menu shows the note as its header.
 
-**Landing.** `config/bashrc.d/tmux-autoattach.sh` keeps its guard (`$- == *i*`, `SSH_TTY` set, `TMUX` empty,
-`NO_TMUX` empty, command present) and runs `agent pick` instead of `exec tmux new -As main`. Non-interactive
-`ssh <host> <cmd>` is untouched, `ssh -t <host> 'NO_TMUX=1 zsh -l'` still bypasses everything. Pre-existing tmux
-sessions without `@harness` (today's `main`) are listed as `shell` sessions and are never killed by the tooling.
+**Popup.** Inside tmux, prefix `g` opens the same picker in `display-popup -E` with `--switch`; a client under 100
+columns gets a full-screen popup. Choosing a session creates the target view and `switch-client`s to it; the
+abandoned view is destroyed by `destroy-unattached`. `log out` in the popup cannot exit the login shell, which is
+in another process tree: the popup sets `AGENT_LOGOUT_<client tty>` in the tmux server environment and detaches the
+client; the login shell's picker loop, returning from its foreground attach, claims the mark and exits 3. A mark is
+claimed once and removed; a fresh login on that tty drops any mark left behind.
 
-**Naming.** `<repo>` plus `-<slug>` when given, `[.:]` replaced by `_`, `-2`, `-3` on collision. Views
-are `<name>@<n>`. Names are for display; commands resolve a name to a session id once, then use the id.
+**Look.** The menu is read on a Mac in WezTerm and on a phone, so it is drawn from the width `tput cols` reports.
+Under 70 columns a session row is NAME AGE STATE, under 106 it adds HARNESS and BRANCH, wider is the whole of
+`agent ls`; the name is the only column that gives way, cut with an ellipsis. Five colours carry meaning: green
+starts or runs, red ends, amber warns, blue is the accent, grey is context; each harness has a hue of its own. Rows
+are painted with SGR codes and fzf runs with `--ansi`, which strips them from the row it hands back, so the first
+word is the name. The verbs, the sessions and the ways out are three groups separated by rules, with a column
+header over the sessions; the header starts with two spaces and fzf matches on the first `^  `-delimited field
+only, so no query can land on it. Every menu carries a header with what it is for and what the keys do. A rounded
+border with `agent · <host>` frames the login picker on 80 columns or more; inside tmux the popup's border is the
+frame. Long prompts (`kill>`, `slug>`, `name>`) sit in headers, because a phone leaves a long prompt no room for the
+answer. Floor is fzf 0.44.1 (Ubuntu 24.04); the gutter colour is set explicitly because fzf 0.6x draws a rail on
+every row in it and `gutter:-1` makes that rail the foreground colour.
 
-**Unchanged.** WezTerm module, `~/.ssh/config`, mosh, clipboard bridge, the harness installs, `~/.zshenv`
-environment loading. Cmd+Shift+A still opens a host tab, which now lands in the picker.
+**Landing.** `config/bashrc.d/tmux-autoattach.sh` guards on `$- == *i*`, `SSH_TTY` set, `TMUX` empty, `NO_TMUX`
+empty and the command present, then runs `agent pick`. Non-interactive `ssh <host> <cmd>` is untouched;
+`ssh -t <host> 'NO_TMUX=1 zsh -l'` bypasses everything. tmux sessions without `@harness` are listed as `shell` and
+never killed by the tooling.
+
+**Naming.** `<repo>` plus `-<slug>` when given, `[.:]` replaced by `_`, `-2`, `-3` on collision. Views are
+`<name>@<n>`. Names are for display; commands resolve a name to a session id once, then use the id.
+
+**Unchanged by the picker.** WezTerm module, `~/.ssh/config`, mosh, clipboard bridge, the harness installs,
+`~/.zshenv` environment loading. Cmd+Shift+A opens a host tab, which lands in the picker.
 
 ## 3. `bin/agent` contract
 
-bash, `set -euo pipefail`, shellcheck clean, installed by `install-host.sh` phase 4 with the existing `link`
-helper (`~/.local/bin/agent`, like `bin/xclip`). Runs against the default tmux server unless `AGENT_TMUX_SOCKET` is
-set, in which case every tmux call gets `-L "$AGENT_TMUX_SOCKET"` (the tests use this to stay off the live server).
+bash, `set -euo pipefail`, shellcheck clean, installed by `install-host.sh` phase 4 through the `link` helper as
+`~/.local/bin/agent`. Runs against the default tmux server unless `AGENT_TMUX_SOCKET` is set, in which case every
+tmux call gets `-L "$AGENT_TMUX_SOCKET"`; the tests use this to stay off the live server.
 
 | Command | Behaviour | Exit |
 |---|---|---|
-| `agent new <repo> [--harness claude\|codex\|omp\|opencode\|shell] [--slug <slug>] [--name <name>] [--no-attach]` | validate repo dir; with `--slug`, `git worktree add ~/workspace/<repo>.wt/<slug> -b agent/<slug>` from the main checkout (reuse the worktree if it exists, check out `agent/<slug>` if only the branch does); create base session as above; enter it unless `--no-attach` (switch inside tmux, attach outside) | 0; 2 usage or unknown repo/harness; 1 tmux/git failure |
-| `agent ls [--porcelain]` | one line per base session (grouped or not, excluding names matching `*@[0-9]*` that are in a group). Human: aligned columns. Porcelain: tab-separated `name harness repo branch cwd state created_epoch devices`, `devices` comma-separated `@device` values of the group's attached views, `-` if none; harness `shell` and repo `-` for sessions without `@harness` | 0; 0 with no output when no server |
+| `agent new <repo> [--harness claude\|codex\|omp\|opencode\|shell] [--slug <slug>] [--name <name>] [--no-attach]` | validate repo dir; with `--slug`, `git worktree add ~/workspace/<repo>.wt/<slug> -b agent/<slug>` from the main checkout (reuse the worktree if it exists, check out `agent/<slug>` if only the branch does); create the base session; enter it unless `--no-attach` (switch inside tmux, attach outside) | 0; 2 usage or unknown repo/harness; 1 tmux/git failure |
+| `agent ls [--porcelain]` | one line per base session. Human: aligned columns. Porcelain: tab-separated `name harness repo branch cwd state created_epoch devices`; `devices` is the comma-separated `@device` values of the group's attached views, `-` if none; harness `shell` and repo `-` for sessions without `@harness` | 0; 0 with no output when no server |
 | `agent attach <name>` | create a view and attach; refuse if `<name>` is itself a view | 0 on detach; 2 unknown name |
 | `agent pick [--switch]` | the fzf loop; `--switch` only inside tmux, and implied by `$TMUX` | 0 plain shell / 3 log out / 2 no fzf |
-| `agent kill <name> [--force] [--keep-worktree]` | `kill-session` on every view of the group, then on the base id; a worktree under `~/workspace/<repo>.wt/` goes with it, the `agent/<slug>` branch never does. A dirty worktree is asked about on `/dev/tty` first and kept on anything but yes, which includes having no terminal to ask; `--force` removes it without asking, `--keep-worktree` keeps it. A kept worktree prints the `git worktree remove` command | 0; 2 unknown |
+| `agent kill <name> [--force] [--keep-worktree]` | `kill-session` on every view, then on the base; a worktree under `~/workspace/<repo>.wt/` goes with it, the `agent/<slug>` branch never does. A dirty worktree is asked about on `/dev/tty` and kept on anything but yes, including when there is no terminal to ask; `--force` removes it without asking, `--keep-worktree` keeps it. A kept worktree prints the `git worktree remove` command | 0; 2 unknown |
 | `agent switch` | alias for `pick --switch` | as pick |
 
-Test seam: when `AGENT_PICK_FILTER` is set, `agent pick` runs fzf with `--filter="$AGENT_PICK_FILTER"` and takes the
-first match, no tty needed, and runs a single iteration. Nothing else in the tool is test-only. `--porcelain` is
-the interface phase 5 and the tests consume; keep its columns stable.
+Test seam: with `AGENT_PICK_FILTER` set, `agent pick` runs fzf with `--filter` and takes the first match, no tty
+needed, for a single iteration. The value is `;`-separated, one filter per menu of the flow, because the kill row
+asks twice. Nothing else in the tool is test-only. `--porcelain` is the interface phase 5 and the tests consume;
+keep its columns stable.
 
-## 4. Changes, in commit order
+## 4. Test layers
 
-1. `bin/agent` with `ls`, `new`, `attach`, `kill` (no picker yet) and `tests/agent-test.sh` green.
-2. `agent pick` / `--switch`, `AGENT_PICK_FILTER`, and the picker tests.
-3. `config/bashrc.d/tmux-autoattach.sh` runs the picker; `config/tmux.conf` gains `bind g display-popup -E -w 80% -h 70% 'agent pick --switch'`, `bind c new-window -c '#{pane_current_path}'`, and `#S #{@harness}` in `status-left`.
-4. `install-host.sh`: `fzf` in the phase 1 apt list (and in the `Parameters`/README package list), `link` for `bin/agent` in phase 4. `tests/e2e/Dockerfile.host`: add `fzf` to the preinstalled packages, as that list mirrors phase 1.
-5. e2e additions in `tests/e2e/run.sh` (section 5).
-6. Docs: README section 3 verify block (`command -v agent fzf`), section 5 checkpoints (below), the phase 1 package
-   list in the script table; AGENTS.md status table row `2 sessions` (add "session picker, `bin/agent`") and layout
-   table rows for `bin/agent`, `tests/agent-test.sh`; `docs/remote-agent-host-plan.md` section 3 item 2 and 4
-   (picker replaces `main`, `bin/agent` owns the convention), section 6 item 1 (`agent run` extends `bin/agent`),
-   section 8 layout. When code and docs disagree, fix both in the same commit.
+**Unit, `tests/agent-test.sh`** (no sudo, network or Docker). `AGENT_TMUX_SOCKET=af-test-$$`, a throwaway `HOME`
+with a fake `~/workspace/<repo>` git repo, and a stand-in harness on PATH, so the live tmux server and real
+harnesses are never touched. Covers: `new` sets the options and starts the stand-in in the repo; name sanitising
+and `-2` on collision; `--slug` creates and reuses a worktree; `ls --porcelain` columns, a pre-existing plain
+session listed as `shell`, views not listed; `attach` under `script` creates a view with `@device` and detaching
+removes it; harness exit leaves the base as `exited`; `kill` removes base, views and a clean worktree while the
+branch survives, keeps a dirty worktree when nobody can be asked (`setsid`), removes it under `--force`, keeps it
+under `--keep-worktree`; `pick` under `AGENT_PICK_FILTER` for a session row, `log out` (3), `plain shell here` (0)
+and the two-step kill flow; `log out` from a `--switch` picker driven into a pane, which detaches the client, exits
+the login-side picker with 3 and leaves no `AGENT_LOGOUT_*` behind; the landing fragment under bash and zsh with
+every combination of `SSH_TTY`, interactive, `TMUX` and `NO_TMUX`, invoking a stub `agent` only in the
+interactive SSH case. A check that cannot run in the environment (no `script`, `setsid`, `fzf` or `shellcheck`)
+prints a `skip` line rather than passing.
 
-Keep every change idempotent and re-runnable; `install-host.sh --no-tools` twice must print no diff and no sudo
-prompt on a configured host. No host name, address or login anywhere but comments and `.env.example`; the literal
-scan in `tests/params-test.sh` enforces it, and the e2e values (`box`, `alice`) are the only literals allowed in
-tests.
+**Containers, `tests/e2e/run.sh`** (Docker without sudo). The host container `box` (login `alice`) and the Mac
+container's two users are the two devices. Covers: `agent` linked and `fzf` present; non-interactive
+`ssh box '...'` sees no tmux; a picker driven over `ssh -tt` from both users onto one session, two views with
+independent current windows; detaching one view leaves the base and the other; `agent kill` removes everything and
+ends the second ssh; `agent new --no-attach` with a stub harness shows `running`, then `exited` once the stub is
+killed; `install-host.sh --no-tools` re-runs cleanly.
 
-## 5. Tests: write them with the behaviour, run them before every commit
+**Interactive, `tests/e2e/tui.sh`** (same containers). The real `agent pick` on a real pty, with `send-keys` as
+typing and `capture-pane` as the screen, for every menu row and flow, including the popup, two Macs on one session,
+an exited harness and Esc. Sets no `AGENT_PICK_FILTER`.
 
-All three layers below are required. Record in the PR body which ran, on what, and paste the final `N passed, 0
-failed` lines. Where a check cannot be automated, say so in the PR and list the manual result.
-
-**Unit, `tests/agent-test.sh`** (new; no sudo, no network, no Docker; run with `bash tests/agent-test.sh`). Uses
-`AGENT_TMUX_SOCKET=af-test-$$` and a throwaway `HOME` with a fake `~/workspace/<repo>` git repo, and a stand-in
-harness (`sleep` or a tiny script on PATH named `claude`), so the live tmux server and real harnesses are never
-touched. Cases:
-
-- `new` creates base with `@harness`, `@repo`, `@cwd`, `@branch`, `remain-on-exit on`; window 1's
-  `pane_current_command` is the stand-in; cwd is the repo.
-- name sanitising: repo `a.b:c` gives `a_b_c`; second `new` for the same repo gives `-2`.
-- `--slug x` creates `~/workspace/<repo>.wt/x` on branch `agent/x`; a second `new --slug x` reuses it.
-- `ls --porcelain` columns and ordering; a pre-existing plain session (`tmux new -d -s main`) is listed as
-  `shell`; views are not listed.
-- `attach` under `script -qfc` (a pty): a view `<name>@1` exists while attached, `@device` is set from
-  `SSH_CLIENT`; after `tmux detach-client -s <view>` the view is gone and the base remains. If `script` cannot
-  provide a working client in the CI environment, the test must skip with an explicit `skip` line, not pass.
-- harness exit: the stand-in exits; base remains with `pane_dead` = 1 and `ls` says `exited`.
-- `kill` removes base and all views, and with them a clean worktree; the branch survives. A dirty worktree is
-  kept when nobody can be asked (the test drops the controlling terminal with `setsid`), removed under
-  `--force`, and kept under `--keep-worktree`; a kept worktree prints the removal command. (Implementation
-  note, 16 Sep 2026: the design's "views die with the base" is wrong for tmux 3.6. Grouped sessions share a
-  window list, not a lifetime: killing the base leaves each view attached to a session nobody owns. `agent kill`
-  kills the views first, then the base. 17 Sep 2026: the first version kept every worktree and only printed the
-  removal command, which left `~/workspace/<repo>.wt/` filling up with checkouts whose session was long gone.)
-- `pick` with `AGENT_PICK_FILTER` selecting a session row creates a view (detached client is fine here: assert
-  the `new-session -t` happened by checking the view exists immediately with `destroy-unattached` off during the
-  test, or by `agent ls --porcelain` devices), selecting `log out` returns 3, `plain shell here` returns 0.
-- `log out` in a `--switch` picker, driven into a pane of an attached session: the client detaches and the pty
-  running the login-side `agent pick` exits 3, the view is gone, the base survives, and no `AGENT_LOGOUT_*` is
-  left in the server environment.
-- `pick` with `AGENT_PICK_FILTER='kill session;<name>'` kills that session and its views and leaves the others;
-  a second filter matching nothing kills nothing. (`AGENT_PICK_FILTER` is ";"-separated, one filter per menu of
-  the flow, because the kill row asks twice.)
-- landing fragment sourced in bash and zsh with `SSH_TTY` set and unset, interactive and not, `TMUX` set,
-  `NO_TMUX=1`: `agent pick` is invoked exactly in the interactive+SSH_TTY+no-TMUX case (stub `agent` on PATH
-  that records its argv).
-- `shellcheck bin/agent tests/agent-test.sh`.
-
-**Containers, `tests/e2e/run.sh`** (extend; `bash tests/e2e/run.sh`, needs Docker without sudo). The existing run
-already has one host container (`box`, login `alice`) and one Mac container with two Mac users (`macuser`,
-`macuser2`); those two users are the two devices. Add, after the existing second-Mac block:
-
-- `box`: `agent` linked, `fzf` present, `agent ls --porcelain` empty before any session.
-- `macuser`: `ssh -o BatchMode=yes box 'echo tmux=$TMUX; agent ls --porcelain | wc -l'` still prints `tmux=` and
-  `0` (non-interactive login untouched).
-- `macuser`: `ssh -tt box 'AGENT_PICK_FILTER="new shell" agent pick'` under `docker exec -t` in the background,
-  then from `box`: one base `shell-*` session and one view with `@device` equal to the Mac container's address.
-- `macuser2`: the same against the same session (`AGENT_PICK_FILTER=<name>`): two views, `session_group_size` 3,
-  each view's `session_attached` 1. Change the current window on view 1 (`tmux select-window -t <view1>:2` after
-  `new-window`), confirm view 2's current window is unchanged (independent views).
-- `tmux detach-client -s <view1>` on `box`: view 1 gone, base and view 2 remain, the `macuser` ssh has exited 0.
-- `agent kill <name>` on `box`: everything gone; the `macuser2` ssh has exited.
-- `agent new ezbus-stand-in --harness claude --no-attach` with a stub `claude` on the box PATH that prints its
-  cwd and sleeps: `ls` shows `running`, cwd is the repo dir; kill the stub, `ls` shows `exited`.
-- second `./install-host.sh --no-tools` run still idempotent (the existing check), and `readlink ~/.local/bin/agent`
-  points into the repo.
-
-Interactive ssh in Docker: use `docker exec -t ... ssh -tt box '<cmd>'` and background it from `run.sh`; if the
-pty does not survive backgrounding, wrap in `script -qfc`. The existing `run` / `check` / `has` helpers and the
-`box` / `mac` / `mac2` wrappers are the pattern; do not add a new runner.
-
-**Manual, README section 5 checkpoints** (add these rows; run them on the live host before the PR and report):
-
-| Check | Expect |
-|---|---|
-| `mac$ ssh <host>` and `mac$ mosh <host>` | the picker, not `main`; `q`/`log out` closes the connection |
-| `new session`, repo `agentic-framework`, `claude` | Claude Code starts in the repo dir with the API key env present |
-| second Mac, pick the same session | both see the harness; switching windows on one does not move the other |
-| Ctrl+B `g` | popup picker; choosing another session switches; `tmux ls` shows the old view gone |
-| Ctrl+B `g`, then `log out` | the client detaches and the ssh/mosh connection closes; `tmux ls` on a new login still shows the session |
-| Ctrl+B `g`, then `new session` | popup closes, the harness runs in the terminal behind it |
-| Cmd+V of an image in that session | still `[Image #1]` (clipboard bridge unaffected) |
-| `/exit` in the harness | row shows `exited`, last screen visible; `agent kill` clears it |
-| `mac$ ssh <host> 'echo $TMUX'` | empty line |
-
-## 6. Done criteria
-
-- All of section 5 green, `bash tests/params-test.sh` green, shellcheck clean.
-- `install-host.sh --no-tools` run twice on the live host from `~/workspace/agentic-framework`: second run prints
-  no changes, asks for no sudo, and `ssh <host>` lands in the picker.
-- PR from branch `agent/session-picker` (never `main`), body lists what was verified where, and the two "not
-  verified" items in section 1 are reported with their outcome. Do not merge it.
-- AGENTS.md status table updated, `docs/remote-agent-host-plan.md` sections 3, 6 and 8 updated, this file's
-  section 1 left as the record of decisions.
+**Manual, on a Mac against the live host.** The rows in README section 5 that involve a Mac: ssh and mosh land in
+the picker, a second Mac on the same session keeps its own current window, the popup switches and logs out, an
+image paste in a picked session still attaches, `ssh <host> 'echo $TMUX'` prints an empty line.

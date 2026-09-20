@@ -1,89 +1,75 @@
-# Two-layer AGENTS.md across all projects and harnesses
+# Proposal: house rules in every harness's global scope
 
-Applies the two-layer instruction model — host-wide house rules + per-repo guidance —
-to every project under `~/workspace` and to all four harnesses: Claude Code, OpenCode,
-Oh My Pi, and Codex.
+Not applied. `install-host.sh` links `config/workspace/CLAUDE.md` to `~/workspace/CLAUDE.md`,
+`~/workspace/AGENTS.md` and `~/.codex/AGENTS.md`; of this proposal only the `codex` block in `~/.codex/config.toml`
+that raises `project_doc_max_bytes` is in place.
 
 ## Goal
 
-Two instruction layers, each delivered to every harness in its native scope:
+Two instruction layers, each delivered to every harness (Claude Code, OpenCode, Oh My Pi, Codex) in its native
+scope:
 
-1. **Host rules** — git discipline, boundaries, and working style that apply to every
-   repo on this host. Delivered through each harness's *global* (user) scope.
-2. **Repo rules** — architecture, conventions, and test commands specific to one
-   repo. Delivered through each repo's own `AGENTS.md`.
+1. Host rules: git discipline, boundaries and working style for every repo on the host, delivered through each
+   harness's global (user) scope.
+2. Repo rules: architecture, conventions and test commands for one repo, delivered through that repo's `AGENTS.md`.
 
-Layer 1 sets a floor; layer 2 adds to it and never overrides it. The contract is
-stated in the host file and composed by each harness as global-first, project-second.
+Layer 1 sets a floor; layer 2 adds to it and never overrides it. Each harness composes them global-first,
+project-second.
 
 ## Design
 
-One canonical source, symlinked into every harness's global scope:
+One canonical file, symlinked into every harness's global scope:
 
 ```
 agentic-framework/config/workspace/CLAUDE.md     (single source of truth, versioned)
-        │  install-host.sh symlinks it to each harness's GLOBAL file:
-        ├── ~/.claude/CLAUDE.md                  Claude Code: user memory
-        ├── ~/.omp/agent/AGENTS.md               omp: native user file, priority 100
-        ├── ~/.config/opencode/AGENTS.md         opencode: global rules
-        └── ~/.codex/AGENTS.md                   Codex: global scope
+        |  install-host.sh symlinks it to each harness's global file:
+        +-- ~/.claude/CLAUDE.md                  Claude Code: user memory
+        +-- ~/.omp/agent/AGENTS.md               Oh My Pi: native user file, priority 100
+        +-- ~/.config/opencode/AGENTS.md         OpenCode: global rules
+        +-- ~/.codex/AGENTS.md                   Codex: global scope
 ```
 
 Repo rules stay where they are: one `AGENTS.md` at each repo root.
 
-There is **no** parent-directory walk involved. Host rules reach every harness through
-its global file, which every harness reads unconditionally; repo rules reach every
-harness through the project-root `AGENTS.md`. This avoids depending on each harness's
-ancestor-walk behaviour, which differs per harness and is absent in Codex (Codex walks
-down from the git root, never up).
+No parent-directory walk is involved. Host rules reach every harness through its global file, which every harness
+reads unconditionally; repo rules reach it through the project-root `AGENTS.md`. This avoids depending on each
+harness's ancestor-walk behaviour, which differs per harness and is absent in Codex (it walks down from the git
+root, never up).
 
-Propagation is by **symlink, not `@import`**: `@path` imports are read by Claude Code
-and omp but not by opencode v1 or Codex. Symlinks work uniformly in all four, stay
-version-controlled, and reuse the existing `link` idempotency convention.
-
-## Per-harness resolution
+Propagation is by symlink, not `@import`: `@path` imports are read by Claude Code and Oh My Pi but not by OpenCode
+v1 or Codex. Symlinks work in all four, stay version-controlled and reuse the `link` helper.
 
 | Harness | Host rules (global) | Repo rules (project) | Note |
 |---|---|---|---|
-| Claude Code | `~/.claude/CLAUDE.md` | repo `AGENTS.md` | User-scope `CLAUDE.md` does not count for the "CLAUDE.md above cwd" check, so it never suppresses the repo `AGENTS.md` |
-| omp | `~/.omp/agent/AGENTS.md` | repo `AGENTS.md` | Native user file is discovery priority 100 |
-| opencode v1 | `~/.config/opencode/AGENTS.md` | repo `AGENTS.md` | Nearest-match walk finds the repo file; the global file is read independently |
-| opencode v2 | `~/.config/opencode/AGENTS.md` | repo `AGENTS.md` | Global + every project `AGENTS.md`; `CLAUDE.md` is not a fallback in v2 |
-| Codex | `~/.codex/AGENTS.md` | repo `AGENTS.md` | Walks from git root down; global file is the only host-rule path |
+| Claude Code | `~/.claude/CLAUDE.md` | repo `AGENTS.md` | the user-scope file does not count for the "CLAUDE.md above cwd" check, so it never suppresses the repo `AGENTS.md` |
+| Oh My Pi | `~/.omp/agent/AGENTS.md` | repo `AGENTS.md` | native user file, discovery priority 100; `PI_CODING_AGENT_DIR` relocates the directory, the install targets the default |
+| OpenCode v1 | `~/.config/opencode/AGENTS.md` | repo `AGENTS.md` | nearest-match walk finds the repo file; the global file is read independently |
+| OpenCode v2 | `~/.config/opencode/AGENTS.md` | repo `AGENTS.md` | global plus every project `AGENTS.md`; `CLAUDE.md` is not a fallback in v2 |
+| Codex | `~/.codex/AGENTS.md` | repo `AGENTS.md` | walks from the git root down; the global file is the only host-rule path |
 
-## Codex configuration
-
-Codex truncates its combined instruction chain at `project_doc_max_bytes`, default
-32 KiB (32,768 B). The largest repo `AGENTS.md` exceeds this, so the cap must be
-raised.
-
-Raise it in `~/.codex/config.toml`:
-
-```toml
-project_doc_max_bytes = 131072   # 128 KiB; headroom over the largest repo AGENTS.md
-```
-
-`install-host.sh` writes this file when Codex is installed (or links a checked-in
-template under `config/`). Revisit the value if a repo `AGENTS.md` grows past 128 KiB.
+Codex truncates its combined instruction chain at `project_doc_max_bytes`, default 32 KiB. The `codex` marker
+block `install-host.sh` writes to `~/.codex/config.toml` raises it to 128 KiB; revisit if a repo `AGENTS.md` grows
+past that.
 
 ## Changes
 
-All in the `agentic-framework` repo.
+All in this repo, in one change:
 
 | File | Change |
 |---|---|
-| `config/workspace/CLAUDE.md` | Reword the "applies to every harness and every repo" line to be accurate; remove any self-reference to `~/workspace/AGENTS.md`. Optionally rename to `config/house-rules.md` (see Decisions) |
-| `install-host.sh` | Replace the two `~/workspace/*` links with the four global links below; add `install -d` for the four directories; remove the retired workspace links |
-| `tests/params-test.sh` | Literal scan and link assertions: expect the four global paths, assert the two workspace links are absent |
-| `README.md` | Verify block and layout/parameters table: global link paths instead of `~/workspace/*` |
-| `AGENTS.md` (this repo) | Layout-table row for `config/workspace/CLAUDE.md`; install-contract "symlinks not copies" paragraph |
-| `docs/remote-agent-host-plan.md` | Section on shared agent context: global-scope links and a Codex row |
+| `config/workspace/CLAUDE.md` | reword the scope line; remove any self-reference to `~/workspace/AGENTS.md`; optionally rename (see Decisions) |
+| `install-host.sh` | replace the two `~/workspace/*` links with the four global links below, `install -d` for the four directories, remove the retired workspace links |
+| `tests/params-test.sh` | expect the four global paths; assert the two workspace links are absent |
+| `tests/e2e/run.sh` | the Codex link check becomes four |
+| `README.md` | section 3 verify block: global link paths instead of `~/workspace/*` |
+| `AGENTS.md` | layout row for `config/workspace/CLAUDE.md`; install-contract paragraph on symlinks |
+| `docs/remote-agent-host-plan.md` | section 4 item 4: global-scope links |
 
-`install-host.sh` (phase 3, replacing the current two links):
+`install-host.sh` phase 3, replacing the workspace links:
 
 ```sh
-# House rules: one canonical file, symlinked into each harness's global scope so
-# every repo inherits it regardless of harness. Repo rules live in each repo's AGENTS.md.
+# House rules: one canonical file, symlinked into each harness's global scope so every repo inherits it
+# regardless of harness. Repo rules live in each repo's AGENTS.md.
 install -d "$HOME/.claude" "$HOME/.config/opencode" "$HOME/.omp/agent" "$HOME/.codex"
 link "$REPO/config/workspace/CLAUDE.md" "$HOME/.claude/CLAUDE.md"
 link "$REPO/config/workspace/CLAUDE.md" "$HOME/.config/opencode/AGENTS.md"
@@ -94,62 +80,37 @@ link "$REPO/config/workspace/CLAUDE.md" "$HOME/.codex/AGENTS.md"
 [ -L "$HOME/workspace/AGENTS.md" ] && rm -f "$HOME/workspace/AGENTS.md" || true
 ```
 
-Note: `~/.omp/agent` is the default native agent directory; `PI_CODING_AGENT_DIR`
-relocates it. The install targets the default.
-
-## Repo requirements
-
-Every project under `~/workspace` (including future repos):
-
-- Keep one `AGENTS.md` at the repo root.
-- Do not add a repo-level `CLAUDE.md`; a repo `CLAUDE.md` above a subdirectory would
-  suppress the repo `AGENTS.md` under Claude Code's default resolution.
-- Repo rules add to host rules; they must not duplicate or contradict them.
-
-## Apply steps
-
-1. Edit `config/workspace/CLAUDE.md`, `install-host.sh`, `tests/params-test.sh`,
-   `README.md`, `AGENTS.md`, `docs/remote-agent-host-plan.md` in one change.
-2. `bash -n install-host.sh` and `shellcheck` where available.
-3. `bash tests/params-test.sh` — green.
-4. Run `./install-host.sh --no-tools --no-root` from `~/workspace/agentic-framework`
-   (never from a worktree) to apply the links.
-5. Run the per-harness smoke checks in Verification.
+Repo requirements, for every project under `~/workspace`: one `AGENTS.md` at the repo root; no repo-level
+`CLAUDE.md`, since one above a subdirectory would suppress the repo `AGENTS.md` under Claude Code's default
+resolution; repo rules add to host rules and never duplicate or contradict them.
 
 ## Verification
 
-Link assertions (after install):
+Link assertions after `./install-host.sh --no-tools --no-root` from `~/workspace/agentic-framework`:
 
 ```sh
 readlink ~/.claude/CLAUDE.md            # .../agentic-framework/config/workspace/CLAUDE.md
 readlink ~/.config/opencode/AGENTS.md   # same target
 readlink ~/.omp/agent/AGENTS.md         # same target
 readlink ~/.codex/AGENTS.md             # same target
-readlink ~/workspace/CLAUDE.md          # fails — link removed
-readlink ~/workspace/AGENTS.md          # fails — link removed
+readlink ~/workspace/CLAUDE.md          # fails: link removed
+readlink ~/workspace/AGENTS.md          # fails: link removed
 ```
 
-Per-harness smoke — each must report both the host file and the repo `AGENTS.md`:
+Per-harness smoke, manual since the unit suite never invokes a harness; each must report both the host file and
+the repo `AGENTS.md`:
 
 ```sh
-# Claude Code
 claude -p "List every instruction/memory file you have loaded."
-# omp — trivial prompt inside a repo; /extensions lists ~/.omp/agent/AGENTS.md and <repo>/AGENTS.md
-# opencode — run inside a repo; ask "list your instruction sources"
-# Codex
+# Oh My Pi: a trivial prompt inside a repo; /extensions lists ~/.omp/agent/AGENTS.md and <repo>/AGENTS.md
+# OpenCode: run inside a repo; ask "list your instruction sources"
 codex --ask-for-approval never "Summarize the current instructions."   # global first, repo root second
 ```
 
-`tests/params-test.sh` covers the symlink existence, target, and literal-scan
-assertions; the per-harness smoke is manual (it needs the harnesses, which the unit
-suite never invokes).
+## Decisions (open)
 
-## Decisions
-
-1. **Rename `config/workspace/CLAUDE.md` → `config/house-rules.md`.** The current
-   path describes a scope the file no longer has. Recommended: rename; update the
-   `link` calls, tests, and docs in the same change.
-2. **`~/.claude/CLAUDE.md` is also where Claude personal preferences live.** Recommended:
-   symlink it to the canonical file (matches "symlinks not copies"); add personal
-   preferences to the canonical file itself if ever needed, rather than maintaining a
-   separate unversioned file.
+1. Rename `config/workspace/CLAUDE.md` to `config/house-rules.md`: the current path describes a scope the file
+   would no longer have. Recommended: rename, updating the `link` calls, tests and docs in the same change.
+2. `~/.claude/CLAUDE.md` is also where Claude Code personal preferences live. Recommended: symlink it to the
+   canonical file (symlinks, not copies) and add any personal preference to the canonical file rather than keeping
+   a separate unversioned one.
