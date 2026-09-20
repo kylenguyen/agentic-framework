@@ -87,6 +87,24 @@ The chosen session's worktree goes with it, with one more question on the termin
 the login fragment logs out. Inside tmux, prefix `g` opens the same picker in `display-popup -E` with `--switch`,
 which creates the target view and `switch-client`s to it; the abandoned view is destroyed by `destroy-unattached`.
 
+**Look** (20 Sep 2026). The menu is read on a Mac in WezTerm and on a phone in Termius, so it is drawn from the width
+`tput cols` reports rather than assumed. Rows fit the width fzf leaves them (the screen minus its pointer column and
+right margin, minus a border where there is one): under 70 columns a session row is NAME AGE STATE, under 106 it gets
+HARNESS and BRANCH back, and wider than that it is the whole of `agent ls`; the name is the only column that gives
+way, cut with an ellipsis. Five colours carry meaning and nothing else is coloured: green starts or runs, red ends,
+amber warns, blue is the accent (prompt, pointer, matches, `plain shell here`), grey is context; each harness has a
+hue of its own. Rows are painted with SGR codes and fzf runs with `--ansi`, which strips them from the row it hands
+back, so `${sel%% *}` still reads the name. The verbs, the sessions and the ways out are three groups separated by
+rules, with a column header over the sessions; both are ordinary rows, since fzf has no other kind, and choosing one
+draws the menu again. The header starts with two spaces and fzf matches on the first `^  `-delimited field only, so
+no query can land on it (fuzzy matching would otherwise find "notes" in NAME REPO WT AGE STATE, ahead of the session). Every menu carries a header with what it is for and what the keys do, and the hint for Esc is
+honest about where it leads (log out at the login picker, close in the popup). A rounded border with `agent · <host>`
+in its label frames the login picker on 80 columns or more; inside tmux the popup's own border is the frame, and a
+client under 100 columns gets a full-screen popup. Long prompts moved into headers (`kill>` under a red prompt and an
+amber warning, `slug>`, `name>`) because a phone leaves a 60-character prompt no room for the answer. Floor is fzf
+0.44.1 (Ubuntu 24.04); the gutter colour is set explicitly because fzf 0.6x draws a `▌` rail on every row in it, and
+`gutter:-1` makes that rail the foreground colour.
+
 **Landing in what you made** (fixed 17 Sep 2026). Every row that leads to a session ends the picker's job, and the
 two mechanisms are not a choice the menu makes: `new-session -t` refuses to nest, so a terminal already inside tmux
 can only have its client switched, and one outside tmux can only attach. `enter_session` picks by `$TMUX`, which is

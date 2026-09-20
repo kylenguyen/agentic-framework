@@ -378,19 +378,109 @@ age_of() {
   else                          printf '%dd' $((s / 86400)); fi
 }
 
-# ls_human [header]: the aligned columns `agent ls` and the picker rows share.
-ls_human() {
-  local header=${1:-0} all w=4 name harness repo branch wt cwd state created devices
+# --- table --------------------------------------------------------------------------------------------
+
+# The picker's palette, as SGR parameters for paint(). Five colours carry meaning and nothing else is
+# coloured: green is a thing that starts or runs, red a thing that ends, amber a warning, blue the accent
+# (prompt, pointer, matches, the neutral "plain shell" verb) and grey whatever is context rather than
+# content. 256-colour codes, because every terminal that reaches this menu has them (tmux-256color
+# inside tmux, xterm-256color from WezTerm and Termius outside it) and the same values read on a light
+# theme as on a dark one. Harnesses get a hue each so a mixed list scans by colour before it is read.
+C_DIM='38;5;245' C_RULE='38;5;240' C_ACCENT='38;5;39' C_OK='32' C_BAD='31' C_WARN='38;5;214'
+COLOUR=0                                                         # 1 while the picker draws
+harness_colour() {
+  case $1 in claude) printf '38;5;214' ;; omp) printf '38;5;141' ;; opencode) printf '38;5;75' ;; *) printf '%s' "$C_DIM" ;; esac
+}
+
+# paint <sgr> <text>: coloured when COLOUR=1, the text alone otherwise. fzf strips the codes from the row
+# it hands back (--ansi), so a painted row still parses by its first word.
+paint() {
+  if [ "$COLOUR" = 1 ] && [ -n "$1" ]; then printf '\033[%sm%s\033[0m' "$1" "$2"; else printf '%s' "$2"; fi
+}
+
+# cell <width> <l|r> <sgr> <text>: one column. Padded to the width (0: as is) and, when CLIP=1, cut to it
+# with an ellipsis; then painted. Pad before paint, because printf's field widths would count the escape
+# bytes; pad by hand, because printf's widths also count the ellipsis as three bytes under a C locale.
+CLIP=0
+cell() {
+  local w=$1 align=$2 sgr=$3 t=$4 n pad=''
+  if [ "$w" -gt 0 ]; then
+    n=${#t}
+    if [ "$CLIP" = 1 ] && [ "$n" -gt "$w" ]; then t="${t:0:w-1}…"; n=$w; fi
+    [ "$n" -ge "$w" ] || printf -v pad '%*s' $((w - n)) ''
+  fi
+  if [ "$align" = r ]; then paint "$sgr" "$pad$t"; else paint "$sgr" "$t$pad"; fi
+}
+
+# ls_human [header]: the aligned columns `agent ls` prints: plain, every column, any width.
+ls_human() { COLOUR=0 CLIP=0 table "${1:-0}" 0 0; }
+
+# How every fzf here matches, in the interactive menus and in --filter mode alike. --ansi so painted rows
+# match and return as their plain text. The delimiter and --nth make a row that starts with two spaces
+# unsearchable: its first field is the blank margin, and a query of letters cannot match that. The
+# picker's column header is the one such row (table's <indent>): it sits in the list between the verbs
+# and the sessions, and fuzzy matching would otherwise find "notes" in NAME REPO WT AGE STATE and land the
+# cursor on the header instead of the session. Every other row starts with a glyph or a name, so its first
+# field is the whole line and typing a repo or branch still finds a session.
+FZF_MATCH=(--ansi --delimiter='^  ' --nth=1)
+
+# table <header> <cols> <indent>: the session rows as aligned columns, one line per base session, plus the
+# column header when asked, indented by the two-space margin FZF_MATCH keeps unsearchable when <indent> is 1
+# (its NAME cell is two narrower, so the columns still line up). <cols> is the width a row has to fit, 0 for "every column, any width" (agent ls). The
+# picker passes what its list can show (UI_TEXT), and the narrower that is the fewer columns there are: a
+# phone in Termius has about 50 and gets NAME AGE STATE, a laptop-sized popup gets HARNESS and BRANCH back,
+# and a full terminal the whole of `agent ls`. The name is the one column that can be any length, so it is the
+# one that gives way, cut with an ellipsis to what the fixed columns leave and never below 8.
+table() {
+  local header=$1 cols=$2 indent=${3:-0} all tier=wide w=4 bw=18 fixed=0 sw=7 margin=''
+  [ "$indent" = 0 ] || margin='  '
+  local name harness repo branch wt cwd state created devices
   all=$(rows)
   [ -n "$all" ] || return 0
+  if [ "$cols" -gt 0 ]; then
+    if [ "$cols" -lt 70 ]; then tier=narrow; elif [ "$cols" -lt 106 ]; then tier=medium; fi
+  fi
+  [ "$COLOUR" = 0 ] || sw=9                                      # "● running": glyph, space, state
   while IFS=$SEP read -r name _; do [ "${#name}" -le "$w" ] || w=${#name}; done <<<"$all"
-  [ "$header" = 0 ] || printf "%-${w}s  %-8s  %-16s  %-18s  %-2s  %5s  %-7s  %s\n" \
-    NAME HARNESS REPO BRANCH WT AGE STATE DEVICES
+  case $tier in
+    narrow) fixed=$((2 + 5 + 2 + sw)) ;;
+    medium) fixed=$((2 + 8 + 2 + bw + 2 + 5 + 2 + sw)) ;;
+  esac
+  if [ "$fixed" -gt 0 ]; then
+    CLIP=1
+    [ "$w" -le $((cols - fixed)) ] || w=$((cols - fixed))
+    [ "$w" -ge 8 ] || w=8
+  fi
+  # line <sgr-for-all|-> <name> <harness> <repo> <branch> <wt> <age> <state-cell> <devices>
+  line() {
+    local d=$1 n=$2 h=$3 r=$4 b=$5 t=$6 a=$7 s=$8 v=$9 hc
+    hc=$(harness_colour "$h"); [ "$d" = - ] || hc=$d
+    case $tier in
+      narrow) printf '%s  %s  %s\n' "$(cell "$w" l "${d/-/1}" "$n")" "$(cell 5 r "${d/-/$C_DIM}" "$a")" "$s" ;;
+      medium) printf '%s  %s  %s  %s  %s\n' "$(cell "$w" l "${d/-/1}" "$n")" "$(cell 8 l "$hc" "$h")" \
+                     "$(cell "$bw" l "${d/-/$C_DIM}" "$b")" "$(cell 5 r "${d/-/$C_DIM}" "$a")" "$s" ;;
+      *)      printf '%s  %s  %s  %s  %s  %s  %s  %s\n' "$(cell "$w" l "${d/-/1}" "$n")" "$(cell 8 l "$hc" "$h")" \
+                     "$(cell 16 l "${d#-}" "$r")" "$(cell "$bw" l "${d/-/$C_DIM}" "$b")" "$(cell 2 l "${d/-/$C_WARN}" "$t")" \
+                     "$(cell 5 r "${d/-/$C_DIM}" "$a")" "$s" "$(cell 0 l "${d/-/$C_DIM}" "$v")" ;;
+    esac
+  }
+  if [ "$header" != 0 ]; then
+    w=$((w - ${#margin}))                                        # the margin takes its columns from NAME
+    line "$C_DIM" NAME HARNESS REPO BRANCH WT AGE "$(cell "$sw" l "$C_DIM" STATE)" DEVICES | sed "s/^/$margin/"
+    w=$((w + ${#margin}))
+  fi
   while IFS=$SEP read -r name harness repo branch wt cwd state created devices; do
     [ "$wt" = wt ] || wt=""
-    printf "%-${w}s  %-8s  %-16s  %-18s  %-2s  %5s  %-7s  %s\n" \
-      "$name" "$harness" "$repo" "$branch" "$wt" "$(age_of "$created")" "$state" "$devices"
+    if [ "$COLOUR" = 0 ]; then
+      state=$(cell 7 l '' "$state")
+    elif [ "$state" = running ]; then
+      state="$(paint "$C_OK" '●') $(cell 7 l "$C_OK" running)"
+    else
+      state="$(paint "$C_BAD" '○') $(cell 7 l "$C_BAD" "$state")"
+    fi
+    line - "$name" "$harness" "$repo" "$branch" "$wt" "$(age_of "$created")" "$state" "$devices"
   done <<<"$all"
+  CLIP=0
 }
 
 cmd_ls() {
@@ -406,10 +496,19 @@ cmd_ls() {
 # Rows carry their own meaning: the five verbs are prefixed with a glyph, every other row starts with a
 # session name, so the selected line parses without hidden fields and fzf's filter sees what the eye sees.
 # `kill session` sits below the list, away from the rows it destroys and next to the other two ways out.
+# Between the three groups sits a rule, and above the sessions their column header; both are rows too,
+# since fzf has no other kind, and choosing one is a no-op that draws the menu again. Neither contains a
+# letter sequence any verb or name needs, so typing a filter makes them disappear rather than match.
 pick_rows() {
-  printf '+ new session\n+ new shell\n'
-  ls_human 0
-  printf -- '- kill session\n> plain shell here\nx log out\n'
+  local list rule
+  printf -v rule '%*s' $((UI_TEXT > 10 ? UI_TEXT : 10)) ''
+  rule=$(paint "$C_RULE" "${rule// /─}")
+  list=$(table 1 "$UI_TEXT" 1)
+  printf '%s new session\n%s new shell\n' "$(paint "1;$C_OK" +)" "$(paint "1;$C_OK" +)"
+  printf '%s\n' "$rule"
+  [ -z "$list" ] || printf '%s\n%s\n' "$list" "$rule"
+  printf '%s kill session\n%s plain shell here\n%s log out\n' \
+    "$(paint "1;$C_BAD" -)" "$(paint "1;$C_ACCENT" '>')" "$(paint "$C_DIM" x)"
 }
 
 # pick_filter <n>: the nth filter in AGENT_PICK_FILTER, counting the menus of one flow from the row that
@@ -422,28 +521,76 @@ pick_filter() {
   printf '%s' "${f[$1]-}"
 }
 
-# menu <prompt> <filter>: one fzf pass. With AGENT_PICK_FILTER set there is no tty, so --filter does the
-# choosing; an empty filter matches everything and the first row wins.
-menu() {
-  local prompt=$1 filter=${2:-} hdr=()
-  if [ -n "${AGENT_PICK_FILTER:-}" ]; then
-    fzf --filter="$filter" | head -1
-    return 0
-  fi
-  # No preview window: the list is the whole screen, so the rows stay wide and the menu is picking only.
-  [ -z "$PICK_NOTE" ] || hdr=(--header="$PICK_NOTE")
-  fzf --prompt="$prompt " --height=100% --reverse --no-sort --no-multi "${hdr[@]}" || return $?
+term_cols() {
+  local c
+  c=$(tput cols 2>/dev/null) || c=${COLUMNS:-}
+  case $c in '' | *[!0-9]*) c=80 ;; esac
+  printf '%s' "$c"
 }
 
-# prompt_text <prompt> <header>: one line of free text. fzf is the only thing the picker can count on being
-# installed, so it is fzf with nothing to match and --print-query, which makes the typed text the answer.
-# The header is not decoration: without it the empty "0/0" list reads as a menu that failed to load rather
-# than as a question. Enter accepts (fzf exits 1, "no match", which is the normal path here), Esc exits 130
-# and cancels the flow; "" is a legitimate answer and each caller decides what it means.
+# ui_init: the fzf options every menu of one picker run shares, decided once from where it is drawn. The
+# list is the whole screen (no preview), the header sits above the prompt so the eye lands on the title
+# and the key hints first, and the rows keep their own colours (--ansi). A border, with the host in its
+# label, only when the picker owns the screen and the screen is wide enough to spare the columns: inside
+# tmux the popup already draws one, and on a phone the two columns and two rows are worth more than a
+# frame. Colours are the palette above; fg/bg -1 keeps the terminal's own theme, so the menu is at home
+# on WezTerm's dark theme and Termius's light one alike.
+ui_init() {
+  local host
+  UI_COLS=$(term_cols)
+  COLOUR=1
+  UI_TITLE=""
+  host=$(hostname -s 2>/dev/null) || host=host
+  FZF_UI=("${FZF_MATCH[@]}" --height=100% --reverse --header-first --cycle --info=inline-right --no-separator
+          --pointer='▌' --marker=' ' --ellipsis='…' --no-multi --no-sort
+          --color="fg:-1,bg:-1,gutter:236,hl:39,fg+:15,bg+:236,hl+:39,query:15:regular"
+          --color="prompt:39,pointer:39,marker:39,spinner:39,info:245,header:245"
+          --color="border:240,label:245,separator:240,scrollbar:240")
+  UI_TEXT=$((UI_COLS - 3))                                       # pointer column and fzf's right margin
+  if [ -z "${TMUX:-}" ] && [ "$UI_COLS" -ge 80 ]; then
+    FZF_UI+=(--border=rounded --border-label=" agent · $host " --border-label-pos=3)
+    UI_TEXT=$((UI_TEXT - 4))                                     # the border and its inner padding
+  elif [ -z "${TMUX:-}" ]; then
+    UI_TITLE="agent · $host"
+  fi
+  # Key hints in two lengths: a phone has no room for the one that only restates what fzf always does.
+  if [ "$UI_TEXT" -lt 60 ]; then HINT_TAIL=""; else HINT_TAIL="   type to filter"; fi
+  HINT_CHOOSE="↑↓ move   enter choose   esc back$HINT_TAIL"
+}
+
+# menu <prompt> <filter> <header-lines> [header line...]: one fzf pass. With AGENT_PICK_FILTER set there is
+# no tty, so --filter does the choosing; an empty filter matches everything and the first row wins. The
+# header lines are the menu's own words (what it is, which keys do what); a PICK_NOTE from the flow before
+# joins them, painted as the warning it is. MENU_DANGER=1 turns the prompt and pointer red for the one
+# menu that destroys something. <header-lines> is how many input lines are a column header: shown, never
+# chosen, and left out of --filter's matches.
+menu() {
+  local prompt=$1 filter=${2:-} hlines=${3:-0} hdr='' l opts=()
+  shift 3
+  if [ -n "${AGENT_PICK_FILTER:-}" ]; then
+    fzf "${FZF_MATCH[@]}" --header-lines="$hlines" --filter="$filter" | head -1
+    return 0
+  fi
+  for l in "$@"; do [ -z "$l" ] || hdr=${hdr:+$hdr$'\n'}$l; done
+  [ -z "$PICK_NOTE" ] || hdr=${hdr:+$hdr$'\n'}$(paint "$C_WARN" "⚠ $PICK_NOTE")
+  [ -z "$hdr" ] || opts+=(--header="$hdr")
+  [ "$hlines" = 0 ] || opts+=(--header-lines="$hlines")
+  [ "${MENU_DANGER:-0}" = 0 ] || opts+=(--color="prompt:1,pointer:1")
+  fzf "${FZF_UI[@]}" --prompt="$prompt " "${opts[@]}" || return $?
+}
+
+# prompt_text <prompt> [header line...]: one line of free text. fzf is the only thing the picker can count
+# on being installed, so it is fzf with nothing to match and --print-query, which makes the typed text the
+# answer. The header is not decoration: without it the empty list reads as a menu that failed to load
+# rather than as a question, so the first line says what the answer means and the last which keys do what.
+# Enter accepts (fzf exits 1, "no match", which is the normal path here), Esc exits 130 and cancels the
+# flow; "" is a legitimate answer and each caller decides what it means.
 prompt_text() {
-  local out rc=0
+  local prompt=$1 out rc=0 hdr='' l
+  shift
   [ -z "${AGENT_PICK_FILTER:-}" ] || return 0
-  out=$(: | fzf --print-query --prompt="$1" --header="$2" --height=100% --reverse --info=hidden) || rc=$?
+  for l in "$@"; do hdr=${hdr:+$hdr$'\n'}$l; done
+  out=$(: | fzf "${FZF_UI[@]}" --print-query --info=hidden --prompt="$prompt " --header="$hdr") || rc=$?
   [ "$rc" = 0 ] || [ "$rc" = 1 ] || return 1
   printf '%s' "$out" | head -1
 }
@@ -465,12 +612,15 @@ pick_new_session() {
   local repos repo harness slug args
   repos=$(repo_list)
   if [ -z "$repos" ]; then PICK_NOTE="no git repos in $WORKSPACE"; return 1; fi
-  repo=$(printf '%s\n' "$repos" | menu 'repo>' "$(pick_filter 1)") || return 1
+  repo=$(printf '%s\n' "$repos" | menu 'repo>' "$(pick_filter 1)" 0 \
+           "new session: which repo under ~/workspace" "$HINT_CHOOSE") || return 1
   [ -n "$repo" ] || return 1
-  harness=$(printf 'claude\nomp\nopencode\nshell\n' | menu 'harness>' "$(pick_filter 2)") || return 1
+  harness=$(printf 'claude\nomp\nopencode\nshell\n' | menu 'harness>' "$(pick_filter 2)" 0 \
+              "new session: which harness runs in $repo" "$HINT_CHOOSE") || return 1
   [ -n "$harness" ] || return 1
-  slug=$(prompt_text 'slug (empty: work in the main checkout)> ' \
-                     'a slug gets its own worktree and agent/<slug> branch; Esc backs out') || return 1
+  slug=$(prompt_text 'slug>' "new session: $harness in $repo" \
+                             "slug: its own worktree, on branch agent/<slug>" \
+                             "empty: work in the main checkout" "$HINT_TYPE") || return 1
   args=("$repo" --harness "$harness")
   [ -z "$slug" ] || args+=(--slug "$(sanitise "$slug")")
   cmd_new "${args[@]}"
@@ -484,8 +634,11 @@ pick_new_session() {
 #             session it just moved to, redrawing the same menu -- which is what it used to do.
 # switch is not only the flag. Inside tmux an attach cannot work at all (tmux refuses to nest one), so the
 # mechanism is dictated by the environment and the flag only says that a popup expects the menu to be brief.
+# The key hints say what Esc does here, because it differs: at the login picker it is the way out of the
+# connection, in a popup it only closes the popup.
+HINT_TYPE='enter accept   esc back'
 cmd_pick() {
-  local switch=0 asked=0 sel rc name
+  local switch=0 asked=0 sel rc name hints
   case ${1:-} in
     --switch) switch=1; asked=1; shift ;;
     "") ;;
@@ -495,12 +648,15 @@ cmd_pick() {
   command -v fzf >/dev/null 2>&1 || { fail "fzf is not installed (install-host.sh phase 1)" 2; return; }
   [ "$asked" = 0 ] || [ -n "${TMUX:-}" ] || { fail "--switch only works inside tmux" 2; return; }
   [ -z "${TMUX:-}" ] || switch=1
+  ui_init
+  if [ "$switch" = 1 ]; then hints="↑↓ move   enter open   esc close$HINT_TAIL"
+  else hints="↑↓ move   enter open   esc log out$HINT_TAIL"; fi
   # A mark left on this tty by an earlier login (a popup whose client was never in a picker loop) is stale:
   # this picker is the one that would have claimed it, and it has only just started.
   [ "$switch" = 1 ] || logout_drop
   while :; do
     rc=0
-    sel=$(pick_rows | menu 'session>' "$(pick_filter 0)") || rc=$?
+    sel=$(pick_rows | menu 'session>' "$(pick_filter 0)" 0 "$UI_TITLE" "$hints") || rc=$?
     PICK_NOTE=""                                       # the menu that was going to show it has been drawn
     if [ "$rc" != 0 ] || [ -z "$sel" ]; then
       # fzf aborted (Esc, Ctrl+C) or matched nothing: in the popup that just closes it, at the login
@@ -516,6 +672,7 @@ cmd_pick() {
       '- kill session')     pick_kill || true ;;
       '> plain shell here') return 0 ;;
       'x log out')          [ "$switch" = 0 ] || { pick_log_out; return 0; }; return 3 ;;
+      '─'* | '  '*) : ;;                                 # a rule or the column header: nothing to enter
       *)
         name=${sel%% *}
         if enter_session "$name"; then [ "$switch" = 0 ] || return 0
@@ -531,7 +688,8 @@ cmd_pick() {
 
 pick_new_shell() {
   local want name
-  want=$(prompt_text 'name (empty: shell-scratch)> ' 'a plain shell in ~/workspace; Esc backs out') || return 1
+  want=$(prompt_text 'name>' 'new shell: a plain shell in ~/workspace' \
+                             'empty: shell-scratch' "$HINT_TYPE") || return 1
   [ -n "$want" ] || want=shell-scratch
   name=$(unique_name "$(sanitise "$want")")
   session_create "$name" shell "" "$WORKSPACE" - || return 1
@@ -539,15 +697,17 @@ pick_new_shell() {
 }
 
 # Kill is the one verb that destroys work, so it never acts on whatever row happened to be highlighted:
-# the session is chosen a second time, in a list of its own, under a prompt that says what will happen.
-# Esc backs out. Killing the session behind the popup you are standing in is allowed and ends the popup
-# with it; the harness is gone either way, so there is nothing to go back to. A worktree with uncommitted
-# changes asks once more, on the terminal, before it goes.
+# the session is chosen a second time, in a list of its own, under a red prompt and a header that says
+# what will happen. Esc backs out. Killing the session behind the popup you are standing in is allowed and
+# ends the popup with it; the harness is gone either way, so there is nothing to go back to. A worktree
+# with uncommitted changes asks once more, on the terminal, before it goes.
 pick_kill() {
   local list sel name
-  list=$(ls_human 0)
+  list=$(table 1 "$UI_TEXT" 0)
   if [ -z "$list" ]; then PICK_NOTE='no sessions to kill'; return 1; fi
-  sel=$(printf '%s\n' "$list" | menu 'kill (ends the harness, every view of it and its worktree)>' "$(pick_filter 1)") || return 1
+  sel=$(printf '%s\n' "$list" | MENU_DANGER=1 menu 'kill>' "$(pick_filter 1)" 1 \
+          "$(paint "$C_WARN" '⚠') kills the harness, its views, its worktree" \
+          "↑↓ move   enter kill   esc back$HINT_TAIL") || return 1
   [ -n "$sel" ] || return 1
   name=${sel%% *}
   cmd_kill "$name" || PICK_NOTE="could not kill $name"

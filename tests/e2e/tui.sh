@@ -154,7 +154,7 @@ saw 'x log out' "L1: the ways out are on the screen"
 at_picker
 say "flow 3 (L): + new shell asks for a name and puts you in it"
 pick 'new shell'
-saw 'name (empty: shell-scratch)' "L3: + new shell asks for a name"
+saw 'empty: shell-scratch' "L3: + new shell asks for a name"
 typ 'notes'
 saw '[notes@1]' "L3: the client is attached to a view of the named session" 20
 check "L3: the base session is named after what was typed" "notes" "$(porc | cut -f1)"
@@ -200,7 +200,7 @@ await '+ new session' 20
 at_picker
 say "flow 5 (L): kill asks a second time, takes the views and the worktree, keeps the branch"
 pick 'kill session'
-saw 'kill (ends the harness' "L5: kill asks in a list of its own"
+saw 'kills the harness' "L5: kill asks in a list of its own"
 pick 'shell-demo-feature'
 saw '+ new session' "L5: the picker comes back after the kill" 20
 host_wait "! tmux has-session -t shell-demo-feature 2>/dev/null" \
@@ -245,7 +245,7 @@ await '[notes@1]' 20
 keys 'agent pick'; keys Enter
 saw 'session>' "L14: the picker runs inside a pane" 20
 pick 'new shell'
-saw 'name (empty: shell-scratch)' "L14: it offers the same menus"
+saw 'empty: shell-scratch' "L14: it offers the same menus"
 typ 'inner'
 saw '[inner@1]' "L14: inside tmux it switches the client to the new session, rather than silently failing" 25
 check "L14: no orphan was left behind" "1" "$(porc | grep -c '^inner	')"
@@ -255,7 +255,7 @@ in_session notes
 keys C-b; keys g; sleep 2
 saw 'session>' "P: prefix-g opens the picker in a popup" 20
 pick 'new shell'
-saw 'name (empty: shell-scratch)' "P3: + new shell asks for a name here too"
+saw 'empty: shell-scratch' "P3: + new shell asks for a name here too"
 typ 'from-popup'
 saw '[from-popup@1]' "P3: the popup switches the client to the new session" 25
 went 'session>' "P3: and the popup closes instead of redrawing its list"
@@ -280,7 +280,7 @@ saw '[notes@' "P6: and leaves the client where it was"
 
 popup
 pick 'kill session'
-saw 'kill (ends the harness' "P5: kill asks a second time in the popup too"
+saw 'kills the harness' "P5: kill asks a second time in the popup too"
 pick 'from-popup'
 host_wait "! tmux has-session -t from-popup 2>/dev/null" \
   && ok "P5: the session is gone" || bad "P5: the session is gone" "$(names)"
