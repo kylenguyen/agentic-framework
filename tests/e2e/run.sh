@@ -69,6 +69,11 @@ check "host: login shell is zsh" /usr/bin/zsh "$(root getent passwd "$LOGIN" | c
 check "host: ~/.zshrc links into the repo" "$BOX_REPO/config/zshrc" "$(box readlink "/home/$LOGIN/.zshrc")"
 check "host: secrets file mode" 600 "$(box stat -c %a "/home/$LOGIN/.config/agents/env")"
 check "host: xclip shim linked" "$BOX_REPO/bin/xclip" "$(box readlink "/home/$LOGIN/.local/bin/xclip")"
+# Codex reads its global rules from ~/.codex, never from ~/workspace, and its config.toml is a file Codex writes
+# too, so the repo owns one marker block in it rather than the file.
+check "host: Codex global AGENTS.md links into the repo" "$BOX_REPO/config/workspace/CLAUDE.md" "$(box readlink "/home/$LOGIN/.codex/AGENTS.md")"
+check "host: one codex block in ~/.codex/config.toml" 1 "$(box grep -c 'agentic-framework:codex >>>' "/home/$LOGIN/.codex/config.toml")"
+check "host: the codex block sets project_doc_max_bytes" 1 "$(box grep -c '^project_doc_max_bytes = ' "/home/$LOGIN/.codex/config.toml")"
 has "Parameters for the Macs" "$out" "host: prints the .env block for the Macs"
 has "tailscale not installed" "$out" "host: tailscale absence is a note, not a failure"
 
@@ -335,6 +340,7 @@ check "host: second run exit 0" 0 "$RC"
 has "ok   .env" "$out2" "host: second run keeps .env"
 has "ok   Linger=yes" "$out2" "host: second run leaves linger alone"
 has "ok   /usr/bin/zsh" "$out2" "host: second run leaves the shell alone"
+check "host: second run keeps one codex block" 1 "$(box grep -c 'agentic-framework:codex >>>' "/home/$LOGIN/.codex/config.toml")"
 after=$(root sh -c 'wc -l < /var/log/e2e-shims.log')
 root sed -n "$((before + 1)),\$p" /var/log/e2e-shims.log | grep -qE 'reload|enable-linger' && bad "host: second run made no root changes" "$(root sed -n "$((before + 1)),\$p" /var/log/e2e-shims.log)" || ok "host: second run made no root changes ($((after - before)) read-only shim calls)"
 # .env from a Mac with a different login must be refused on the host, before anything runs.

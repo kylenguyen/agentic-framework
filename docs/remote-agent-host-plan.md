@@ -13,7 +13,7 @@ Each phase below has four parts: what to set up on <host>, what to set up on the
 Decided:
 
 - Terminal over SSH only. No IDE remote, no remote desktop.
-- Harnesses: Claude Code (primary), OpenCode, Oh My Pi. API keys only, no local models.
+- Harnesses: Claude Code (primary), Codex, OpenCode, Oh My Pi. API keys only, no local models.
 - Automation: on-demand from other PCs, scheduled runs, git-event triggers, long-running loops.
 
 Assumed (correct me if wrong):
@@ -41,7 +41,7 @@ Verified on the reference host while planning:
   │ <host>                                             │
   │  sshd as installed by Ubuntu + mosh-server        │
   │  tmux: one session per repo, "agents" for jobs     │
-  │  harnesses: claude, opencode, omp                  │
+  │  harnesses: claude, codex, opencode, omp           │
   │  clipboard: Mac push → clip-put spool → xclip shim │
   │  automation: agent CLI, systemd timers,            │
   │              GitHub runner, queue worker           │
@@ -185,6 +185,7 @@ harness and the other view alone. Enter tmux copy-mode, select text, press `y` o
    | Claude Code | native installer `curl -fsSL https://claude.ai/install.sh \| bash` when absent (to `~/.local/bin`), then `claude update` | `claude doctor` |
    | OpenCode | `curl -fsSL https://opencode.ai/install \| bash` (or `npm i -g opencode-ai`) | `opencode --version` |
    | Oh My Pi | `curl -fsSL https://omp.sh/install \| sh` (or `npm i -g @oh-my-pi/pi-coding-agent`) | binary name per install output, expected `omp` |
+   | Codex | `npm i -g @openai/codex` under mise's Node, the same route as Oh My Pi (`curl -fsSL https://chatgpt.com/codex/install.sh \| sh` is the standalone alternative) | `codex --version`; `codex login status` |
 
 3. Secrets file `~/.config/agents/env`, mode 600, owner <user>:
    ```
@@ -194,7 +195,7 @@ harness and the other view alone. Enter tmux copy-mode, select text, press `y` o
    GH_TOKEN=...
    ```
    Shell profile sources it with `set -a; . ~/.config/agents/env; set +a`. systemd units use `EnvironmentFile=%h/.config/agents/env`. Repo carries `secrets.env.example` with names only and `.gitignore` excludes `env`.
-4. Shared agent context: `~/workspace/CLAUDE.md` and `~/workspace/AGENTS.md` (house rules: branch naming `agent/<slug>`, commit style, never force-push, never touch `~/.config/agents`). Claude Code user settings `~/.claude/settings.json` → symlink to `config/claude-settings.json` with the Bash allowlist and hooks from phase 5; its status line command `~/.claude/statusline-command.sh` → symlink to `config/statusline-command.sh`.
+4. Shared agent context: `~/workspace/CLAUDE.md` and `~/workspace/AGENTS.md` (house rules: branch naming `agent/<slug>`, commit style, never force-push, never touch `~/.config/agents`). Codex reads instructions from the git root down and never above it, so the same file is linked to `~/.codex/AGENTS.md` as well, and `~/.codex/config.toml` carries a marker block that raises `project_doc_max_bytes` to 128 KiB, because the 32 KiB default cuts the combined house rules and repo `AGENTS.md` short. The block sits at the top of the file so the key stays top-level ahead of the tables Codex writes itself (trusted projects); `docs/agents-md-two-layer-plan.md` describes moving the other three harnesses onto global files the same way. Claude Code user settings `~/.claude/settings.json` → symlink to `config/claude-settings.json` with the Bash allowlist and hooks from phase 5; its status line command `~/.claude/statusline-command.sh` → symlink to `config/statusline-command.sh`.
 
 ### On the Mac
 
@@ -207,6 +208,7 @@ mise doctor; node -v; bun -v; python3.12 --version; uv --version; gh auth status
 stat -c '%a %U' ~/.config/agents/env          # 600 <user>
 claude --bare -p 'reply with the single word ok'      # uses ANTHROPIC_API_KEY only, no OAuth
 opencode run 'reply with the single word ok'
+codex login status && codex exec 'reply with the single word ok'   # ChatGPT device login or OPENAI_API_KEY via codex login --with-api-key
 omp --help                                     # then one trivial prompt with the flags it documents
 git -C ~/workspace/agentic-framework check-ignore -q env && echo 'env ignored'
 ```
@@ -287,14 +289,14 @@ Fallbacks that always work: `tailscale file cp shot.png <host>:` then `tailscale
 ### On the host
 
 1. `bin/agent` CLI (installed to `~/.local/bin/agent`), extending the session subcommands phase 2 already ships (`new`, `ls`, `attach`, `pick`, `switch`, `kill`) rather than replacing them; `agent ls --porcelain` stays the interface:
-   - `agent run <repo> "<task>" [--harness claude|opencode|omp] [--interactive] [--budget 5]`
+   - `agent run <repo> "<task>" [--harness claude|codex|opencode|omp] [--interactive] [--budget 5]`
      - `git -C ~/workspace/<repo> worktree add ../<repo>.wt/<slug> -b agent/<slug>`
      - new window `<slug>` in tmux session `agents`
      - headless: `claude -p "<task>" --permission-mode acceptEdits --max-budget-usd <budget> --output-format stream-json | tee ~/agents/logs/<slug>.jsonl`
      - on exit: commit, push, `gh pr create --fill --head agent/<slug>`, print PR URL to stdout and to `~/agents/logs/<slug>.url`
      - `--interactive`: run the harness normally in the window so any PC can `tmux attach -t agents` and steer
    - `agent logs <slug> | stop <slug> | clean <slug>` join `ls` and `attach`, wrapping tmux and worktree removal.
-   - Claude Code's own `--bg`, `claude agents`, `claude attach` are equivalent for Claude only; the wrapper gives one interface across the three harnesses.
+   - Claude Code's own `--bg`, `claude agents`, `claude attach` are equivalent for Claude only; the wrapper gives one interface across the four harnesses.
 2. Scheduled jobs: `systemd/agent@.service` template plus per-job timers, e.g. `agent-deps-review.timer` (Mon 03:00) → `ExecStart=%h/.local/bin/agent run <repo> --prompt-file %h/agents/prompts/deps-review.md`. `EnvironmentFile=%h/.config/agents/env`. Install with `systemctl --user enable --now agent-deps-review.timer`.
 3. Git events (GitHub): self-hosted Actions runner on <host> as a systemd service, label `<host>`. Repo workflow `.github/workflows/agent.yml` on `issue_comment` starting with `/agent ` and on `pull_request` labelled `agent-review`, running `agent run` with the comment body. The runner long-polls GitHub, so no inbound port. Use a dedicated runner user only if repos are untrusted; otherwise run as <user>.
 4. Long-running loop: `systemd/agent-worker.service` runs `bin/agent-worker`: watches `~/agents/queue/*.md`, takes the oldest, runs `agent run` with the file as prompt and a budget cap, moves it to `done/` or `failed/` with the log, posts the summary line to an ntfy topic (or PR comment). `MAX_PARALLEL=2`; RAM is the usual limit.
@@ -333,7 +335,7 @@ From the Mac: `agent run <repo> "add a README badge"` prints a PR URL within a f
 
 ### On the host
 
-1. `docker/Dockerfile.agent-sandbox`: Ubuntu 26.04 + mise toolchains + the three harnesses + gh. Build once, tag `agent-sandbox`.
+1. `docker/Dockerfile.agent-sandbox`: Ubuntu 26.04 + mise toolchains + the four harnesses + gh. Build once, tag `agent-sandbox`.
 2. `agent run --sandbox`: `docker run --rm -v <worktree>:/work -v ~/.claude:/root/.claude --env-file ~/.config/agents/env --network bridge agent-sandbox claude -p ... --dangerously-skip-permissions`. Only sandbox runs may skip permissions.
 3. One worktree per concurrent agent; never two agents in one checkout.
 4. GitHub token for agents scoped to contents:write and pull_requests:write on named repos only.
@@ -399,3 +401,4 @@ install-mac.sh  idempotent, no sudo: reads .env (or asks), brew installs, render
 
 - OpenCode install: https://opencode.ai/docs/
 - Oh My Pi: https://github.com/can1357/oh-my-pi , https://www.npmjs.com/package/@oh-my-pi/pi-coding-agent
+- Codex: https://github.com/openai/codex , https://developers.openai.com/codex/guides/agents-md (global `~/.codex/AGENTS.md`, `project_doc_max_bytes`), https://developers.openai.com/codex/auth (device login, API key)

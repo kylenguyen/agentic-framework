@@ -56,6 +56,9 @@ pwd > "$HOME/standin.cwd"
 exec claude-proc -c 'read line'
 STANDIN
 chmod +x "$HOME/bin/claude"
+# Every harness name in HARNESSES is run as a command by tmux, so a second stand-in proves the newest one
+# is wired the same way as the first; the two record the same file, since one runs at a time.
+cp "$HOME/bin/claude" "$HOME/bin/codex"
 [ -z "$FZF" ] || ln -sf "$FZF" "$HOME/bin/fzf"
 # Prove it actually runs here, rather than trusting the path: a picker case that silently gets no fzf
 # would otherwise "pass" by falling through to the log-out branch.
@@ -96,6 +99,11 @@ check "new: window 1 runs the stand-in" claude-proc "$(opt demo pane_current_com
 check "new: the harness is alive" 0 "$(opt demo pane_dead)"
 check "new: unknown repo exits 2" 2 "$("$AGENT" new nosuch --no-attach >/dev/null 2>&1; echo $?)"
 check "new: unknown harness exits 2" 2 "$("$AGENT" new demo --harness nope --no-attach >/dev/null 2>&1; echo $?)"
+check "new --harness codex: accepted" cdx "$("$AGENT" new demo --harness codex --name cdx --no-attach)"
+check "new --harness codex: @harness" codex "$(opt cdx @harness)"
+wait_until 10 opt_is cdx pane_current_command claude-proc
+check "new --harness codex: window 1 runs the codex stand-in" claude-proc "$(opt cdx pane_current_command)"
+"$AGENT" kill cdx >/dev/null 2>&1 || true
 
 echo "# naming"
 mkdir -p "$HOME/workspace/a.b:c"; git -C "$HOME/workspace/a.b:c" init -q -b main

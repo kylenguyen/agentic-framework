@@ -59,7 +59,7 @@
       "**Source control**: github.com:kylenguyen/agentic-framework (origin, fetch and push) only — no additional orgs configured.",
       "**Trusted internal domains**: None configured beyond the repo's own Tailscale tailnet host, whose MagicDNS name is a per-deployment .env parameter and is not recorded here.",
       "**Trusted cloud buckets**: None configured",
-      "**Key internal services**: Tailscale (tailnet membership and MagicDNS), sshd on the agent host, tmux session main, agent harnesses Claude Code / OpenCode / Oh My Pi installed by install-host.sh.",
+      "**Key internal services**: Tailscale (tailnet membership and MagicDNS), sshd on the agent host, tmux session main, agent harnesses Claude Code / Codex / OpenCode / Oh My Pi installed by install-host.sh.",
       "**Internal package registry**: None configured — toolchains come from mise and uv against their public upstreams.",
       "**Sensitive data locations & audiences**: repo-root .env (gitignored), ~/.config/agents/env on the host, ~/.ssh/id_ed25519 and authorized_keys, shell history files (~/.zsh_history, ~/.bash_history — known to carry inline secrets), plus any file or store holding personal data, confidential business data, credentials, regulated data, or similarly sensitive material; preserve exact handles when known and share only with audiences cleared at the [named+specifics] bar",
       "**Data retention / declassification**: None configured",

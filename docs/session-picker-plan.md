@@ -7,7 +7,7 @@ exists today; this plan changes phase 2 (sessions) and is the base that phase 5 
 
 ## 1. Goal and decisions
 
-Goal: the operator logs in from any Mac and sees every running Claude Code / Oh My Pi / OpenCode session on the
+Goal: the operator logs in from any Mac and sees every running Claude Code / Codex / Oh My Pi / OpenCode session on the
 host, picks one, and gets it on that Mac's screen. Several Macs may be on the same or different sessions at once.
 
 Decisions (operator, 16 Sep 2026):
@@ -78,7 +78,7 @@ picking only). Rows, in order: `new session`, `new shell`,
 one row per base session (harness, repo, branch, `wt` if a worktree, age, `running`/`exited`, attached devices),
 `kill session`, `plain shell here`, `log out`. Attach runs in the foreground; when it returns (detach, kill, harness death after a
 kill) the loop shows the list again. `new session` asks in fzf for the repo (directories under `~/workspace` with a
-`.git`, `.wt` trees excluded), then the harness (`claude`, `omp`, `opencode`, `shell`), then an optional slug; a
+`.git`, `.wt` trees excluded), then the harness (`claude`, `codex`, `omp`, `opencode`, `shell`), then an optional slug; a
 slug means a worktree. `kill session` (added 17 Sep 2026, after the first version shipped with no way to remove a
 session from the picker) shows the same list again under its own prompt and runs `agent kill` on the row chosen
 there: never the highlighted row, so a stray Enter on the main list cannot destroy a harness, and Esc backs out.
@@ -143,7 +143,7 @@ set, in which case every tmux call gets `-L "$AGENT_TMUX_SOCKET"` (the tests use
 
 | Command | Behaviour | Exit |
 |---|---|---|
-| `agent new <repo> [--harness claude\|omp\|opencode\|shell] [--slug <slug>] [--name <name>] [--no-attach]` | validate repo dir; with `--slug`, `git worktree add ~/workspace/<repo>.wt/<slug> -b agent/<slug>` from the main checkout (reuse the worktree if it exists, check out `agent/<slug>` if only the branch does); create base session as above; enter it unless `--no-attach` (switch inside tmux, attach outside) | 0; 2 usage or unknown repo/harness; 1 tmux/git failure |
+| `agent new <repo> [--harness claude\|codex\|omp\|opencode\|shell] [--slug <slug>] [--name <name>] [--no-attach]` | validate repo dir; with `--slug`, `git worktree add ~/workspace/<repo>.wt/<slug> -b agent/<slug>` from the main checkout (reuse the worktree if it exists, check out `agent/<slug>` if only the branch does); create base session as above; enter it unless `--no-attach` (switch inside tmux, attach outside) | 0; 2 usage or unknown repo/harness; 1 tmux/git failure |
 | `agent ls [--porcelain]` | one line per base session (grouped or not, excluding names matching `*@[0-9]*` that are in a group). Human: aligned columns. Porcelain: tab-separated `name harness repo branch cwd state created_epoch devices`, `devices` comma-separated `@device` values of the group's attached views, `-` if none; harness `shell` and repo `-` for sessions without `@harness` | 0; 0 with no output when no server |
 | `agent attach <name>` | create a view and attach; refuse if `<name>` is itself a view | 0 on detach; 2 unknown name |
 | `agent pick [--switch]` | the fzf loop; `--switch` only inside tmux, and implied by `$TMUX` | 0 plain shell / 3 log out / 2 no fzf |

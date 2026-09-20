@@ -1,6 +1,6 @@
 # House rules for agents working under ~/workspace on the agent host
 
-These apply to every harness (Claude Code, OpenCode, Oh My Pi) and every repo in this directory.
+These apply to every harness (Claude Code, Codex, OpenCode, Oh My Pi) and every repo in this directory.
 Repo-level CLAUDE.md / AGENTS.md files add to these; they do not override them.
 
 ## Git

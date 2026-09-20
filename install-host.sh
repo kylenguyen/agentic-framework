@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Idempotent host setup, phases 1 to 4 in one script. Safe to re-run. Run as the login the host is for, never with sudo.
 # Usage: ./install-host.sh [--no-tools] [--no-root]
-#   --no-tools   skip network installs (oh-my-zsh, mise toolchains, uv, harnesses)
+#   --no-tools   skip network installs (oh-my-zsh, mise toolchains, uv, the four harnesses)
 #   --no-root    skip phase 1 (the steps that need sudo)
 # Phase 1 (apt packages, zsh as login shell, linger, Tailscale auto-update, unattended-upgrades) runs one
 # command at a time through the as_root helper, and only when the host is not already in the wanted state.
@@ -139,7 +139,7 @@ block "$HOME/.bashrc" interactive bottom \
 '[ -r "$HOME/.bashrc.d/mise.sh" ] && . "$HOME/.bashrc.d/mise.sh"
 [ -r "$HOME/.bashrc.d/tmux-autoattach.sh" ] && . "$HOME/.bashrc.d/tmux-autoattach.sh"'
 
-say "Phase 3: secrets file, shared agent context, Claude settings"
+say "Phase 3: secrets file, shared agent context, Claude and Codex settings"
 install -d -m 700 "$HOME/.config/agents"
 if [ ! -f "$HOME/.config/agents/env" ]; then
   install -m 600 "$REPO/secrets.env.example" "$HOME/.config/agents/env"; note "created ~/.config/agents/env (fill in keys)"
@@ -150,6 +150,16 @@ fi
 install -d "$HOME/workspace"
 link "$REPO/config/workspace/CLAUDE.md" "$HOME/workspace/CLAUDE.md"
 link "$REPO/config/workspace/CLAUDE.md" "$HOME/workspace/AGENTS.md"
+# Codex never looks above the git root, so ~/workspace/AGENTS.md does not reach it; its global scope is
+# ~/.codex/AGENTS.md. Its config.toml is not a symlink: Codex writes into that file itself (trusted projects,
+# model choice), so the repo owns one marker block at the top, where a top-level key stays out of any table.
+# project_doc_max_bytes: Codex stops reading instructions at 32 KiB combined; AGENTS.md files here are larger.
+install -d "$HOME/.codex"
+link "$REPO/config/workspace/CLAUDE.md" "$HOME/.codex/AGENTS.md"
+touch "$HOME/.codex/config.toml"
+block "$HOME/.codex/config.toml" codex top \
+'# Installed by agentic-framework: the house rules and repo AGENTS.md files exceed the 32 KiB default.
+project_doc_max_bytes = 131072'
 install -d "$HOME/.claude"
 link "$REPO/config/claude-settings.json" "$HOME/.claude/settings.json"
 link "$REPO/config/statusline-command.sh" "$HOME/.claude/statusline-command.sh"
@@ -185,11 +195,12 @@ if [ "$TOOLS" = 1 ]; then
     ln -sfn "$HOME/.opencode/bin/opencode" "$HOME/.local/bin/opencode"
   fi
   command -v omp >/dev/null || npm install -g @oh-my-pi/pi-coding-agent
+  command -v codex >/dev/null || npm install -g @openai/codex
   mise reshim
   # Native installer, not npm: it puts a self-updating binary in ~/.local/bin and needs no toolchain.
   command -v claude >/dev/null || curl -fsSL https://claude.ai/install.sh | bash
   claude update || true
-  note "first-time logins are manual: claude (OAuth) or ANTHROPIC_API_KEY in ~/.config/agents/env; gh auth login"
+  note "first-time logins are manual: claude (OAuth) or ANTHROPIC_API_KEY in ~/.config/agents/env; codex login --device-auth or OPENAI_API_KEY piped to codex login --with-api-key; gh auth login"
 fi
 
 say "Parameters for the Macs: put these lines in .env in the agentic-framework checkout there (README.md, section 2)"

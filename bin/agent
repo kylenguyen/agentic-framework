@@ -4,7 +4,7 @@
 # `agent pick` for interactive SSH/mosh logins, so this file is the first thing the operator sees.
 #
 # Usage:
-#   agent new <repo> [--harness claude|omp|opencode|shell] [--slug <slug>] [--name <name>] [--no-attach]
+#   agent new <repo> [--harness claude|codex|omp|opencode|shell] [--slug <slug>] [--name <name>] [--no-attach]
 #   agent ls [--porcelain]
 #   agent attach <name>
 #   agent pick [--switch]        # --switch only inside tmux (the Ctrl+B g popup); implied by $TMUX
@@ -37,7 +37,7 @@
 set -euo pipefail
 
 WORKSPACE=$HOME/workspace
-HARNESSES="claude omp opencode shell"
+HARNESSES="claude codex omp opencode shell"
 # Field separator, both for tmux format output and for the rows built from it. It has to be a printable
 # character: tmux 3.4 (Ubuntu 24.04) rewrites tab and newline in a format result to "_" and escapes every
 # other non-printable byte as \NNN, so an ASCII unit separator arrives as four characters and nothing
@@ -64,7 +64,7 @@ PICK_NOTE=""
 usage() {
   cat >&2 <<'USAGE'
 usage: agent <command>
-  new <repo> [--harness claude|omp|opencode|shell] [--slug <slug>] [--name <name>] [--no-attach]
+  new <repo> [--harness claude|codex|omp|opencode|shell] [--slug <slug>] [--name <name>] [--no-attach]
   ls [--porcelain]
   attach <name>
   pick [--switch]
@@ -389,7 +389,7 @@ age_of() {
 C_DIM='38;5;245' C_RULE='38;5;240' C_ACCENT='38;5;39' C_OK='32' C_BAD='31' C_WARN='38;5;214'
 COLOUR=0                                                         # 1 while the picker draws
 harness_colour() {
-  case $1 in claude) printf '38;5;214' ;; omp) printf '38;5;141' ;; opencode) printf '38;5;75' ;; *) printf '%s' "$C_DIM" ;; esac
+  case $1 in claude) printf '38;5;214' ;; codex) printf '38;5;79' ;; omp) printf '38;5;141' ;; opencode) printf '38;5;75' ;; *) printf '%s' "$C_DIM" ;; esac
 }
 
 # paint <sgr> <text>: coloured when COLOUR=1, the text alone otherwise. fzf strips the codes from the row
@@ -615,7 +615,7 @@ pick_new_session() {
   repo=$(printf '%s\n' "$repos" | menu 'repo>' "$(pick_filter 1)" 0 \
            "new session: which repo under ~/workspace" "$HINT_CHOOSE") || return 1
   [ -n "$repo" ] || return 1
-  harness=$(printf 'claude\nomp\nopencode\nshell\n' | menu 'harness>' "$(pick_filter 2)" 0 \
+  harness=$(printf 'claude\ncodex\nomp\nopencode\nshell\n' | menu 'harness>' "$(pick_filter 2)" 0 \
               "new session: which harness runs in $repo" "$HINT_CHOOSE") || return 1
   [ -n "$harness" ] || return 1
   slug=$(prompt_text 'slug>' "new session: $harness in $repo" \

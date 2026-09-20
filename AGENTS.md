@@ -1,6 +1,6 @@
 # AGENTS.md: working on agentic-framework
 
-Instructions for any coding agent (Claude Code, OpenCode, Oh My Pi) that edits this repo.
+Instructions for any coding agent (Claude Code, Codex, OpenCode, Oh My Pi) that edits this repo.
 The house rules in `~/workspace/CLAUDE.md` / `~/workspace/AGENTS.md` (kept here as
 `config/workspace/CLAUDE.md`) apply first; this file adds what is specific to this repo.
 
@@ -29,7 +29,7 @@ Do not assume something exists because the plan describes it. Check this table a
 |---|---|---|
 | 1 access | apt (tmux mosh gh zsh fzf git curl file jq unattended-upgrades), zsh + chsh, linger, auto-updates; sshd and firewall left at OS defaults | scripted (`install-host.sh` phase 1) |
 | 2 sessions | tmux, session picker (`bin/agent`: one base session per harness run, an independent view per device), zsh + oh-my-zsh, WezTerm domain | scripted (`bin/agent`, `config/tmux.conf`, `config/zshenv`, `config/zshrc`, `config/bashrc.d`, `config/wezterm-agent-host.lua.in`) |
-| 3 harnesses | mise, uv, gh, three harnesses, secrets file, shared rules, Claude settings | scripted (`install-host.sh` phases 2 to 4) |
+| 3 harnesses | mise, uv, gh, four harnesses (Claude Code, Codex, OpenCode, Oh My Pi), secrets file, shared rules, Claude settings, Codex global rules and config block | scripted (`install-host.sh` phases 2 to 4) |
 | 4 clipboard bridge | Cmd+V on a Mac pushes the image to `~/.clip/<stamp>.png` on the host and pastes that path into the pane; all three harnesses attach a pasted image path. `xclip` shim still serves Ctrl+V in Claude Code and carries copies back | scripted (`bin/clip-put`, `bin/xclip`, `bin/clip-push-mac.sh.in`, Cmd+V in `config/wezterm-agent-host.lua.in`) |
 | 5 automation | `agent run`/`logs`/`stop`/`clean` on top of `bin/agent`, `agent-worker`, systemd units, GitHub runner workflow | planned, not started |
 | 6 isolation | `docker/Dockerfile.agent-sandbox`, `agent run --sandbox` | planned, not started |
@@ -46,10 +46,10 @@ When you implement part of phase 5 or 6, update this table and section 8 of the 
 | `bin/agent` | sessions on the host: `new`, `ls [--porcelain]`, `attach`, `pick [--switch]`, `switch`, `kill`. One harness run in one repo is one base tmux session (`remain-on-exit`, `@harness`/`@repo`/`@cwd`/`@branch`/`@created`/`@hwin`); each device attaches a view (`<name>@<n>`, grouped, `destroy-unattached`, `@device`). `pick` is an fzf loop and the login landing. tmux is the only state | `~/.local/bin/agent` on the host |
 | `tests/agent-test.sh` | unit tests for `bin/agent` and the login fragment: naming, worktrees, `--porcelain` columns, views per device, exited sessions, `kill` and the worktree removal it does (clean, dirty with nobody to ask, `--force`, `--keep-worktree`), the picker under `AGENT_PICK_FILTER`, and the fragment's guard under bash and zsh. Throwaway HOME, stand-in harness, own tmux socket | run anywhere, no sudo, no network, no Docker |
 | `tests/params-test.sh` | unit tests for the library, every rendered template checked with real tools (`ssh -G`, `bash -n`), a Linux dry run of `install-mac.sh` against a throwaway HOME, and the literal scan | run anywhere, no sudo, no network |
-| `tests/e2e/` | two Docker containers, a host (`box`, real sshd, login `alice`, systemd/tailscale shimmed and logged) and a Mac stand-in with two Mac users (brew, osascript, pbpaste, pngpaste stubbed; Lua 5.4 for the WezTerm module): both install scripts run twice against each other; password path, key login and idempotency; Cmd+V routing through the rendered WezTerm module (`wezterm-paste.lua`, stub `wezterm` table, real `clip-push`, real host) for text, image, local, ssh, mosh and failed-push cases, each image case checking the pasted path is a `.png` on the host holding the pushed bytes; the spool's one-file-per-push naming, `latest` symlink, modes, 24 h prune and `--clear`; the `xclip` calls Claude Code makes on Ctrl+V with a byte-exact PNG check; OSC 52 copy-back; a second Mac installing and pushing against the same host; and the session picker driven over `ssh -tt` from both Mac users, with two views on one base session, independent current windows, detach and `agent kill` | `bash tests/e2e/run.sh`; needs docker without sudo, network for the image builds only |
+| `tests/e2e/` | two Docker containers, a host (`box`, real sshd, login `alice`, systemd/tailscale shimmed and logged) and a Mac stand-in with two Mac users (brew, osascript, pbpaste, pngpaste stubbed; Lua 5.4 for the WezTerm module): both install scripts run twice against each other; password path, key login and idempotency (including the Codex global link and the single `codex` block in `~/.codex/config.toml`); Cmd+V routing through the rendered WezTerm module (`wezterm-paste.lua`, stub `wezterm` table, real `clip-push`, real host) for text, image, local, ssh, mosh and failed-push cases, each image case checking the pasted path is a `.png` on the host holding the pushed bytes; the spool's one-file-per-push naming, `latest` symlink, modes, 24 h prune and `--clear`; the `xclip` calls Claude Code makes on Ctrl+V with a byte-exact PNG check; OSC 52 copy-back; a second Mac installing and pushing against the same host; and the session picker driven over `ssh -tt` from both Mac users, with two views on one base session, independent current windows, detach and `agent kill` | `bash tests/e2e/run.sh`; needs docker without sudo, network for the image builds only |
 | `tests/e2e/harness-paste.sh` | the step `run.sh` stops short of: the pasted path going into the real harnesses. A third image (`tests/e2e/Dockerfile.harness`) layers Claude Code, Oh My Pi and OpenCode onto the e2e host, every version pinned to what the live host runs; the Mac drives a tmux pane running `ssh -tt box 'agent attach ...'` and pastes with `paste-buffer -p`, so the bracketed paste crosses ssh and the host tmux as a real client delivers it. Per harness: it reaches its prompt, text arrives, the path `clip-push` returned is attached as an image, and a path to no file attaches nothing. Prints the three versions it saw: the indicator strings are version-specific | `bash tests/e2e/harness-paste.sh`; needs docker without sudo, and network and a few hundred MB for the first harness-image build |
 | `tests/e2e/tui.sh` | the picker as a human meets it, in the same two containers: the Mac holds a tmux server whose one pane runs `ssh -tt box`, so the login lands in the real `agent pick` on a real pty and `send-keys` is typing, `capture-pane` is the screen. Covers the login picker and the prefix-g popup for: landing, `new shell` (name prompt), `new session` (repo, harness, slug, worktree), choosing a row, the absence of a preview window, detach, `kill session` clean and dirty, a slug whose branch outlived its worktree, `agent pick` inside a pane, an exited harness, two Macs on one session, `plain shell here`, `log out` and Esc. Sets no `AGENT_PICK_FILTER`: the point is the interactive fzf that `run.sh` skips | `bash tests/e2e/tui.sh`; needs docker without sudo, network for the image builds only |
-| `install-host.sh` | idempotent host setup, phases 1 to 4, run as the host login. Loads `.env`, derives the rest, writes `.env` when absent and prints it for the Macs at the end. Phase 1 (apt tmux mosh gh zsh fzf git curl file jq unattended-upgrades, chsh to zsh, linger, tailscale auto-update, unattended-upgrades; sshd and the firewall are not touched) goes through the `as_root` helper one `sudo` command at a time, each behind a no-sudo state check, so a configured host never prompts; `--no-root` skips it. Phases 2 to 4 symlink configs, then oh-my-zsh, toolchains and harnesses (Claude Code via the native installer when absent) behind `--no-tools` | run in place |
+| `install-host.sh` | idempotent host setup, phases 1 to 4, run as the host login. Loads `.env`, derives the rest, writes `.env` when absent and prints it for the Macs at the end. Phase 1 (apt tmux mosh gh zsh fzf git curl file jq unattended-upgrades, chsh to zsh, linger, tailscale auto-update, unattended-upgrades; sshd and the firewall are not touched) goes through the `as_root` helper one `sudo` command at a time, each behind a no-sudo state check, so a configured host never prompts; `--no-root` skips it. Phases 2 to 4 symlink configs (Codex gets `~/.codex/AGENTS.md` and a `codex` marker block in `~/.codex/config.toml`), then oh-my-zsh, toolchains and harnesses (Claude Code via the native installer, Oh My Pi and Codex via npm under mise, OpenCode via its installer, each when absent) behind `--no-tools` | run in place |
 | `install-mac.sh` | idempotent Mac client setup, phases 1, 2 and 4; no sudo; settles its parameters first (`.env`, a prompt on a terminal, or exit 2); renders the ssh config block (`agent-host` marker) and `clip-push`; writes a minimal `wezterm.lua` when none exists, otherwise inserts the `wezterm-agent-host` require before the final `return <config>` (backup `.before-agent-host`; exits 1 with the line to add when the file ends some other way); `path` marker block in `~/.zshrc`; ends by making `ssh <alias>` keyless: stores the host key on first contact (fingerprint printed), installs the repo key over an already-trusted key with `ssh-copy-id -f`, or runs `ssh-copy-id` and asks for the host password once; never deletes a stored host key or edits `authorized_keys` directly; exits 1 with the fix when it cannot finish | run on the Mac |
 | `bin/xclip` | clipboard shim; serves the newest pushed image (`~/.clip/latest`, now a symlink) to Claude Code on Ctrl+V, copies go back via OSC 52. Off the Cmd+V path since the bridge pastes a path | `~/.local/bin/xclip` on the host |
 | `bin/clip-put` | stdin to `~/.clip` (dir 700, file 600): a PNG becomes its own `<UTC stamp>-<random>.png` and its path is printed, `latest` is repointed at it, text replaces `latest` and prints nothing; every push prunes `.png` older than `CLIP_KEEP_MINUTES` (1440), `--clear` removes the lot | `~/.local/bin/clip-put` on the host |
@@ -63,7 +63,7 @@ When you implement part of phase 5 or 6, update this table and section 8 of the 
 | `config/wezterm-agent-host.lua.in` | template: SSH domain `<alias>`, Cmd+Shift+A tab, Cmd+V image push then `pane:paste` of the host path, default `color_scheme` (Tokyo Night) | `~/.config/wezterm/wezterm-agent-host.lua` |
 | `config/claude-settings.json` | Claude Code allow and deny lists, model, status line command | `~/.claude/settings.json` (symlink) |
 | `config/statusline-command.sh` | Claude Code status line, two lines: dir, branch, model, effort; context tokens and 5h/7d rate limits. Needs jq (phase 1) | `~/.claude/statusline-command.sh` (symlink) |
-| `config/workspace/CLAUDE.md` | house rules for all repos under `~/workspace`; one file linked under both names | `~/workspace/CLAUDE.md` and `~/workspace/AGENTS.md` (symlinks) |
+| `config/workspace/CLAUDE.md` | house rules for all repos under `~/workspace`; one file linked under both names, and once more into Codex's global scope since Codex never reads above the git root | `~/workspace/CLAUDE.md`, `~/workspace/AGENTS.md` and `~/.codex/AGENTS.md` (symlinks) |
 | `secrets.env.example` | secret variable names only | copied to `~/.config/agents/env` once, mode 600 |
 | `README.md` | ordered runbook: prerequisites, the three scripts with verify blocks, logins, joint checkpoints, rollback, parameters table | read only |
 | `docs/` | `remote-agent-host-plan.md` (design, per-phase tests); operations runbook for phase 5 to be written | read only |
@@ -86,7 +86,8 @@ mechanisms rather than inventing new ones:
 - **Symlinks, not copies**, for configs on the host. `install-host.sh` has a `link` helper that backs up
   a real file in the way and is a no-op when the link already points at the repo. Edit configs in
   the repo, never the installed copy.
-- **Marker blocks** for files the scripts share with the user, such as `~/.bashrc` on the host,
+- **Marker blocks** for files the scripts share with the user, such as `~/.bashrc` and `~/.codex/config.toml`
+  on the host (Codex writes trusted projects and model choices into that file itself, so it cannot be a symlink),
   and `~/.ssh/config` and `~/.zshrc` on the Mac. The `block` helper wraps content in `# >>> agentic-framework:<marker> >>>` and
   `# <<< agentic-framework:<marker> <<<` and replaces the block in place on re-run. Use a new
   marker name for new content; never append unmarked lines.
@@ -118,8 +119,9 @@ mechanisms rather than inventing new ones:
   (what the script does, its verify block, the parameters table).
 - Keep the Macs interchangeable. Nothing may depend on one particular Mac; the spool holds
   whatever the last Mac pushed and nothing identifies a client.
-- Claude Code specifics belong in `config/claude-settings.json`; cross-harness rules belong in
-  `config/workspace/CLAUDE.md`. Do not put Claude-only behaviour in the shared rules.
+- Claude Code specifics belong in `config/claude-settings.json`, Codex specifics in the `codex` block
+  `install-host.sh` writes to `~/.codex/config.toml`; cross-harness rules belong in
+  `config/workspace/CLAUDE.md`. Do not put Claude-only or Codex-only behaviour in the shared rules.
 
 ## Verification
 
@@ -147,7 +149,8 @@ python3 -m json.tool config/claude-settings.json >/dev/null
 ```
 
 `./install-host.sh --no-tools --no-root` is safe to re-run on the host and is the real idempotency test, but it
-rewrites `~/.bashrc`, `~/.zshrc`, `~/.zshenv`, `~/.claude/settings.json` and `~/.claude/statusline-command.sh` on this host, and
+rewrites `~/.bashrc`, `~/.zshrc`, `~/.zshenv`, `~/.claude/settings.json`, `~/.claude/statusline-command.sh`, `~/.codex/AGENTS.md` and
+the `codex` block of `~/.codex/config.toml` on this host, and
 it points every symlink at the checkout it runs from: never run it from a worktree, only from `~/workspace/agentic-framework`.
 Run it only when your change touches those paths and say so in the PR.
 
@@ -171,8 +174,8 @@ In addition to the workspace house rules:
 - Never `apt install xclip` or otherwise put a real `xclip` ahead of the shim.
 - Do not reintroduce sshd or firewall configuration into the scripts without a note in the PR title;
   a reviewer must see it before merge.
-- Do not edit `~/.bashrc`, `~/.zshrc`, `~/.zshenv`, `~/.ssh/config` or `~/.claude/settings.json` by hand; change the repo
-  file and let the install script render it.
+- Do not edit `~/.bashrc`, `~/.zshrc`, `~/.zshenv`, `~/.ssh/config`, `~/.claude/settings.json` or the `codex` block in
+  `~/.codex/config.toml` by hand; change the repo file and let the install script render it.
 - One agent per worktree. If `~/workspace/agentic-framework.wt/<slug>` exists for another job,
   pick a new slug.
 
@@ -181,7 +184,7 @@ In addition to the workspace house rules:
 Phase 5 and 6 work should fit this shape, taken from the plan doc, so that every device gets the
 same interface regardless of harness:
 
-- `agent run <repo> "<task>" [--harness claude|opencode|omp] [--interactive] [--budget N] [--sandbox]`
+- `agent run <repo> "<task>" [--harness claude|codex|opencode|omp] [--interactive] [--budget N] [--sandbox]`
   creates `~/workspace/<repo>.wt/<slug>` on branch `agent/<slug>`, opens window `<slug>` in tmux
   session `agents`, runs the harness headless with a budget cap, logs to `~/agents/logs/<slug>.jsonl`,
   then commits, pushes and runs `gh pr create`, printing the PR URL to stdout and `~/agents/logs/<slug>.url`.

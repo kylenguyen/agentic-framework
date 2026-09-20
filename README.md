@@ -1,7 +1,7 @@
 # agentic-framework
 
 Source of truth for one headless Ubuntu box on a Tailscale tailnet that runs coding agents (Claude Code,
-OpenCode, Oh My Pi), and for any number of Macs that reach it from WezTerm over SSH or mosh. Nothing in the repo
+Codex, OpenCode, Oh My Pi), and for any number of Macs that reach it from WezTerm over SSH or mosh. Nothing in the repo
 names a particular machine: the host's ssh alias, address, login and LAN range are parameters (`.env`, table below).
 In the examples `<host>` stands for the alias (`AGENT_HOST`), `<user>` for the login (`AGENT_HOST_USER`), `<lan-ip>`
 for the LAN address. Two idempotent scripts do all the configuration; configs on the host are
@@ -9,7 +9,7 @@ symlinks into this checkout, so edit here, never the installed copy.
 
 | Script | Runs on | As | Does |
 |---|---|---|---|
-| `install-host.sh` | host | the host login; `sudo` per command, only for phase 1 steps not yet done | phase 1: apt packages (tmux, mosh, gh, zsh, fzf, git, curl, file, jq, unattended-upgrades), zsh as login shell, linger, Tailscale auto-update, unattended-upgrades; then symlinked configs, secrets file skeleton, `xclip` shim, `agent` session picker, oh-my-zsh, mise toolchains, uv, the three harnesses |
+| `install-host.sh` | host | the host login; `sudo` per command, only for phase 1 steps not yet done | phase 1: apt packages (tmux, mosh, gh, zsh, fzf, git, curl, file, jq, unattended-upgrades), zsh as login shell, linger, Tailscale auto-update, unattended-upgrades; then symlinked configs, secrets file skeleton, `xclip` shim, `agent` session picker, oh-my-zsh, mise toolchains, uv, the four harnesses |
 | `install-mac.sh` | Mac | you, no sudo | mosh, pngpaste, `~/.ssh/config` block, SSH key and key login to the host, WezTerm include, `clip-push` |
 
 Order: host prerequisites, then the Mac script (it puts the Mac key on the host), then the host script, then
@@ -123,9 +123,12 @@ turns on Tailscale auto-update and unattended-upgrades. It does not change sshd 
 OS defaults, and reaching it is a matter of the tailnet and the LAN.
 
 Phases 2 to 4 run as the login: symlink `~/.tmux.conf`, `~/.zshenv`, `~/.zshrc`, `~/.bashrc.d`, `~/.claude/settings.json`,
-`~/.claude/statusline-command.sh`, `~/workspace/CLAUDE.md` and `~/workspace/AGENTS.md` into the repo; create
+`~/.claude/statusline-command.sh`, `~/workspace/CLAUDE.md`, `~/workspace/AGENTS.md` and `~/.codex/AGENTS.md` into the repo
+(Codex reads instructions from the git root down, never from `~/workspace`, so it gets the house rules through its
+global file); write the `codex` marker block at the top of `~/.codex/config.toml`, which raises `project_doc_max_bytes`
+so Codex reads the whole of the house rules and a repo's `AGENTS.md` instead of stopping at 32 KiB; create
 `~/.config/agents/env` from `secrets.env.example` (mode 600); install the `xclip` shim, `clip-put` and `agent`; with network,
-install oh-my-zsh, mise with Node, Bun and Python 3.12, uv, OpenCode, Oh My Pi and Claude Code. It ends by printing
+install oh-my-zsh, mise with Node, Bun and Python 3.12, uv, OpenCode, Oh My Pi, Codex and Claude Code. It ends by printing
 the `.env` lines for the Macs.
 
 Log out and back in. The new login lands in the session picker (`agent pick`): every running harness session on
@@ -152,13 +155,15 @@ host$ loginctl show-user <user> | grep Linger                                   
 host$ getent passwd <user> | cut -d: -f7                                                  # /usr/bin/zsh
 mac$ ssh <host> true && echo still-ok
 host$ echo $ZSH_THEME $TMUX | cut -c1-40           # robbyrussell /tmp/tmux-...
-host$ for c in mise node bun python3.12 uv claude opencode omp; do printf '%-10s %s\n' $c "$(command -v $c || echo MISSING)"; done
+host$ for c in mise node bun python3.12 uv claude codex opencode omp; do printf '%-10s %s\n' $c "$(command -v $c || echo MISSING)"; done
 host$ command -v xclip                             # ~/.local/bin/xclip, not /usr/bin
 host$ command -v agent fzf                         # ~/.local/bin/agent, then an fzf path
 host$ agent ls                                     # a header, and a row per running session (none on a fresh host)
 host$ bash ~/workspace/agentic-framework/tests/agent-test.sh | tail -1   # N passed, 0 failed
 host$ stat -c '%a' ~/.config/agents/env            # 600
 host$ readlink ~/workspace/AGENTS.md               # .../config/workspace/CLAUDE.md
+host$ readlink ~/.codex/AGENTS.md                  # the same target
+host$ grep -c project_doc_max_bytes ~/.codex/config.toml   # 1, inside the agentic-framework:codex block
 host$ cat ~/workspace/agentic-framework/.env       # the four AGENT_HOST_* lines, same values install-host.sh printed
 host$ bash ~/workspace/agentic-framework/tests/params-test.sh | tail -1   # N passed, 0 failed
 mac$ ssh <host> 'echo tmux=$TMUX; command -v mise'   # tmux= (empty), then a mise path
@@ -166,18 +171,22 @@ mac$ ssh <host> 'echo tmux=$TMUX; command -v mise'   # tmux= (empty), then a mis
 
 ## 4. One-time logins and secrets (host, manual)
 
-Both logins print a URL and a code; open the URL in the Mac's browser.
+The Claude, Codex and GitHub logins print a URL and a code; open the URL in the Mac's browser.
 
 1. Claude Code: `host$ claude`, sign in, `/exit`. Or put `ANTHROPIC_API_KEY` in the secrets file; that is what
    `claude --bare` and non-interactive use need.
-2. GitHub: `host$ gh auth login` (GitHub.com, HTTPS, browser). Keep the repo remote on HTTPS.
-3. Secrets: `host$ $EDITOR ~/.config/agents/env`. Sourced by every shell, including `ssh <host> <cmd>`. Claude Code
+2. Codex: `host$ codex login --device-auth` for a ChatGPT account (plain `codex login` wants a browser on the host).
+   Or put `OPENAI_API_KEY` in the secrets file and run `host$ printenv OPENAI_API_KEY | codex login --with-api-key`
+   once. Either way the token lands in `~/.codex/auth.json`; treat that file like a password.
+3. GitHub: `host$ gh auth login` (GitHub.com, HTTPS, browser). Keep the repo remote on HTTPS.
+4. Secrets: `host$ $EDITOR ~/.config/agents/env`. Sourced by every shell, including `ssh <host> <cmd>`. Claude Code
    is denied read access to it by `config/claude-settings.json`.
 
 Verify:
 ```
 host$ gh auth status
 host$ claude -p 'reply with the single word ok'
+host$ codex login status && codex exec 'reply with the single word ok'
 mac$ ssh <host> 'claude --bare -p "reply with the single word ok"'    # needs the API key; proves the env file reaches ssh commands
 ```
 
@@ -187,6 +196,7 @@ mac$ ssh <host> 'claude --bare -p "reply with the single word ok"'    # needs th
 |---|---|
 | `mac$ ssh <host>` and `mac$ mosh <host>` | the picker, not a bare `main`; `log out` (or Esc) closes the connection |
 | `new session`, repo `agentic-framework`, harness `claude` | Claude Code starts in the repo directory, with the API key from the secrets file |
+| `new session`, repo `agentic-framework`, harness `codex` | Codex starts in the repo directory and its row is listed with harness `codex` |
 | second Mac, pick the same session | both see the harness; changing window on one does not move the other |
 | Ctrl+B `g` | popup picker; choosing another session switches to it, and `agent ls` shows the old view gone |
 | Ctrl+B `g`, then `log out` | the connection closes; log back in and the session is still in the picker |
