@@ -52,7 +52,7 @@ Verified on the reference host while planning:
 ```
 
 Text copy: remote → Mac via OSC 52 (tmux passes it through, WezTerm writes the Mac clipboard). Mac → remote via ordinary paste.
-Image paste: Cmd+V in WezTerm runs `clip-push --if-image` on the Mac, which pipes the image into `clip-put` on <host>; WezTerm then sends Ctrl+V, Claude Code calls `xclip` and the shim serves that file.
+Image paste: Cmd+V in WezTerm runs `clip-push --if-image` on the Mac, which pipes the image into `clip-put` on <host>; `clip-put` stores it as its own `~/.clip/<stamp>.png` and prints that path, and WezTerm pastes the path into the pane, which every harness attaches as an image.
 
 ## 2. Phase 1: access
 
@@ -223,7 +223,7 @@ From the Mac, `ssh <host> 'claude --bare -p "reply ok"'` returns text. This prov
 
 Problem: a headless box has no clipboard, so pasting a screenshot into Claude Code on <host> finds nothing. A terminal carries text only, so the image has to travel separately. Claude Code shells out to `xclip`; a shim named `xclip` earlier in `PATH` serves a file that the Mac pushed a moment earlier.
 
-Design: push, not pull. Cmd+V in WezTerm runs `clip-push --if-image` on the Mac. Text is not pushed at all; WezTerm pastes it natively. An image is piped as PNG over the existing Mac → <host> SSH path into `clip-put` on <host>, which writes `~/.clip/latest` atomically. WezTerm then sends Ctrl+V (the key Claude Code reads the clipboard on), Claude Code calls `xclip`, the shim reads the file. The first design had <host> SSH back into the Mac (Remote Login, an sshd drop-in, <host>'s key in `authorized_keys`); it was dropped because a managed Mac should not run an SSH server for this, and because a pull exposes the whole clipboard on demand while a push moves only what is deliberately pasted.
+Design: push, not pull. Cmd+V in WezTerm runs `clip-push --if-image` on the Mac. Text is not pushed at all; WezTerm pastes it natively. An image is piped as PNG over the existing Mac → <host> SSH path into `clip-put` on <host>, which stores it as `~/.clip/<UTC stamp>-<random>.png`, points `~/.clip/latest` at it and prints the path. WezTerm then pastes that path into the pane: Claude Code, Oh My Pi and OpenCode all attach a pasted absolute path to a `.png` as an image, so one key works in every harness and a shell simply receives the path. Delivery used to be a Ctrl+V keystroke instead, which only Claude Code acted on — Oh My Pi never runs `xclip` for an image on a headless box, and OpenCode has no such key — so the `xclip` shim is now off the Cmd+V path and answers only Ctrl+V in Claude Code. The first design had <host> SSH back into the Mac (Remote Login, an sshd drop-in, <host>'s key in `authorized_keys`); it was dropped because a managed Mac should not run an SSH server for this, and because a pull exposes the whole clipboard on demand while a push moves only what is deliberately pasted.
 
 ### On the host
 
@@ -231,22 +231,22 @@ Design: push, not pull. Cmd+V in WezTerm runs `clip-push --if-image` on the Mac.
 
    | Call Claude Code makes | Shim action |
    |---|---|
-   | `xclip -selection clipboard -t TARGETS -o` | `image/png` if `~/.clip/latest` starts with the PNG magic, else `text/plain UTF8_STRING` |
+   | `xclip -selection clipboard -t TARGETS -o` | `image/png` if `~/.clip/latest` (a symlink to the newest pushed image) starts with the PNG magic, else `text/plain UTF8_STRING` |
    | `xclip -selection clipboard -t image/png -o` | the file, raw PNG; exit 1 if it is not a PNG |
    | `xclip -selection clipboard -t text/plain -o` (or `-o` alone) | the file; exit 1 if it is a PNG |
    | `xclip -selection clipboard` / `-selection primary` with stdin | stdin → the file, plus an OSC 52 write to the terminal so the Mac clipboard follows (tmux `set-clipboard on` forwards it) |
 
    Missing or empty file, or any other argument pattern: exit 1 so Claude Code falls through to its next option.
    `CLIP_BRIDGE_SPOOL=/path` moves the file (point it at any PNG to test <host> alone); `CLIP_BRIDGE_DEBUG=1` traces to stderr.
-2. `bin/clip-put` (installed to `~/.local/bin/clip-put`): stdin → `~/.clip/latest`, directory mode 700, file mode 600, written through a temp file and `mv` so the shim never sees a half-written PNG. `clip-put --clear` deletes it. The Mac calls it by absolute path, so the minimal PATH of a non-interactive SSH command does not matter.
-3. Nothing else: no `jq`, no `tailscale whois`, no SSH config towards the Macs. The last Mac to push wins, which is what "the Mac I am typing on" means in practice.
+2. `bin/clip-put` (installed to `~/.local/bin/clip-put`): stdin → `~/.clip`, directory mode 700, file mode 600, written through a temp file and `mv` so nothing ever sees a half-written PNG. A PNG becomes `~/.clip/<UTC stamp>-<random>.png`, `latest` is repointed at it as a symlink and the absolute path is printed on stdout; text still replaces `latest` as a regular file and prints nothing. One file per paste, so a later push cannot overwrite an image a harness has attached but not yet sent. Every push then deletes `.png` files older than `CLIP_KEEP_MINUTES` (default 1440) in that directory — on the next push only, with no timer, so a file can outlive a quiet weekend. `clip-put --clear` removes the lot. The Mac calls it by absolute path, so the minimal PATH of a non-interactive SSH command does not matter.
+3. Nothing else: no `jq`, no `tailscale whois`, no SSH config towards the Macs. `~/.clip` is shared by every Mac that pushes, and the last one to push owns `latest`, which is what "the Mac I am typing on" means in practice.
 
 ### On the Mac
 
 1. `brew install pngpaste` (turns whatever image class the clipboard holds into PNG on stdout).
-2. `bin/clip-push-mac.sh.in`, rendered and installed to `~/.local/bin/clip-push`, no sudo. `osascript -e 'clipboard info'` decides image or text and the type is printed first; `pngpaste -` or `pbpaste` is piped to `ssh <host>-clip '~/.local/bin/clip-put'`. With `--if-image` text is reported but not pushed. WezTerm starts it with a minimal environment, so the script sets its own PATH. `CLIP_PUSH_HOST=<host>-lan` when off the tailnet.
+2. `bin/clip-push-mac.sh.in`, rendered and installed to `~/.local/bin/clip-push`, no sudo. `osascript -e 'clipboard info'` decides image or text and the type is printed first; `pngpaste -` or `pbpaste` is piped to `ssh <host>-clip '~/.local/bin/clip-put'`, and for an image the host path `clip-put` printed follows on a second line. With `--if-image` text is reported but not pushed. WezTerm starts it with a minimal environment, so the script sets its own PATH. `CLIP_PUSH_HOST=<host>-lan` when off the tailnet.
 3. `Host <host>-clip` in `~/.ssh/config` (repo `config/ssh_config.mac.in`): same key as `<host>`, `BatchMode yes`, `ConnectTimeout 3`, `ControlMaster auto` with `ControlPersist 10m` so every push after the first takes milliseconds. Separate from `Host <host>` so interactive sessions and mosh keep their own settings.
-4. `config/wezterm-agent-host.lua.in` binds Cmd+V: if the pane is the `<host>` SSH domain, or a local pane whose foreground process is `ssh` or `mosh-client`, run `clip-push --if-image` synchronously (`wezterm.run_child_process`). Type `text/plain`: ordinary `PasteFrom Clipboard`. Type `image/png` and the push succeeded: send Ctrl+V to the pane. Push failed: a toast shows the error and no key is sent, so a stale image is never pasted. Any other pane gets the ordinary paste. Ctrl+V is left unbound.
+4. `config/wezterm-agent-host.lua.in` binds Cmd+V: if the pane is the `<host>` SSH domain, or a local pane whose foreground process is `ssh` or `mosh-client`, run `clip-push --if-image` synchronously (`wezterm.run_child_process`). Type `text/plain`: ordinary `PasteFrom Clipboard`. Type `image/png` and the push succeeded: `pane:paste` of the path on line 2, which WezTerm delivers as one bracketed paste, so the harness sees a paste and attaches the image. Push failed, or no path came back: a toast shows why and nothing is pasted, so a stale or guessed path is never attached. Any other pane gets the ordinary paste. Ctrl+V is left unbound.
 
 ### Test the host alone
 
@@ -259,7 +259,7 @@ clip-put --clear; xclip -selection clipboard -t TARGETS -o; echo "exit $?"      
 ```
 Then start `claude` in tmux with `CLIP_BRIDGE_SPOOL=/usr/share/pixmaps/debian-logo.png` exported, press Ctrl+V: the prompt shows an attached image. This proves the Claude Code ↔ shim contract without any Mac involvement.
 
-Automated: `tests/e2e/run.sh` runs the rendered WezTerm module under Lua 5.4 in the Mac container, lets its Cmd+V handler call the real `clip-push` against the host container, then makes the `xclip` calls Claude Code makes after Ctrl+V and compares the PNG bytes. Text, local-pane, ssh-pane, mosh-pane and failed-push cases, OSC 52 copy-back and a second Mac are covered there; only WezTerm's own runtime and macOS are left to the joint checkpoint.
+Automated: `tests/e2e/run.sh` runs the rendered WezTerm module under Lua 5.4 in the Mac container, lets its Cmd+V handler call the real `clip-push` against the host container, and checks the path it pastes back holds the pushed PNG byte for byte. Text, local-pane, ssh-pane, mosh-pane and failed-push cases, the spool's naming, modes, prune and `--clear`, the `xclip` calls Claude Code makes on Ctrl+V, OSC 52 copy-back and a second Mac are covered there. `tests/e2e/harness-paste.sh` then pastes that path into Claude Code, Oh My Pi and OpenCode in a container of their own and checks each attaches the image; only WezTerm's own runtime and macOS are left to the joint checkpoint.
 
 ### Test the Mac alone
 

@@ -191,7 +191,7 @@ mac$ ssh <host> 'claude --bare -p "reply with the single word ok"'    # needs th
 | Ctrl+B `g` | popup picker; choosing another session switches to it, and `agent ls` shows the old view gone |
 | Ctrl+B `g`, then `log out` | the connection closes; log back in and the session is still in the picker |
 | Ctrl+B `g`, then `new session` | the popup closes and the new harness runs in the terminal behind it, not inside the popup |
-| Cmd+V of an image in that session | still `[Image #1]`: the clipboard bridge is unaffected |
+| Cmd+V of an image in that session | still an attached image: the clipboard bridge is unaffected |
 | `/exit` in the harness | the row says `exited` and the last screen is still there; `agent kill <name>` clears it |
 | `kill session` in the picker, pick that row | the row is gone from the list; Esc at that second list kills nothing |
 | `agent kill <name>` for a session started with a slug | says `worktree removed`, `~/workspace/<repo>.wt/<slug>` is gone and `git -C ~/workspace/<repo> branch --list agent/<slug>` still prints the branch; with uncommitted work it asks first |
@@ -199,23 +199,30 @@ mac$ ssh <host> 'claude --bare -p "reply with the single word ok"'    # needs th
 | Cmd+Shift+A in WezTerm | new tab on <host> |
 | tmux copy mode (Ctrl+B `[`, Space, Enter), then `mac$ pbpaste` | the copied text |
 | Cmd+Shift+Ctrl+4, then Cmd+V in `claude` on <host> | `[Image #1]` in the prompt |
-| Cmd+V of text into a shell on <host> | pastes at once; `ls -l ~/.clip/latest` timestamp unchanged |
+| the same in `omp` | a preview and `🖼 #1`; in `opencode`, `[Image 1]` |
+| the same into a plain shell on <host> | one line, the path the image was pushed to |
+| Cmd+V of text into a shell on <host> | pastes at once; `ls -l ~/.clip` unchanged |
 | `mac$ ssh <host> 'echo $TMUX'` | empty line |
 
 Clipboard bridge checks from the Mac (take a screenshot first):
 ```
-mac$ clip-push && ssh <host> 'file ~/.clip/latest'     # image/png, then PNG image data
+mac$ clip-push                                      # two lines: image/png, then /home/<login>/.clip/<stamp>-<random>.png
+mac$ ssh <host> 'ls -l ~/.clip'                     # that .png, mode 600, and latest -> it
 mac$ time clip-push                                 # well under 1 s on the second run
-mac$ clip-push --clear && ssh <host> 'ls ~/.clip'      # nothing listed
+mac$ clip-push --clear && ssh <host> 'ls -A ~/.clip'   # nothing listed
 ```
+Each push also deletes `.png` files older than 24 hours. There is no timer: a file stays until the first push
+made more than a day after it, so `clip-push --clear` is how to remove a screenshot now rather than eventually.
 
-If image paste fails: `mac$ clip-push` in a local terminal prints the ssh error;
+If image paste fails: WezTerm shows a toast with the reason. `mac$ clip-push` in a local terminal prints the same
+ssh error, and two output lines when it worked. A toast saying no path came back means the host's `clip-put` is older
+than this Mac's WezTerm config: `git pull` on the host. For Ctrl+V in Claude Code,
 `host$ CLIP_BRIDGE_DEBUG=1 xclip -selection clipboard -t TARGETS -o` shows the shim's decision.
 
 ## More Macs and rebuilds
 
 - Every further Mac: section 2 only, with the same `.env` (the host script prints it), then the checkpoints. Nothing
-  on the host is per-Mac; the clipboard spool holds whatever the last Mac pushed.
+  on the host is per-Mac; `~/.clip` is shared, and every Mac's push prunes the day-old images in it.
 - Host reinstalled: section 1, then on each Mac `ssh-keygen -R <host>; ssh-keygen -R <lan-ip>` (the address and
   LAN address from `.env`; the script prints the exact command) and re-run `./install-mac.sh`, then sections 3 and 4.
 - Different host name, login or LAN: nothing to edit in the repo. On the host, `hostname`, the login and the
@@ -247,11 +254,16 @@ If image paste fails: `mac$ clip-push` in a local terminal prints the ssh error;
   private network: a host (`box`, login `alice`, real sshd) and a Mac stand-in with two Mac users. Both install scripts
   run against each other, twice. Cmd+V is exercised the way WezTerm runs it: the rendered `wezterm-agent-host.lua`
   runs under Lua 5.4 with a stub `wezterm` table (`tests/e2e/wezterm-paste.lua`), its decision calls the real
-  `clip-push`, which pushes over ssh to the real host, and the shell then makes the `xclip` calls Claude Code makes
-  after Ctrl+V and compares the PNG byte for byte. Also covered: text pastes never touch the host, a local pane never
-  pushes, ssh and mosh panes do, a failed push shows a toast and sends no key, copies on the host come back as OSC 52,
-  and a second Mac with the same `.env` installs, logs in with its own key and pushes (last pusher wins). Not covered:
-  real systemd, Tailscale, macOS itself and WezTerm's own runtime.
+  `clip-push`, which pushes over ssh to the real host, and the shell checks the path that comes back holds the PNG
+  byte for byte. Also covered: text pastes never touch the host, a local pane never pushes, ssh and mosh panes do, a
+  failed push shows a toast and pastes nothing, one file per push with the 24 h prune and `--clear`, the `xclip` calls
+  Claude Code makes on Ctrl+V, copies on the host come back as OSC 52, and a second Mac with the same `.env` installs,
+  logs in with its own key and pushes. Not covered: real systemd, Tailscale, macOS itself and WezTerm's own runtime.
+- `tests/e2e/harness-paste.sh` takes the pasted path the rest of the way, into the three real harnesses in a third
+  container image (`tests/e2e/Dockerfile.harness`, every harness version pinned). The Mac pastes into a tmux pane
+  running `ssh -tt <host> 'agent attach ...'`, so the bracketed paste crosses ssh and the host tmux the way a real
+  client delivers it, and each harness has to show the image attached. Run it when a harness is upgraded on the
+  host; it prints the three versions it saw, because the indicators it looks for are version-specific.
 
 Phases 1 to 4 (access, sessions, harnesses, clipboard bridge) are scripted and in use. Phases 5 and 6
 (automation, sandbox) are designed and not yet built.

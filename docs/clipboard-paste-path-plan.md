@@ -5,8 +5,9 @@ answered the design questions in section 1; treat those answers as fixed unless 
 `AGENTS.md` first (house rules, install contract), then this file. `README.md` and `docs/remote-agent-host-plan.md`
 section 5 describe the bridge as it exists today; this plan replaces its delivery step and leaves its push step.
 
-Work is on branch `agent/sonet` (worktree `~/workspace/agentic-framework.wt/sonet`). Section 4 says which steps are
-already in the working tree, uncommitted, and which are still to do. Nothing has been committed.
+Done, 20 Sep 2026. The work was moved off `agent/sonet` (which sat five commits behind) and landed on `main` from
+`~/workspace/agentic-framework.wt/main`; section 4 records the result of each step and section 5 the test runs. The
+only step left to the operator is the live Mac checkpoint, section 5.4.
 
 ## 1. Goal and decisions
 
@@ -87,21 +88,20 @@ directory is shared by every Mac that pushes (the README already says the spool 
 
 ## 4. Changes, in commit order
 
-Status: steps 1 to 5 are in the working tree, uncommitted, and passed `tests/e2e/run.sh` (section 5.1). Steps 6
-to 9 are not started. Commit style per `~/workspace/CLAUDE.md`: imperative subject under 72 characters, a body that
+Status: all nine done. Commit style per `~/workspace/CLAUDE.md`: imperative subject under 72 characters, a body that
 says why, tests run and reported.
 
 | # | Change | Files | Status |
 |---|---|---|---|
-| 1 | `clip-put`: one `.png` per image with the stamp name, `latest` symlink, print the path, 24 h prune, `--clear` removes all; `CLIP_KEEP_MINUTES` override; header comment says why | `bin/clip-put` | done, uncommitted |
-| 2 | WezTerm Cmd+V handler: parse line 2 of `clip-push` output as the path, `pane:paste(path)` instead of `SendKey Ctrl+V`, toast when no path; comment block rewritten | `config/wezterm-agent-host.lua.in` | done, uncommitted |
-| 3 | Comments only: `clip-push` documents the second output line and that `--clear` is optional; the `xclip` shim's data-flow comment says the image half is off the Cmd+V path | `bin/clip-push-mac.sh.in`, `bin/xclip` | done, uncommitted |
-| 4 | Lua stub gains `pane.paste` (prints `paste <text>`); header lists the new event | `tests/e2e/wezterm-paste.lua` | done, uncommitted |
-| 5 | `run.sh`: clipboard section checks path shape, file bytes, `latest` symlink, modes, second push keeps the first, prune, `--clear`; Cmd+V section expects `paste /home/alice/.clip/*.png` for domain, ssh and mosh panes and byte-exact content; failure case pastes nothing; second-Mac checks read line 1 of the push | `tests/e2e/run.sh` | done, uncommitted |
-| 6 | Harness image: e2e host image plus mise, Node, Oh My Pi (npm), OpenCode and Claude Code installers, as the login; every version pinned by a build arg (`NODE`, `OMP`, `OPENCODE`, `CLAUDE`, defaults in the Dockerfile, the pin flag of each installer confirmed while building); build fails if any of the three is missing | `tests/e2e/Dockerfile.harness` | file written, never built; pins to add |
-| 7 | Harness test script, section 5.2 | `tests/e2e/harness-paste.sh` | to do |
-| 8 | Docs: README checkpoints, bridge section and the "Clipboard bridge checks" block (`file ~/.clip/latest` and `ls ~/.clip` change), `docs/remote-agent-host-plan.md` section 5, `AGENTS.md` rows for `clip-put`, `clip-push`, `xclip`, `tests/e2e/`, phase 4 status, and the Boundaries line that names `~/.clip/latest` (now the whole `~/.clip/` directory); `install-mac.sh` note text (line 108) still reads correctly and needs no change | `README.md`, `docs/remote-agent-host-plan.md`, `AGENTS.md` | to do |
-| 9 | Live check from a Mac (section 5.4), then push | | to do |
+| 1 | `clip-put`: one `.png` per image with the stamp name, `latest` symlink, print the path, 24 h prune, `--clear` removes all; `CLIP_KEEP_MINUTES` override; header comment says why | `bin/clip-put` | done |
+| 2 | WezTerm Cmd+V handler: parse line 2 of `clip-push` output as the path, `pane:paste(path)` instead of `SendKey Ctrl+V`, toast when no path; comment block rewritten | `config/wezterm-agent-host.lua.in` | done |
+| 3 | Comments only: `clip-push` documents the second output line and that `--clear` is optional; the `xclip` shim's data-flow comment says the image half is off the Cmd+V path | `bin/clip-push-mac.sh.in`, `bin/xclip` | done |
+| 4 | Lua stub gains `pane.paste` (prints `paste <text>`); header lists the new event | `tests/e2e/wezterm-paste.lua` | done |
+| 5 | `run.sh`: clipboard section checks path shape, file bytes, `latest` symlink, modes, second push keeps the first, prune, `--clear`; Cmd+V section expects `paste /home/alice/.clip/*.png` for domain, ssh and mosh panes and byte-exact content; failure case pastes nothing; second-Mac checks read line 1 of the push | `tests/e2e/run.sh` | done |
+| 6 | Harness image: e2e host image plus mise, Node, Oh My Pi (npm), OpenCode and Claude Code installers, as the login; every version pinned by a build arg (`NODE`, `OMP`, `OPENCODE`, `CLAUDE`, defaults in the Dockerfile, the pin flag of each installer confirmed while building); build fails if any of the three is missing | `tests/e2e/Dockerfile.harness` | done; `BUN` was needed too (Oh My Pi's launcher is `#!/usr/bin/env bun`) and the final check runs `--version` rather than `command -v`, which is what caught it |
+| 7 | Harness test script, section 5.2 | `tests/e2e/harness-paste.sh` | done |
+| 8 | Docs: README checkpoints, bridge section and the "Clipboard bridge checks" block (`file ~/.clip/latest` and `ls ~/.clip` change), `docs/remote-agent-host-plan.md` section 5, `AGENTS.md` rows for `clip-put`, `clip-push`, `xclip`, `tests/e2e/`, phase 4 status, and the Boundaries line that names `~/.clip/latest` (now the whole `~/.clip/` directory); `install-mac.sh` note text (line 108) still reads correctly and needs no change | `README.md`, `docs/remote-agent-host-plan.md`, `AGENTS.md` | done; `install-mac.sh` line 108 needed no change, as expected |
+| 9 | Live check from a Mac (section 5.4), then push | | pushed; 5.4 is the operator's, not yet run |
 
 Suggested commits: (a) steps 1 to 5 together, "Paste the pushed image's path instead of sending Ctrl+V";
 (b) steps 6 and 7, "Drive the three harnesses with a pasted image path in a container"; (c) step 8, "Document
@@ -124,7 +124,7 @@ Review follow-ups (20 Sep 2026), small code edits that ride in commit (a) unless
 
 ## 5. Verification
 
-### 5.1 `tests/e2e/run.sh` (already run, 20 Sep 2026)
+### 5.1 `tests/e2e/run.sh` (run 20 Sep 2026)
 
 Result: 135 passed, 1 failed. The failure is `host: tests/params-test.sh`, the deployment-literal scan on
 `config/claude-settings.json`, which is red at `main` and unrelated (see memory note "params-test red at main").
@@ -139,9 +139,14 @@ Every clipboard, Cmd+V, copy-back and second-Mac check passed, including the new
   with the spool untouched; a failed push yields a toast and no `paste`/`action` line
 - Ctrl+V in Claude Code still works: `xclip -t image/png -o` returns the same bytes, a text request exits 1
 
+One run also failed `box: the last screen is still readable`, which is in the session section and nothing this
+change touches: a pristine `main` checkout passed it, and the next run of this tree passed it too. It is a race
+between `pane_dead` flipping and tmux painting the dead-pane banner, not a regression here.
+
 Re-run after any further edit to steps 1 to 5: `bash tests/e2e/run.sh` (about 3 minutes, Docker without sudo).
 
-### 5.2 `tests/e2e/harness-paste.sh` (to write)
+### 5.2 `tests/e2e/harness-paste.sh` (written and run, 20 Sep 2026: 31 passed, 0 failed, against
+Claude Code 2.1.278, Oh My Pi 18.2.6 and OpenCode 1.18.31)
 
 Purpose: prove the whole path from a Mac clipboard fixture to an attached image inside each real harness, in
 containers, with no credentials. `run.sh` stops at the pasted path; this script starts from it. The paste goes
@@ -166,12 +171,13 @@ Layout, reusing the helpers and conventions of `run.sh` and `tui.sh` (`ok`, `bad
 4. Put the 16x16 PNG fixture on the Mac (`/tmp/clipboard.png`, base64 embedded in the script; a 1x1 PNG is not
    used in case a harness rejects it) and `png` in `/tmp/clipboard.kind`.
 5. For each harness in `claude omp opencode`:
-   - `agent new standin --harness <h> --no-attach` on the box; check it prints `<h>-standin`.
-   - `await` the prompt on the pane, up to 90 seconds, answering dialogs as they appear: Claude Code's theme chooser
-     (Enter), "Do you want to use this API key?" (Up, Enter), a trust dialog (Enter), until `❯` is on screen;
-     Oh My Pi until `π >`, pressing Escape if "esc skip" appears; OpenCode until "Ask anything".
-   - Attach: in the Mac-side pane, type `agent attach <h>-standin` (or the picker route `tui.sh` uses), `await` the
-     harness prompt on the Mac-side screen. From here every keystroke and paste goes through ssh and the host tmux.
+   - `agent new standin --harness <h> --name <h>-standin --no-attach` on the box; check it prints `<h>-standin`.
+     (`--name` because a session is named after its repo now, so all three would otherwise collide.)
+   - Clear the first-run dialogs on the base session, reactively, up to 150 seconds, until the harness's own prompt
+     is on screen: `Try "` for Claude Code, `π >` for Oh My Pi, `Ask anything` for OpenCode.
+   - Attach: the Mac-side pane runs `ssh -tt box 'agent attach <h>-standin'`, a command line rather than the picker,
+     since the picker is `tui.sh`'s subject. `await` the harness prompt on the Mac-side screen. From here every
+     keystroke and paste goes through ssh and the host tmux.
    - Text: `tmux set-buffer` on the Mac with `hello-from-mac` and `tmux paste-buffer -p -t term`. `-p` wraps it in
      bracketed-paste markers exactly as WezTerm's native paste does; ssh carries them, the host tmux recognises the
      paste from its client and forwards it to the harness as one paste. `await` the text in the editor.
@@ -179,8 +185,9 @@ Layout, reusing the helpers and conventions of `run.sh` and `tui.sh` (`ok`, `bad
      line `paste /home/alice/.clip/*.png` and that the file's sha256 equals the fixture's; then deliver that path the
      way `pane:paste` would, `tmux set-buffer` and `tmux paste-buffer -p -t term` on the Mac; `await` the indicator:
      `[Image #1]` for Claude Code, `🖼 #1` for Oh My Pi, `[Image 1]` for OpenCode.
-   - Negative: paste the path of a file that does not exist the same way and check no indicator appears (guards the
-     assertion).
+   - Negative: paste the path of a file that does not exist the same way and check the *second* indicator never
+     appears (guards the assertion). Not "the path stays on screen as text": Claude Code and OpenCode leave it in
+     the editor, Oh My Pi drops the token.
    - Detach with the tmux prefix and `d` on the Mac-side pane, so the next harness attaches into a clean pane.
    - `agent kill <h>-standin`; check `agent ls --porcelain` is empty.
 6. Print the three harness versions (`claude --version`, `omp --version`, `opencode --version`) next to
@@ -190,15 +197,20 @@ Layout, reusing the helpers and conventions of `run.sh` and `tui.sh` (`ok`, `bad
 Expected duration: image build several minutes the first time (network), then about 4 minutes. Document in the
 README "More" list and `AGENTS.md` tests table as the check to run when a harness is upgraded on the host.
 
-Known unknowns to resolve while writing it, each with the fallback if the first attempt fails:
+How the known unknowns turned out (20 Sep 2026, while writing it):
 
-- Claude Code inside the container may show dialogs in a different order or a "trust this folder" prompt; the
-  `await` loop must react to whatever is on screen rather than script a fixed key sequence.
-- The container has outbound network through Docker's bridge; if a harness's update check slows startup, set
-  `DISABLE_AUTOUPDATER=1` for Claude Code and accept a longer `await`.
-- If `agent new` cannot find `omp` because the mise shim is not on PATH under `zsh -c`, the `Dockerfile.harness`
-  `ENV PATH` does not reach login shells; the fix is in the image (a symlink into `~/.local/bin`), not in the repo's
-  shell config.
+- Claude Code 2.1.278 shows four dialogs, not three: theme, "use this API key?", the security notes ("Press Enter
+  to continue"), and a trust prompt ("Is this a project you created…") whose default is "No, exit". Two of the four
+  preselect the answer that quits, so the reactive loop was necessary and `answer` waits for the screen to change
+  before the next pass, or a second Enter lands on the next dialog's default.
+- A key without the `sk-ant-` prefix is not detected at all: Claude Code goes straight to a login menu no script can
+  answer. So the placeholder keeps the prefix, as section 4 allowed.
+- `DISABLE_AUTOUPDATER=1` is set in the image, less for startup time than because a self-updating binary would
+  quietly undo the `CLAUDE` pin.
+- `agent new` finds all three, but the image needed Bun as well: Oh My Pi's launcher is `#!/usr/bin/env bun`, and
+  the build's `command -v` check passed on a shim that could not run. It now runs `--version` on each.
+- The needles are the empty editor's placeholder, not the footer: Claude Code's footer is this repo's own status
+  line, and at 80 columns it wraps away.
 
 ### 5.3 Unit and static checks
 
@@ -245,4 +257,4 @@ because `~/.local/bin/clip-put` and `xclip` are symlinks into that checkout. The
 - README, `docs/remote-agent-host-plan.md` and `AGENTS.md` describe the pasted-path flow and no longer describe
   Ctrl+V as the delivery step; the README rollback line for the bridge still works (`rm -rf ~/.clip` removes the
   files and the symlink).
-- Commits pushed to `agent/sonet`; compare URL given to the operator (gh is not authenticated on the host).
+- Commits pushed to `main` (the work was moved off `agent/sonet`, which sat five commits behind).
