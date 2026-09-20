@@ -425,17 +425,14 @@ pick_filter() {
 # menu <prompt> <filter>: one fzf pass. With AGENT_PICK_FILTER set there is no tty, so --filter does the
 # choosing; an empty filter matches everything and the first row wins.
 menu() {
-  local prompt=$1 filter=${2:-} preview hdr=()
+  local prompt=$1 filter=${2:-} hdr=()
   if [ -n "${AGENT_PICK_FILTER:-}" ]; then
     fzf --filter="$filter" | head -1
     return 0
   fi
-  # {1} is the first column: a session name on a session row, a glyph on the five verb rows, where
-  # capture-pane simply fails and the preview stays empty. No "=" prefix: -t here is a pane target.
-  preview="tmux ${TMUX_ARGS[*]} capture-pane -p -e -t {1} 2>/dev/null || true"
+  # No preview window: the list is the whole screen, so the rows stay wide and the menu is picking only.
   [ -z "$PICK_NOTE" ] || hdr=(--header="$PICK_NOTE")
-  fzf --prompt="$prompt " --height=100% --reverse --no-sort --no-multi "${hdr[@]}" \
-      --preview="$preview" --preview-window='right,50%,border-left' || return $?
+  fzf --prompt="$prompt " --height=100% --reverse --no-sort --no-multi "${hdr[@]}" || return $?
 }
 
 # prompt_text <prompt> <header>: one line of free text. fzf is the only thing the picker can count on being

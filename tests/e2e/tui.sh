@@ -162,7 +162,7 @@ check "L3: it is a shell session in ~/workspace" "shell	-" "$(porc | cut -f2,3)"
 keys 'echo TYPED-IN-THE-SHELL' ; keys Enter
 saw 'TYPED-IN-THE-SHELL' "L3: keystrokes reach the new shell"
 
-say "flow 13/9 (L): the preview shows a session, detach comes back to the picker"
+say "flow 13/9 (L): the picker shows no preview, detach comes back to the picker"
 in_session notes
 keys 'echo PREVIEW-MARKER-42'; keys Enter; sleep 1
 keys C-b; keys d
@@ -171,7 +171,7 @@ host_wait "test \$(tmux list-sessions -F '#{session_name}' | grep -c '^notes@') 
   && ok "L9: the view went with the detached client" || bad "L9: the view went with the detached client" "$(names)"
 check "L9: the base survived the detach" "notes" "$(porc | cut -f1)"
 keys 'notes'; sleep 2
-saw 'PREVIEW-MARKER-42' "L13: highlighting a session previews its screen"
+went 'PREVIEW-MARKER-42' "L13: highlighting a session does not preview its screen"
 
 at_picker
 say "flow 4 (L): choosing a session row attaches a view of it"

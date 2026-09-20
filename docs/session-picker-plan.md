@@ -72,8 +72,9 @@ opens more windows with the prefix, and they start in `#{pane_current_path}`. No
 `SSH_CLIENT`, i.e. the Mac's Tailscale or LAN address. Detaching destroys the view; the base stays. Nobody ever
 attaches the base itself, so window size follows the attached views (`window-size latest`, tmux default).
 
-**Picker.** `agent pick` is an fzf loop: build the list (`agent ls --porcelain`), show it with a preview of the
-session's last screen (`tmux capture-pane -p -e -t <id>`), act, repeat. Rows, in order: `new session`, `new shell`,
+**Picker.** `agent pick` is an fzf loop: build the list (`agent ls --porcelain`), show it, act, repeat. The menu is
+the whole screen with no preview window (the preview of each session's last screen was dropped on 20 Sep 2026:
+picking only). Rows, in order: `new session`, `new shell`,
 one row per base session (harness, repo, branch, `wt` if a worktree, age, `running`/`exited`, attached devices),
 `kill session`, `plain shell here`, `log out`. Attach runs in the foreground; when it returns (detach, kill, harness death after a
 kill) the loop shows the list again. `new session` asks in fzf for the repo (directories under `~/workspace` with a
