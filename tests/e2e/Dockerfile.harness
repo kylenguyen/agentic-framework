@@ -1,0 +1,35 @@
+# e2e "harness host": the e2e host image (Dockerfile.host) plus the three harnesses, installed as the login the
+# way install-host.sh installs them (mise for Node and Bun, npm for Oh My Pi, the OpenCode and Claude Code
+# installers). Oh My Pi's launcher is a `#!/usr/bin/env bun` script, so Bun is not optional here.
+# Only tests/e2e/harness-paste.sh uses it: the installs need the network and several hundred MB, which run.sh
+# does not, so they live in an image of their own layered on the one run.sh already builds.
+#
+# Every version is pinned, and the defaults are what the live host runs (20 Sep 2026). The indicator each harness
+# prints for an attached image is version-specific, so an unpinned image would turn the test red on a harness
+# release with no change here; harness-paste.sh prints the three versions next to its result for the same reason.
+# To check a newer harness before it goes on the host, override the arg rather than editing this file:
+#   docker build -f tests/e2e/Dockerfile.harness --build-arg OMP=18.3.0 ...
+# Claude Code's binary updates itself, which would quietly undo the CLAUDE pin, so the updater is off.
+ARG BASE=af-e2e-host
+FROM $BASE
+ARG LOGIN=alice
+ARG NODE=24.21.0
+ARG BUN=1.4.2
+ARG OMP=18.2.6
+ARG OPENCODE=1.18.31
+ARG CLAUDE=2.1.278
+USER $LOGIN
+WORKDIR /home/$LOGIN
+ENV PATH=/home/$LOGIN/.local/bin:/home/$LOGIN/.local/share/mise/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ENV DISABLE_AUTOUPDATER=1
+RUN curl -fsSL https://mise.run | MISE_INSTALL_PATH=/home/$LOGIN/.local/bin/mise sh \
+    && mise use -g -y "node@$NODE" "bun@$BUN" && mise reshim \
+    && npm install -g "@oh-my-pi/pi-coding-agent@$OMP" && mise reshim \
+    && curl -fsSL https://opencode.ai/install | bash -s -- --version "$OPENCODE" --no-modify-path \
+    && ln -sfn /home/$LOGIN/.opencode/bin/opencode /home/$LOGIN/.local/bin/opencode \
+    && curl -fsSL https://claude.ai/install.sh | bash -s "$CLAUDE" \
+    # --version, not command -v: the Oh My Pi shim exists whether or not the Bun its shebang names does, so
+    # only running it proves the image can start all three.
+    && for c in claude omp opencode; do "$c" --version || exit 1; done
+USER root
+CMD ["/usr/sbin/sshd", "-D", "-e"]
