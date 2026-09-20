@@ -42,6 +42,9 @@ SYSPATH=$(printf '%s' "$PATH" | tr ':' '\n' | grep -v '/mise/shims$' | paste -sd
 export PATH="$HOME/bin:$SYSPATH"
 git -C "$HOME/workspace/demo" init -q -b main
 git -C "$HOME/workspace/demo" -c user.email=t@example -c user.name=t commit -q --allow-empty -m init
+# A second repo for the picker flows: names are <repo>[-<slug>], so a picker-made session in demo would be
+# demo-2 or demo-3 depending on what ran before it; in picked it is always "picked".
+mkdir -p "$HOME/workspace/picked"; git -C "$HOME/workspace/picked" init -q -b main
 # The stand-in harness: records where it was started, then execs a process tmux can name, so
 # pane_current_command proves the session command ran rather than a login shell. claude-proc is a copy of
 # /bin/sh and not a symlink to sleep, because coreutils ships as one multi-call binary that refuses to run
@@ -79,36 +82,36 @@ check "ls: no server prints nothing" "" "$("$AGENT" ls 2>&1)"
 check "ls: no server exits 0" 0 "$("$AGENT" ls >/dev/null 2>&1; echo $?)"
 
 echo "# new: the base session carries the facts the picker shows"
-check "new --no-attach prints the name" claude-demo "$("$AGENT" new demo --no-attach)"
-check "new: @harness" claude "$(opt claude-demo @harness)"
-check "new: @repo" demo "$(opt claude-demo @repo)"
-check "new: @cwd" "$HOME/workspace/demo" "$(opt claude-demo @cwd)"
-check "new: @branch" main "$(opt claude-demo @branch)"
-check "new: @hwin is a window id" 1 "$(case $(opt claude-demo @hwin) in @[0-9]*) echo 1;; *) echo 0;; esac)"
-check "new: remain-on-exit on the harness window" on "$(opt claude-demo remain-on-exit)"
+check "new --no-attach prints the name" demo "$("$AGENT" new demo --no-attach)"
+check "new: @harness" claude "$(opt demo @harness)"
+check "new: @repo" demo "$(opt demo @repo)"
+check "new: @cwd" "$HOME/workspace/demo" "$(opt demo @cwd)"
+check "new: @branch" main "$(opt demo @branch)"
+check "new: @hwin is a window id" 1 "$(case $(opt demo @hwin) in @[0-9]*) echo 1;; *) echo 0;; esac)"
+check "new: remain-on-exit on the harness window" on "$(opt demo remain-on-exit)"
 wait_until 10 test -f "$HOME/standin.cwd"
 check "new: the harness ran in the repo" "$HOME/workspace/demo" "$(cat "$HOME/standin.cwd" 2>/dev/null)"
-wait_until 10 opt_is claude-demo pane_current_command claude-proc
-check "new: window 1 runs the stand-in" claude-proc "$(opt claude-demo pane_current_command)"
-check "new: the harness is alive" 0 "$(opt claude-demo pane_dead)"
+wait_until 10 opt_is demo pane_current_command claude-proc
+check "new: window 1 runs the stand-in" claude-proc "$(opt demo pane_current_command)"
+check "new: the harness is alive" 0 "$(opt demo pane_dead)"
 check "new: unknown repo exits 2" 2 "$("$AGENT" new nosuch --no-attach >/dev/null 2>&1; echo $?)"
 check "new: unknown harness exits 2" 2 "$("$AGENT" new demo --harness nope --no-attach >/dev/null 2>&1; echo $?)"
 
 echo "# naming"
 mkdir -p "$HOME/workspace/a.b:c"; git -C "$HOME/workspace/a.b:c" init -q -b main
-check "name: . and : become _" claude-a_b_c "$("$AGENT" new 'a.b:c' --no-attach)"
-check "name: a second session for the same repo gets -2" claude-demo-2 "$("$AGENT" new demo --no-attach)"
+check "name: . and : become _" a_b_c "$("$AGENT" new 'a.b:c' --no-attach)"
+check "name: a second session for the same repo gets -2" demo-2 "$("$AGENT" new demo --no-attach)"
 check "name: --name is used as given" mine "$("$AGENT" new demo --name mine --no-attach)"
 
 echo "# worktrees"
 out=$("$AGENT" new demo --slug feat --no-attach 2>&1)
-has claude-demo-feat "$out" "new --slug: session named after the slug"
+has demo-feat "$out" "new --slug: session named after the slug"
 check "new --slug: worktree exists" 1 "$([ -d "$HOME/workspace/demo.wt/feat" ] && echo 1 || echo 0)"
 check "new --slug: on branch agent/feat" agent/feat "$(git -C "$HOME/workspace/demo.wt/feat" rev-parse --abbrev-ref HEAD)"
-check "new --slug: @branch recorded" agent/feat "$(opt claude-demo-feat @branch)"
+check "new --slug: @branch recorded" agent/feat "$(opt demo-feat @branch)"
 out2=$("$AGENT" new demo --slug feat --no-attach 2>&1)
 has "reusing worktree" "$out2" "new --slug again: reuses the worktree instead of failing"
-has claude-demo-feat-2 "$out2" "new --slug again: new session, same worktree"
+has demo-feat-2 "$out2" "new --slug again: new session, same worktree"
 
 echo "# ls"
 tm new-session -d -s main                                    # a pre-existing plain session, as on the host today
@@ -116,73 +119,73 @@ porc=$("$AGENT" ls --porcelain)
 check "ls --porcelain: eight tab-separated columns" 8 "$(printf '%s\n' "$porc" | head -1 | awk -F'\t' '{print NF}')"
 check "ls --porcelain: a plain session is a shell with no repo" "main	shell	-	-" \
   "$(printf '%s\n' "$porc" | awk -F'\t' '$1=="main"{print $1"\t"$2"\t"$3"\t"$4}')"
-check "ls --porcelain: a harness row" "claude-demo	claude	demo	main	$HOME/workspace/demo	running	-" \
-  "$(printf '%s\n' "$porc" | awk -F'\t' '$1=="claude-demo"{print $1"\t"$2"\t"$3"\t"$4"\t"$5"\t"$6"\t"$8}')"
-check "ls --porcelain: the worktree row" "claude-demo-feat	claude	demo	agent/feat	$HOME/workspace/demo.wt/feat" \
-  "$(printf '%s\n' "$porc" | awk -F'\t' '$1=="claude-demo-feat"{print $1"\t"$2"\t"$3"\t"$4"\t"$5}')"
+check "ls --porcelain: a harness row" "demo	claude	demo	main	$HOME/workspace/demo	running	-" \
+  "$(printf '%s\n' "$porc" | awk -F'\t' '$1=="demo"{print $1"\t"$2"\t"$3"\t"$4"\t"$5"\t"$6"\t"$8}')"
+check "ls --porcelain: the worktree row" "demo-feat	claude	demo	agent/feat	$HOME/workspace/demo.wt/feat" \
+  "$(printf '%s\n' "$porc" | awk -F'\t' '$1=="demo-feat"{print $1"\t"$2"\t"$3"\t"$4"\t"$5}')"
 check "ls --porcelain: created is an epoch" 1 "$(printf '%s\n' "$porc" | awk -F'\t' '{if ($7 !~ /^[0-9]+$/) bad=1} END {print (bad?0:1)}')"
 check "ls --porcelain: ordered by created then name" "$porc" "$(printf '%s\n' "$porc" | sort -t'	' -k7,7n -k1,1)"
 check "ls: human output has a header" 1 "$("$AGENT" ls | head -1 | grep -c '^NAME .*HARNESS .*DEVICES$')"
 check "ls: one human row per porcelain row" "$(printf '%s\n' "$porc" | wc -l)" "$("$AGENT" ls | tail -n +2 | wc -l)"
-check "ls: a worktree row is marked wt" 1 "$("$AGENT" ls | awk '$1=="claude-demo-feat" && $5=="wt"' | wc -l)"
+check "ls: a worktree row is marked wt" 1 "$("$AGENT" ls | awk '$1=="demo-feat" && $5=="wt"' | wc -l)"
 
 echo "# attach: each device gets its own view"
 if [ "$HAVE_PTY" = 0 ]; then
   skip "attach" "script(1) is not available, so no pty for a tmux client"
 else
-  env -u TMUX SSH_CLIENT="10.9.9.9 51000 22" timeout 60 script -qfc "$AGENT attach claude-demo" /dev/null >/dev/null 2>&1 &
+  env -u TMUX SSH_CLIENT="10.9.9.9 51000 22" timeout 60 script -qfc "$AGENT attach demo" /dev/null >/dev/null 2>&1 &
   attach_pid=$!
-  if ! wait_until 15 have_session 'claude-demo@1'; then
-    bad "attach: a view is created" "claude-demo@1 never appeared; sessions: $(names)"
+  if ! wait_until 15 have_session 'demo@1'; then
+    bad "attach: a view is created" "demo@1 never appeared; sessions: $(names)"
   else
-    ok "attach: the view claude-demo@1 exists"
-    check "attach: the view is grouped with the base" 1 "$(opt 'claude-demo@1' session_grouped)"
-    check "attach: the view has the client" 1 "$(opt 'claude-demo@1' session_attached)"
-    check "attach: the base keeps none" 0 "$(opt claude-demo session_attached)"
-    check "attach: @device is the ssh client address" 10.9.9.9 "$(opt 'claude-demo@1' @device)"
-    check "attach: destroy-unattached armed on the view" on "$(opt 'claude-demo@1' destroy-unattached)"
-    check "attach: the base is not armed" off "$(opt claude-demo destroy-unattached)"
+    ok "attach: the view demo@1 exists"
+    check "attach: the view is grouped with the base" 1 "$(opt 'demo@1' session_grouped)"
+    check "attach: the view has the client" 1 "$(opt 'demo@1' session_attached)"
+    check "attach: the base keeps none" 0 "$(opt demo session_attached)"
+    check "attach: @device is the ssh client address" 10.9.9.9 "$(opt 'demo@1' @device)"
+    check "attach: destroy-unattached armed on the view" on "$(opt 'demo@1' destroy-unattached)"
+    check "attach: the base is not armed" off "$(opt demo destroy-unattached)"
     check "ls: views are not listed" "" "$("$AGENT" ls --porcelain | cut -f1 | grep '@' || true)"
-    check "ls: the device shows against the base" 10.9.9.9 "$("$AGENT" ls --porcelain | awk -F'\t' '$1=="claude-demo"{print $8}')"
-    check "attach: a view cannot itself be attached" 2 "$("$AGENT" attach 'claude-demo@1' >/dev/null 2>&1; echo $?)"
-    tm detach-client -s 'claude-demo@1'
-    wait_until 15 no_session 'claude-demo@1' \
+    check "ls: the device shows against the base" 10.9.9.9 "$("$AGENT" ls --porcelain | awk -F'\t' '$1=="demo"{print $8}')"
+    check "attach: a view cannot itself be attached" 2 "$("$AGENT" attach 'demo@1' >/dev/null 2>&1; echo $?)"
+    tm detach-client -s 'demo@1'
+    wait_until 15 no_session 'demo@1' \
       && ok "attach: detaching destroys the view" || bad "attach: detaching destroys the view" "$(names)"
-    check "attach: the base survives the detach" 1 "$([ -n "$(sid claude-demo)" ] && echo 1 || echo 0)"
+    check "attach: the base survives the detach" 1 "$([ -n "$(sid demo)" ] && echo 1 || echo 0)"
     wait "$attach_pid"; check "attach: exits 0 on detach" 0 "$?"
-    check "ls: the device is gone with the view" "-" "$("$AGENT" ls --porcelain | awk -F'\t' '$1=="claude-demo"{print $8}')"
+    check "ls: the device is gone with the view" "-" "$("$AGENT" ls --porcelain | awk -F'\t' '$1=="demo"{print $8}')"
   fi
 fi
 check "attach: unknown name exits 2" 2 "$("$AGENT" attach nosuch >/dev/null 2>&1; echo $?)"
 
 echo "# a harness that exits leaves its last screen"
-kill "$(opt claude-demo pane_pid)" 2>/dev/null
-wait_until 10 opt_is claude-demo pane_dead 1 \
-  && ok "exit: the pane is dead, not gone" || bad "exit: the pane is dead, not gone" "$(opt claude-demo pane_dead)"
-check "exit: the base session remains" 1 "$([ -n "$(sid claude-demo)" ] && echo 1 || echo 0)"
-check "exit: ls says exited" exited "$("$AGENT" ls --porcelain | awk -F'\t' '$1=="claude-demo"{print $6}')"
-check "exit: the last screen is still readable" 1 "$(tm capture-pane -p -t "$(sid claude-demo)" | grep -c . || true)"
+kill "$(opt demo pane_pid)" 2>/dev/null
+wait_until 10 opt_is demo pane_dead 1 \
+  && ok "exit: the pane is dead, not gone" || bad "exit: the pane is dead, not gone" "$(opt demo pane_dead)"
+check "exit: the base session remains" 1 "$([ -n "$(sid demo)" ] && echo 1 || echo 0)"
+check "exit: ls says exited" exited "$("$AGENT" ls --porcelain | awk -F'\t' '$1=="demo"{print $6}')"
+check "exit: the last screen is still readable" 1 "$(tm capture-pane -p -t "$(sid demo)" | grep -c . || true)"
 
 echo "# kill"
-# claude-demo-feat-2 is the second session in the same worktree; --keep-worktree is how the one that goes
+# demo-feat-2 is the second session in the same worktree; --keep-worktree is how the one that goes
 # first leaves the checkout for it.
-keepout=$("$AGENT" kill claude-demo-feat --keep-worktree)
+keepout=$("$AGENT" kill demo-feat --keep-worktree)
 has "worktree kept" "$keepout" "kill --keep-worktree: says the worktree stays"
 has "git -C $HOME/workspace/demo worktree remove $HOME/workspace/demo.wt/feat" "$keepout" "kill --keep-worktree: the exact command"
 check "kill --keep-worktree: the worktree is still on disk" 1 "$([ -d "$HOME/workspace/demo.wt/feat" ] && echo 1 || echo 0)"
-check "kill: the session is gone" "" "$(sid claude-demo-feat)"
+check "kill: the session is gone" "" "$(sid demo-feat)"
 # Dirty and nobody to ask: setsid drops the controlling terminal, which is what a script or a cron run looks
 # like, and the answer nobody gave has to be "keep".
 echo dirt > "$HOME/workspace/demo.wt/feat/dirt"
 if command -v setsid >/dev/null 2>&1; then
-  dirtyout=$(setsid "$AGENT" kill claude-demo-feat-2 </dev/null 2>/dev/null)
+  dirtyout=$(setsid "$AGENT" kill demo-feat-2 </dev/null 2>/dev/null)
   has "worktree kept" "$dirtyout" "kill: a dirty worktree with no terminal to ask is kept"
   has "worktree remove --force $HOME/workspace/demo.wt/feat" "$dirtyout" "kill: the kept command carries --force"
   check "kill: the dirty worktree is still on disk" 1 "$([ -d "$HOME/workspace/demo.wt/feat" ] && echo 1 || echo 0)"
-  check "kill: the session went anyway" "" "$(sid claude-demo-feat-2)"
+  check "kill: the session went anyway" "" "$(sid demo-feat-2)"
 else
   skip "kill: a dirty worktree with no terminal to ask is kept" "setsid is not available"
-  "$AGENT" kill claude-demo-feat-2 --keep-worktree >/dev/null 2>&1 || true
+  "$AGENT" kill demo-feat-2 --keep-worktree >/dev/null 2>&1 || true
 fi
 # --force is the operator answering yes up front: the uncommitted file goes with the worktree.
 "$AGENT" new demo --slug feat --harness shell --name forcekill --no-attach >/dev/null 2>&1
@@ -202,19 +205,19 @@ check "kill: the branch is kept" agent/clean "$(git -C "$HOME/workspace/demo" br
 check "kill: a session in the main checkout mentions no worktree" "" "$("$AGENT" kill mainkill)"
 check "kill: the main checkout is untouched" 1 "$([ -d "$HOME/workspace/demo" ] && echo 1 || echo 0)"
 check "kill: unknown name exits 2" 2 "$("$AGENT" kill nosuch >/dev/null 2>&1; echo $?)"
-check "kill: an unknown flag exits 2" 2 "$("$AGENT" kill claude-demo --nope >/dev/null 2>&1; echo $?)"
+check "kill: an unknown flag exits 2" 2 "$("$AGENT" kill demo --nope >/dev/null 2>&1; echo $?)"
 if [ "$HAVE_PTY" = 1 ]; then
-  env -u TMUX SSH_CLIENT="10.8.8.8 51000 22" timeout 60 script -qfc "$AGENT attach claude-demo-2" /dev/null >/dev/null 2>&1 &
+  env -u TMUX SSH_CLIENT="10.8.8.8 51000 22" timeout 60 script -qfc "$AGENT attach demo-2" /dev/null >/dev/null 2>&1 &
   kill_pid=$!
-  if wait_until 15 have_session 'claude-demo-2@1'; then
-    "$AGENT" kill claude-demo-2 >/dev/null
-    wait_until 15 no_session 'claude-demo-2@1' \
+  if wait_until 15 have_session 'demo-2@1'; then
+    "$AGENT" kill demo-2 >/dev/null
+    wait_until 15 no_session 'demo-2@1' \
       && ok "kill: the views go with the base" || bad "kill: the views go with the base" "$(names)"
   else
     skip "kill: the views go with the base" "no pty client"
   fi
   # the client dies with its session; tear down anyway so a failed case cannot block the run
-  "$AGENT" kill claude-demo-2 >/dev/null 2>&1 || true
+  "$AGENT" kill demo-2 >/dev/null 2>&1 || true
   wait "$kill_pid" 2>/dev/null || true
 fi
 
@@ -265,7 +268,7 @@ else
   check "pick: kill with nothing matching leaves every session alone" "$before" "$(names)"
   AGENT_PICK_FILTER='kill session;killme' "$AGENT" pick >/dev/null 2>&1
   check "pick: kill session removes the chosen session" "" "$(sid killme)"
-  check "pick: it kills only that one" 1 "$([ -n "$(sid claude-demo)" ] && echo 1 || echo 0)"
+  check "pick: it kills only that one" 1 "$([ -n "$(sid demo)" ] && echo 1 || echo 0)"
   "$AGENT" new demo --harness shell --name killview --no-attach >/dev/null
   if [ "$HAVE_PTY" = 0 ]; then
     skip "pick: kill takes the views with it" "script(1) is not available, so no pty for a tmux client"
@@ -301,12 +304,12 @@ else
     wait "$pick_pid" 2>/dev/null || true
     env -u TMUX SSH_CLIENT="10.6.6.6 51000 22" timeout 60 script -qfc "env AGENT_PICK_FILTER='new shell' $AGENT pick" "$T/pick2.pty" >/dev/null 2>&1 &
     pick_pid=$!
-    if wait_until 15 have_session 'shell-scratch@1'; then
+    if wait_until 15 have_session 'scratch@1'; then
       ok "pick: new shell creates a shell session and attaches to it"
-      check "pick: the new shell is a shell harness" shell "$(opt shell-scratch @harness)"
+      check "pick: the new shell is a shell harness" shell "$(opt scratch @harness)"
       check "pick: ls lists it as a shell in ~/workspace" "shell	-	-	$HOME/workspace" \
-        "$("$AGENT" ls --porcelain | awk -F'\t' '$1=="shell-scratch"{print $2"\t"$3"\t"$4"\t"$5}')"
-      tm detach-client -s 'shell-scratch@1'
+        "$("$AGENT" ls --porcelain | awk -F'\t' '$1=="scratch"{print $2"\t"$3"\t"$4"\t"$5}')"
+      tm detach-client -s 'scratch@1'
     else
       bad "pick: new shell creates a shell session and attaches to it" "sessions: $(names); pty: $(tr -d '\r' < "$T/pick2.pty" | tr -s '\n' ' ' | tail -c 300)"
     fi
@@ -315,19 +318,19 @@ else
     # new session: repo and harness are the second and third filters of the flow. The slug prompt is
     # skipped under AGENT_PICK_FILTER, so this is the main checkout.
     env -u TMUX SSH_CLIENT="10.8.8.8 51000 22" timeout 60 \
-      script -qfc "env AGENT_PICK_FILTER='new session;demo;shell' $AGENT pick" "$T/pick3.pty" >/dev/null 2>&1 &
+      script -qfc "env AGENT_PICK_FILTER='new session;picked;shell' $AGENT pick" "$T/pick3.pty" >/dev/null 2>&1 &
     pick_pid=$!
-    if wait_until 15 have_session 'shell-demo@1'; then
+    if wait_until 15 have_session 'picked@1'; then
       ok "pick: new session creates the session and attaches to it"
-      check "pick: the new session runs in the repo, not in a worktree" "$HOME/workspace/demo" "$(opt shell-demo @cwd)"
-      tm detach-client -s 'shell-demo@1'
+      check "pick: the new session runs in the repo, not in a worktree" "$HOME/workspace/picked" "$(opt picked @cwd)"
+      tm detach-client -s 'picked@1'
     else
       bad "pick: new session creates the session and attaches to it" \
         "sessions: $(names); pty: $(tr -d '\r' < "$T/pick3.pty" | tr -s '\n' ' ' | tail -c 300)"
     fi
     kill "$pick_pid" 2>/dev/null || true
     wait "$pick_pid" 2>/dev/null || true
-    "$AGENT" kill shell-demo >/dev/null 2>&1 || true
+    "$AGENT" kill picked >/dev/null 2>&1 || true
   fi
 fi
 # The picker is the login landing, so a host without fzf has to say so rather than drop the operator nowhere.
@@ -412,11 +415,11 @@ else
   # The real prefix-g binding, not send-keys: `display-popup -E` on the attached client, which is the only
   # way to catch a picker that attaches the new harness in the popup instead of switching the client behind
   # it. The popup closes when its command returns, so the marker file is how a script sees it close.
-  "$AGENT" kill shell-demo >/dev/null 2>&1 || true
+  "$AGENT" kill picked >/dev/null 2>&1 || true
   cat > "$T/popup-new.sh" <<POPUP
 #!/bin/sh
 export PATH='$PATH' AGENT_TMUX_SOCKET='$AGENT_TMUX_SOCKET'
-AGENT_PICK_FILTER='new session;demo;shell' '$AGENT' pick --switch
+AGENT_PICK_FILTER='new session;picked;shell' '$AGENT' pick --switch
 echo closed > '$T/popup.closed'
 POPUP
   chmod +x "$T/popup-new.sh"
@@ -426,15 +429,15 @@ POPUP
   if wait_until 15 have_session 'popsrc@1'; then
     popup_client=$(tm list-clients -F '#{client_name}' -t 'popsrc@1' 2>/dev/null | head -1)
     tm display-popup -c "$popup_client" -E "$T/popup-new.sh" 2>/dev/null || true
-    if wait_until 20 have_session 'shell-demo@1'; then
+    if wait_until 20 have_session 'picked@1'; then
       ok "popup: new session lands in the client behind the popup"
-      check "popup: that view holds the client" 1 "$(opt 'shell-demo@1' session_attached)"
+      check "popup: that view holds the client" 1 "$(opt 'picked@1' session_attached)"
       wait_until 20 test -e "$T/popup.closed" \
         && ok "popup: the picker returns, so the popup closes" \
         || bad "popup: the picker returns, so the popup closes" "no marker; sessions: $(names)"
       wait_until 15 no_session 'popsrc@1' \
         && ok "popup: the view it came from is destroyed" || bad "popup: the view it came from is destroyed" "$(names)"
-      tm detach-client -s 'shell-demo@1' 2>/dev/null || true
+      tm detach-client -s 'picked@1' 2>/dev/null || true
     else
       bad "popup: new session lands in the client behind the popup" \
         "sessions: $(names); pane: $(tm capture-pane -p -t popsrc 2>/dev/null | grep -v '^$' | tail -4 | tr '\n' '|')"
@@ -442,7 +445,7 @@ POPUP
   else
     skip "popup new session" "no pty client"
   fi
-  "$AGENT" kill shell-demo >/dev/null 2>&1 || true
+  "$AGENT" kill picked >/dev/null 2>&1 || true
   "$AGENT" kill popsrc >/dev/null 2>&1 || true
   kill "$pop_pid" 2>/dev/null || true
   wait "$pop_pid" 2>/dev/null || true

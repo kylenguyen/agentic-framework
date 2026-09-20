@@ -131,7 +131,7 @@ the `.env` lines for the Macs.
 Log out and back in. The new login lands in the session picker (`agent pick`): every running harness session on
 the host, plus `new session`, `new shell`, `kill session`, `plain shell here` and `log out`. Choosing a session attaches a view of
 it that is yours alone, so a second Mac can sit on the same session with its own current window; detaching leaves
-the harness running. `new shell` asks for a name (empty gives `shell-scratch`) and `new session` asks for a repo, a
+the harness running. `new shell` asks for a name (empty gives `scratch`) and `new session` asks for a repo, a
 harness and an optional slug; either way you end up inside the session that was made, not back at the list. Inside
 tmux, Ctrl+B `g` opens the same picker in a popup: picking a session, or making one, moves the terminal itself onto
 that session and closes the popup, never leaving the harness inside the popup. Plain `agent pick` typed in a pane

@@ -30,7 +30,7 @@
 #
 # AGENT_TMUX_SOCKET routes every tmux call to that socket (-L), which is how the tests stay off the live
 # server. AGENT_PICK_FILTER makes `pick` non-interactive: it is a ";"-separated list of fzf filters, one
-# per menu in the order that flow's menus appear, so "kill session;shell-scratch" walks the kill flow the
+# per menu in the order that flow's menus appear, so "kill session;scratch" walks the kill flow the
 # way a pair of keystrokes would. Each menu takes the first match of its filter; a menu with no filter of
 # its own takes its first row, and the loop runs once. Nothing else is test-only; --porcelain is the
 # interface phase 5 and the tests consume, so keep its columns stable.
@@ -192,7 +192,7 @@ cmd_new() {
   fi
   branch=$(git -C "$cwd" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
   [ -n "$branch" ] || branch=-
-  [ -n "$name" ] || name=$harness-$repo${slug:+-$slug}
+  [ -n "$name" ] || name=$repo${slug:+-$slug}   # the harness is its own picker column, so it is not in the name
   name=$(unique_name "$(sanitise "$name")")
   session_create "$name" "$harness" "$repo" "$cwd" "$branch" || return
   if [ "$attach" = 1 ]; then enter_session "$name"; else printf '%s\n' "$name"; fi
@@ -689,8 +689,8 @@ cmd_pick() {
 pick_new_shell() {
   local want name
   want=$(prompt_text 'name>' 'new shell: a plain shell in ~/workspace' \
-                             'empty: shell-scratch' "$HINT_TYPE") || return 1
-  [ -n "$want" ] || want=shell-scratch
+                             'empty: scratch' "$HINT_TYPE") || return 1
+  [ -n "$want" ] || want=scratch
   name=$(unique_name "$(sanitise "$want")")
   session_create "$name" shell "" "$WORKSPACE" - || return 1
   enter_session "$name"

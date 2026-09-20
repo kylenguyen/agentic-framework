@@ -154,7 +154,7 @@ saw 'x log out' "L1: the ways out are on the screen"
 at_picker
 say "flow 3 (L): + new shell asks for a name and puts you in it"
 pick 'new shell'
-saw 'empty: shell-scratch' "L3: + new shell asks for a name"
+saw 'empty: scratch' "L3: + new shell asks for a name"
 typ 'notes'
 saw '[notes@1]' "L3: the client is attached to a view of the named session" 20
 check "L3: the base session is named after what was typed" "notes" "$(porc | cut -f1)"
@@ -190,8 +190,8 @@ saw 'harness>' "L2: the harness menu"
 pick 'shell'
 saw 'slug' "L2: the slug prompt"
 typ 'feature'
-saw '[shell-demo-feature@1]' "L2: the client lands in the new session" 25
-check "L2: the session works in the worktree" "shell-demo-feature	shell	demo	agent/feature" "$(porc | grep feature | cut -f1-4)"
+saw '[demo-feature@1]' "L2: the client lands in the new session" 25
+check "L2: the session works in the worktree" "demo-feature	shell	demo	agent/feature" "$(porc | grep feature | cut -f1-4)"
 check "L2: the worktree is on disk" ok "$(box sh -c "test -d /home/$LOGIN/workspace/demo.wt/feature && echo ok")"
 check "L2: it is a worktree of the repo" ok "$(box sh -c "git -C /home/$LOGIN/workspace/demo worktree list | grep -q demo.wt/feature && echo ok")"
 keys C-b; keys d; sleep 1
@@ -201,9 +201,9 @@ at_picker
 say "flow 5 (L): kill asks a second time, takes the views and the worktree, keeps the branch"
 pick 'kill session'
 saw 'kills the harness' "L5: kill asks in a list of its own"
-pick 'shell-demo-feature'
+pick 'demo-feature'
 saw '+ new session' "L5: the picker comes back after the kill" 20
-host_wait "! tmux has-session -t shell-demo-feature 2>/dev/null" \
+host_wait "! tmux has-session -t demo-feature 2>/dev/null" \
   && ok "L5: the session is gone" || bad "L5: the session is gone" "$(names)"
 check "L5: the worktree directory is gone" "" "$(box sh -c "test -d /home/$LOGIN/workspace/demo.wt/feature && echo still-there")"
 check "L5: the branch is kept" "ok" "$(box sh -c "git -C /home/$LOGIN/workspace/demo rev-parse --verify -q agent/feature >/dev/null && echo ok")"
@@ -213,16 +213,16 @@ say "flow 2b (L): the same slug again, now that agent/feature exists"
 pick 'new session'; pick 'demo'; pick 'shell'
 saw 'slug' "L2b: back at the slug prompt"
 typ 'feature'
-saw '[shell-demo-feature@1]' "L2b: a slug whose branch already exists still lands in a session" 25
+saw '[demo-feature@1]' "L2b: a slug whose branch already exists still lands in a session" 25
 check "L2b: it is on the branch that was kept" "agent/feature" "$(porc | grep feature | cut -f4)"
 
 say "flow 5b (L): a worktree with uncommitted changes asks once more"
 login; await 'session>' 30
-in_session shell-demo-feature
+in_session demo-feature
 keys 'echo dirty > scratch.txt'; keys Enter; sleep 1
 keys C-b; keys d; sleep 1
 await '+ new session' 20
-pick 'kill session'; pick 'shell-demo-feature'
+pick 'kill session'; pick 'demo-feature'
 saw 'Remove the worktree anyway?' "L5b: a dirty worktree asks before it goes"
 keys 'n' Enter; sleep 2
 check "L5b: answering no keeps the worktree" ok "$(box sh -c "test -f /home/$LOGIN/workspace/demo.wt/feature/scratch.txt && echo ok")"
@@ -245,7 +245,7 @@ await '[notes@1]' 20
 keys 'agent pick'; keys Enter
 saw 'session>' "L14: the picker runs inside a pane" 20
 pick 'new shell'
-saw 'empty: shell-scratch' "L14: it offers the same menus"
+saw 'empty: scratch' "L14: it offers the same menus"
 typ 'inner'
 saw '[inner@1]' "L14: inside tmux it switches the client to the new session, rather than silently failing" 25
 check "L14: no orphan was left behind" "1" "$(porc | grep -c '^inner	')"
@@ -255,7 +255,7 @@ in_session notes
 keys C-b; keys g; sleep 2
 saw 'session>' "P: prefix-g opens the picker in a popup" 20
 pick 'new shell'
-saw 'empty: shell-scratch' "P3: + new shell asks for a name here too"
+saw 'empty: scratch' "P3: + new shell asks for a name here too"
 typ 'from-popup'
 saw '[from-popup@1]' "P3: the popup switches the client to the new session" 25
 went 'session>' "P3: and the popup closes instead of redrawing its list"
@@ -264,9 +264,9 @@ saw 'POPUP-SHELL-WORKS' "P3: keystrokes reach the session, not a stale popup"
 
 popup
 pick 'new session'; pick 'other'; pick 'shell'; typ ''
-saw '[shell-other@1]' "P2: + new session switches the client too" 25
+saw '[other@1]' "P2: + new session switches the client too" 25
 went 'session>' "P2: and closes the popup"
-check "P2: no slug means the main checkout" "shell-other	shell	other	main" "$(porc | grep '^shell-other' | cut -f1-4)"
+check "P2: no slug means the main checkout" "other	shell	other	main" "$(porc | grep '^other	' | cut -f1-4)"
 
 popup
 pick 'notes'
@@ -289,18 +289,18 @@ say "flow 10 (L): a harness that exits leaves its last screen"
 bagent new demo --harness claude --no-attach >/dev/null 2>&1
 host_wait "test -f /home/$LOGIN/stub.cwd"
 check "10: the harness started in the repo" "/home/$LOGIN/workspace/demo" "$(box cat "/home/$LOGIN/stub.cwd" | tr -d '\r')"
-check "10: ls says running" "running" "$(porc | grep '^claude-demo	' | cut -f6)"
-box sh -c "kill \$(tmux display-message -p -t claude-demo '#{pane_pid}')"
-host_wait "tmux display-message -p -t claude-demo '#{pane_dead}' | grep -qx 1"
-check "10: ls says exited" "exited" "$(porc | grep '^claude-demo	' | cut -f6)"
+check "10: ls says running" "running" "$(porc | grep '^demo	' | cut -f6)"
+box sh -c "kill \$(tmux display-message -p -t demo '#{pane_pid}')"
+host_wait "tmux display-message -p -t demo '#{pane_dead}' | grep -qx 1"
+check "10: ls says exited" "exited" "$(porc | grep '^demo	' | cut -f6)"
 in_session notes
 popup
-pick 'claude-demo'
+pick 'demo'
 saw 'STANDIN-CLAUDE-HERE' "10: the exited harness's last screen is still there to read" 25
 in_session notes
 popup
-pick 'kill session'; pick 'claude-demo'
-host_wait "! tmux has-session -t claude-demo 2>/dev/null" \
+pick 'kill session'; pick 'demo'
+host_wait "! tmux has-session -t demo 2>/dev/null" \
   && ok "10: an exited session can be killed from the picker" || bad "10: an exited session can be killed from the picker" "$(names)"
 
 say "flow 11/12: a second Mac on the same session, and detaching only takes its own view"

@@ -52,12 +52,12 @@ Not verified, check first during implementation (both are one-minute manual chec
 ```
 Mac A  ssh/mosh ─┐                                  tmux server (one, per host login)
 Mac B  ssh/mosh ─┼─ login shell ─ agent pick ─┐     ┌────────────────────────────────────────────┐
-Mac C  ssh/mosh ─┘   (fzf loop)               │     │ base  claude-ezbus      win1: claude  win2 │
-                                              ├──►  │ view  claude-ezbus@1  (Mac A, own cur win) │
-   ssh <host> <cmd>  ── never touches this ── │     │ view  claude-ezbus@2  (Mac B)              │
-                                              │     │ base  omp-agentic-framework-docs  win1: omp│
-                                              └──►  │ view  omp-agentic-framework-docs@1 (Mac C) │
-                                                    │ base  shell-scratch   win1: zsh            │
+Mac C  ssh/mosh ─┘   (fzf loop)               │     │ base  ezbus             win1: claude  win2 │
+                                              ├──►  │ view  ezbus@1  (Mac A, own cur win)        │
+   ssh <host> <cmd>  ── never touches this ── │     │ view  ezbus@2  (Mac B)                     │
+                                              │     │ base  agentic-framework-docs  win1: omp    │
+                                              └──►  │ view  agentic-framework-docs@1 (Mac C)     │
+                                                    │ base  scratch   win1: zsh                  │
                                                     │ main  (pre-existing, listed as shell)      │
                                                     └────────────────────────────────────────────┘
 ```
@@ -111,7 +111,7 @@ can only have its client switched, and one outside tmux can only attach. `enter_
 also what puts `pick` in switch mode when `--switch` was not passed — plain `agent pick` in a pane used to create a
 session, fail the attach, swallow the error and draw the menu again. In switch mode the loop then returns instead of
 going round, so the popup closes over the session it moved to rather than redrawing its list on top of it. `new
-shell` asks for a name first (empty is `shell-scratch`), on the same `--print-query` prompt as the slug, now with a
+shell` asks for a name first (empty is `scratch`), on the same `--print-query` prompt as the slug, now with a
 header so an empty `0/0` list reads as a question. The session is created detached either way and entered
 afterwards, so a `new session` chosen in the popup starts the harness in the client behind it and not in the popup,
 where it would die with the popup. Nothing in a picker flow may `exit`: that process is the login shell, so a flow
@@ -129,7 +129,7 @@ mark once and removes it; a fresh login on that tty drops any mark left by a pop
 `ssh <host> <cmd>` is untouched, `ssh -t <host> 'NO_TMUX=1 zsh -l'` still bypasses everything. Pre-existing tmux
 sessions without `@harness` (today's `main`) are listed as `shell` sessions and are never killed by the tooling.
 
-**Naming.** `<harness>-<repo>` plus `-<slug>` when given, `[.:]` replaced by `_`, `-2`, `-3` on collision. Views
+**Naming.** `<repo>` plus `-<slug>` when given, `[.:]` replaced by `_`, `-2`, `-3` on collision. Views
 are `<name>@<n>`. Names are for display; commands resolve a name to a session id once, then use the id.
 
 **Unchanged.** WezTerm module, `~/.ssh/config`, mosh, clipboard bridge, the harness installs, `~/.zshenv`
@@ -184,7 +184,7 @@ touched. Cases:
 
 - `new` creates base with `@harness`, `@repo`, `@cwd`, `@branch`, `remain-on-exit on`; window 1's
   `pane_current_command` is the stand-in; cwd is the repo.
-- name sanitising: repo `a.b:c` gives `claude-a_b_c`; second `new` for the same repo gives `-2`.
+- name sanitising: repo `a.b:c` gives `a_b_c`; second `new` for the same repo gives `-2`.
 - `--slug x` creates `~/workspace/<repo>.wt/x` on branch `agent/x`; a second `new --slug x` reuses it.
 - `ls --porcelain` columns and ordering; a pre-existing plain session (`tmux new -d -s main`) is listed as
   `shell`; views are not listed.

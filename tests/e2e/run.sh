@@ -203,12 +203,12 @@ check "mac: non-interactive ssh still bypasses tmux and can call agent" "tmux= 0
 timeout 180 docker exec -t -u macuser -e HOME=/home/macuser "$MAC" \
   ssh -tt -o BatchMode=yes "$ALIAS" 'AGENT_PICK_FILTER="new shell" agent pick' >"$T/mac1.ssh" 2>&1 &
 MAC1=$!
-if until_box 20 "tmux list-sessions -F '#{session_name}' | grep -qx 'shell-scratch@1'"; then
+if until_box 20 "tmux list-sessions -F '#{session_name}' | grep -qx 'scratch@1'"; then
   ok "mac1: the picker made a shell session and attached a view to it"
 else
   bad "mac1: the picker made a shell session and attached a view to it" "$(bagent ls --porcelain; tr -d '\r' < "$T/mac1.ssh" | tail -3)"
 fi
-SESSION=shell-scratch
+SESSION=scratch
 check "box: one base session, listed as a shell" "$SESSION	shell	-	-" "$(bagent ls --porcelain | cut -f1-4)"
 check "box: the view carries the Mac's address" "$MAC_IP" "$(bagent ls --porcelain | cut -f8)"
 check "box: the base itself is not attached" 0 "$(btmux display-message -p -t "$SESSION" '#{session_attached}')"
@@ -258,21 +258,21 @@ say "sessions: log out from the prefix-g popup closes the connection"
 timeout 180 docker exec -t -u macuser -e HOME=/home/macuser "$MAC" \
   ssh -tt -o BatchMode=yes "$ALIAS" 'AGENT_PICK_FILTER="new shell" agent pick; echo picker-rc=$?' >"$T/mac3.ssh" 2>&1 &
 MAC3=$!
-if until_box 20 "tmux list-sessions -F '#{session_name}' | grep -qx 'shell-scratch@1'"; then
-  CLIENT=$(btmux list-clients -t 'shell-scratch@1' -F '#{client_tty}' | head -1)
+if until_box 20 "tmux list-sessions -F '#{session_name}' | grep -qx 'scratch@1'"; then
+  CLIENT=$(btmux list-clients -t 'scratch@1' -F '#{client_tty}' | head -1)
   box tmux display-popup -E -c "$CLIENT" "AGENT_PICK_FILTER='log out' $AGENTBIN pick --switch" >/dev/null 2>&1 || true
   wait "$MAC3" 2>/dev/null; rc3=$?
   [ "$rc3" -lt 124 ] && ok "mac: log out in the popup ends the ssh session" \
     || bad "mac: log out in the popup ends the ssh session" "exit $rc3, probably a timeout"
   has "picker-rc=3" "$(tr -d '\r' < "$T/mac3.ssh" | tail -5)" "mac: the login picker exited 3, which is what the landing fragment logs out on"
-  until_box 20 "! tmux has-session -t 'shell-scratch@1' 2>/dev/null" \
+  until_box 20 "! tmux has-session -t 'scratch@1' 2>/dev/null" \
     && ok "box: the view went with the detached client" || bad "box: the view went with the detached client" "$(btmux list-sessions -F '#{session_name}')"
-  check "box: the session it was attached to is still there" 0 "$(btmux has-session -t shell-scratch >/dev/null 2>&1; echo $?)"
+  check "box: the session it was attached to is still there" 0 "$(btmux has-session -t scratch >/dev/null 2>&1; echo $?)"
 else
   bad "mac: log out in the popup ends the ssh session" "no view to log out of: $(bagent ls --porcelain; tr -d '\r' < "$T/mac3.ssh" | tail -3)"
   kill "$MAC3" 2>/dev/null || true
 fi
-bagent kill shell-scratch >/dev/null 2>&1 || true
+bagent kill scratch >/dev/null 2>&1 || true
 
 say "sessions: agent new runs a harness in the repo and keeps its last screen"
 # A stand-in "claude" on the box PATH: it records where it started, then becomes a process tmux can name.
@@ -291,18 +291,18 @@ mkdir -p "$HOME/workspace/standin"
 git -C "$HOME/workspace/standin" init -q -b main
 git -C "$HOME/workspace/standin" -c user.email=t@example -c user.name=t commit -q --allow-empty -m init
 STUB
-check "box: agent new --no-attach prints the session name" claude-standin "$(bagent new standin --harness claude --no-attach)"
+check "box: agent new --no-attach prints the session name" standin "$(bagent new standin --harness claude --no-attach)"
 until_box 20 "test -f /home/$LOGIN/stub.cwd"
 check "box: the harness started in the repo" "/home/$LOGIN/workspace/standin" "$(box cat "/home/$LOGIN/stub.cwd")"
-check "box: ls says running, with the repo as cwd" "claude-standin	claude	standin	main	/home/$LOGIN/workspace/standin	running" \
+check "box: ls says running, with the repo as cwd" "standin	claude	standin	main	/home/$LOGIN/workspace/standin	running" \
   "$(bagent ls --porcelain | cut -f1-6)"
 check "box: nothing is attached to it" "-" "$(bagent ls --porcelain | cut -f8)"
-box sh -c "kill \$(tmux display-message -p -t claude-standin '#{pane_pid}')"
-until_box 20 "tmux display-message -p -t claude-standin '#{pane_dead}' | grep -qx 1" \
+box sh -c "kill \$(tmux display-message -p -t standin '#{pane_pid}')"
+until_box 20 "tmux display-message -p -t standin '#{pane_dead}' | grep -qx 1" \
   && ok "box: the dead harness leaves its pane behind" || bad "box: the dead harness leaves its pane behind"
 check "box: ls says exited" exited "$(bagent ls --porcelain | cut -f6)"
-check "box: the last screen is still readable" 1 "$(box sh -c 'tmux capture-pane -p -t claude-standin | grep -c .' || true)"
-bagent kill claude-standin >/dev/null
+check "box: the last screen is still readable" 1 "$(box sh -c 'tmux capture-pane -p -t standin | grep -c .' || true)"
+bagent kill standin >/dev/null
 check "box: kill clears the exited session" "" "$(bagent ls --porcelain)"
 
 say "second runs: idempotency"
