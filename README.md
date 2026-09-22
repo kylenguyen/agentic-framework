@@ -133,7 +133,8 @@ it gets the house rules through its global file); write the `codex` marker block
 `~/.codex/config.toml`, which raises `project_doc_max_bytes` so Codex reads the whole of the house rules and a
 repo's `AGENTS.md` instead of stopping at 32 KiB; create `~/.config/agents/env` from `secrets.env.example`
 (mode 600); install the `xclip` shim, `clip-put` and `agent`; with network, install oh-my-zsh, mise with Node, Bun
-and Python 3.12, uv, OpenCode, Oh My Pi, Codex and Claude Code. It ends by printing the `.env` lines for the Macs.
+and Python 3.12, uv, OpenCode, Oh My Pi with its `pi-web-access` plugin (keyless web search), Codex and Claude Code.
+It ends by printing the `.env` lines for the Macs.
 
 Log out and back in. The new login lands in the session picker (`agent pick`):
 
@@ -164,6 +165,7 @@ host$ getent passwd <user> | cut -d: -f7                                        
 mac$ ssh <host> true && echo still-ok
 host$ echo $ZSH_THEME $TMUX | cut -c1-40           # robbyrussell /tmp/tmux-...
 host$ for c in mise node bun python3.12 uv claude codex opencode omp; do printf '%-10s %s\n' $c "$(command -v $c || echo MISSING)"; done
+host$ omp plugin list | grep pi-web-access         # ● pi-web-access@<version>
 host$ command -v xclip                             # ~/.local/bin/xclip, not /usr/bin
 host$ command -v agent fzf                         # ~/.local/bin/agent, then an fzf path
 host$ agent ls                                     # a header, and a row per running session (none on a fresh host)

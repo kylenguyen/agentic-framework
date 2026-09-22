@@ -191,6 +191,10 @@ if [ "$TOOLS" = 1 ]; then
   command -v omp >/dev/null || npm install -g @oh-my-pi/pi-coding-agent
   command -v codex >/dev/null || npm install -g @openai/codex
   mise reshim
+  # pi-web-access swaps omp's built-in web_search for its keyless Exa search and adds fetch_content. `omp install` is
+  # user-scoped (~/.omp/plugins), so the npm install above does not carry it; it needs no config (optional file:
+  # ~/.pi/agent/web-search.json). After the reshim so `omp` resolves on a first run.
+  [ -d "$HOME/.omp/plugins/node_modules/pi-web-access" ] || omp install pi-web-access
   # Native installer, not npm: it puts a self-updating binary in ~/.local/bin and needs no toolchain.
   command -v claude >/dev/null || curl -fsSL https://claude.ai/install.sh | bash
   claude update || true
