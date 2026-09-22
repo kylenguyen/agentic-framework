@@ -109,8 +109,10 @@ frame. Long prompts (`kill>`, `slug>`, `name>`) sit in headers, because a phone 
 answer. Floor is fzf 0.44.1 (Ubuntu 24.04); the gutter colour is set explicitly because fzf 0.6x draws a rail on
 every row in it and `gutter:-1` makes that rail the foreground colour.
 
-**Landing.** `config/bashrc.d/tmux-autoattach.sh` guards on `$- == *i*`, `SSH_TTY` set, `TMUX` empty, `NO_TMUX`
-empty and the command present, then runs `agent pick`. Non-interactive `ssh <host> <cmd>` is untouched;
+**Landing.** `config/bashrc.d/tmux-autoattach.sh` guards on `$- == *i*`, either `SSH_TTY` or `SSH_CONNECTION`
+set, `TMUX` empty, `NO_TMUX` empty and the command present, then runs `agent pick`. `SSH_CONNECTION` is what
+catches a mosh login: `mosh` starts mosh-server over `ssh -n`, so sshd allocates no pty and sets no `SSH_TTY`, and
+mosh-server hands its own environment to the login shell. Non-interactive `ssh <host> <cmd>` is untouched;
 `ssh -t <host> 'NO_TMUX=1 zsh -l'` bypasses everything. tmux sessions without `@harness` are listed as `shell` and
 never killed by the tooling.
 
@@ -152,8 +154,8 @@ branch survives, keeps a dirty worktree when nobody can be asked (`setsid`), rem
 under `--keep-worktree`; `pick` under `AGENT_PICK_FILTER` for a session row, `log out` (3), `plain shell here` (0)
 and the two-step kill flow; `log out` from a `--switch` picker driven into a pane, which detaches the client, exits
 the login-side picker with 3 and leaves no `AGENT_LOGOUT_*` behind; the landing fragment under bash and zsh with
-every combination of `SSH_TTY`, interactive, `TMUX` and `NO_TMUX`, invoking a stub `agent` only in the
-interactive SSH case. A check that cannot run in the environment (no `script`, `setsid`, `fzf` or `shellcheck`)
+every combination of `SSH_TTY`, `SSH_CONNECTION`, interactive, `TMUX` and `NO_TMUX`, invoking a stub `agent` only
+in the interactive SSH and mosh cases. A check that cannot run in the environment (no `script`, `setsid`, `fzf` or `shellcheck`)
 prints a `skip` line rather than passing.
 
 **Containers, `tests/e2e/run.sh`** (Docker without sudo). The host container `box` (login `alice`) and the Mac

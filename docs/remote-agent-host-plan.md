@@ -121,9 +121,11 @@ works on the home LAN.
    (OSC 52 to the outer terminal), `allow-passthrough`, mouse, 100000 lines of history, `SSH_CLIENT SSH_TTY` in
    `update-environment`, focus events, `escape-time 10`. Prefix `g` opens the picker in a popup; prefix `c` opens a
    window in the current directory; `status-left` shows session and harness.
-2. Shell profile (`config/bashrc.d/tmux-autoattach.sh`): interactive SSH logins run `agent pick`, the session
-   picker, guarded with `[[ $- == *i* && -n $SSH_TTY && -z $TMUX && -z $NO_TMUX ]]` so `ssh <host> <command>` and
-   automation never trigger it. The picker exits 0 for "plain shell here" (the login shell carries on outside tmux)
+2. Shell profile (`config/bashrc.d/tmux-autoattach.sh`): interactive SSH and mosh logins run `agent pick`, the
+   session picker, guarded with
+   `[[ $- == *i* && ( -n $SSH_TTY || -n $SSH_CONNECTION ) && -z $TMUX && -z $NO_TMUX ]]` so `ssh <host> <command>`
+   and automation never trigger it. A mosh login has no `SSH_TTY` (mosh-server is started over `ssh -n`, without a
+   pty), which is why `SSH_CONNECTION` is in the test. The picker exits 0 for "plain shell here" (the login shell carries on outside tmux)
    and 3 for "log out" (the fragment exits the shell).
 3. Login shell: zsh with oh-my-zsh, so interactive work on <host> gets completion, git prompt and history search
    without per-device setup. Phase 1 installs `zsh` and runs `chsh`; phase 2 clones `~/.oh-my-zsh` and symlinks

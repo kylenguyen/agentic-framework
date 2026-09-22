@@ -459,7 +459,7 @@ POPUP
   wait "$pop_pid" 2>/dev/null || true
 fi
 
-echo "# the login fragment runs the picker, and only for interactive ssh logins"
+echo "# the login fragment runs the picker, and only for interactive ssh and mosh logins"
 FRAG=$REPO/config/bashrc.d/tmux-autoattach.sh
 cat > "$HOME/bin/agent" <<'STUB'
 #!/bin/sh
@@ -474,14 +474,20 @@ land() {
   else env "$@" "$sh" -c ". $FRAG" </dev/null >/dev/null 2>&1; fi
   tr -d '\n' < "$HOME/agent.argv"
 }
+MOSH_CONN="10.0.0.9 51000 10.0.0.2 22"
 for sh in bash zsh; do
   if ! command -v "$sh" >/dev/null 2>&1; then skip "landing: $sh" "not installed"; continue; fi
   check "landing: $sh interactive ssh login runs the picker" pick \
-    "$(land "$sh" 1 -u TMUX -u NO_TMUX SSH_TTY=/dev/pts/9)"
+    "$(land "$sh" 1 -u TMUX -u NO_TMUX -u SSH_CONNECTION SSH_TTY=/dev/pts/9)"
+  # mosh: no SSH_TTY, because `mosh` starts mosh-server over `ssh -n` and sshd allocates no pty for it.
+  check "landing: $sh interactive mosh login runs the picker" pick \
+    "$(land "$sh" 1 -u TMUX -u NO_TMUX -u SSH_TTY SSH_CONNECTION="$MOSH_CONN")"
   check "landing: $sh non-interactive ssh command does not" "" \
-    "$(land "$sh" 0 -u TMUX -u NO_TMUX SSH_TTY=/dev/pts/9)"
+    "$(land "$sh" 0 -u TMUX -u NO_TMUX -u SSH_CONNECTION SSH_TTY=/dev/pts/9)"
+  check "landing: $sh non-interactive command over mosh's ssh hop does not" "" \
+    "$(land "$sh" 0 -u TMUX -u NO_TMUX -u SSH_TTY SSH_CONNECTION="$MOSH_CONN")"
   check "landing: $sh interactive local shell does not" "" \
-    "$(land "$sh" 1 -u TMUX -u NO_TMUX -u SSH_TTY)"
+    "$(land "$sh" 1 -u TMUX -u NO_TMUX -u SSH_TTY -u SSH_CONNECTION)"
   check "landing: $sh inside tmux does not" "" \
     "$(land "$sh" 1 -u NO_TMUX SSH_TTY=/dev/pts/9 TMUX=/tmp/x,1,0)"
   check "landing: $sh NO_TMUX=1 does not" "" \
