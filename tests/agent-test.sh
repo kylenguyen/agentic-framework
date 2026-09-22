@@ -123,6 +123,10 @@ has demo-feat-2 "$out2" "new --slug again: new session, same worktree"
 
 echo "# ls"
 tm new-session -d -s main                                    # a pre-existing plain session, as on the host today
+# A repo wider than the REPO header's old fixed width: its row must not push BRANCH and after out of line.
+mkdir -p "$HOME/workspace/a-repo-with-a-wide-name"; git -C "$HOME/workspace/a-repo-with-a-wide-name" init -q -b trunk
+git -C "$HOME/workspace/a-repo-with-a-wide-name" -c user.email=t@example -c user.name=t commit -q --allow-empty -m init
+"$AGENT" new a-repo-with-a-wide-name --no-attach >/dev/null
 porc=$("$AGENT" ls --porcelain)
 check "ls --porcelain: eight tab-separated columns" 8 "$(printf '%s\n' "$porc" | head -1 | awk -F'\t' '{print NF}')"
 check "ls --porcelain: a plain session is a shell with no repo" "main	shell	-	-" \
@@ -136,6 +140,10 @@ check "ls --porcelain: ordered by created then name" "$porc" "$(printf '%s\n' "$
 check "ls: human output has a header" 1 "$("$AGENT" ls | head -1 | grep -c '^NAME .*HARNESS .*DEVICES$')"
 check "ls: one human row per porcelain row" "$(printf '%s\n' "$porc" | wc -l)" "$("$AGENT" ls | tail -n +2 | wc -l)"
 check "ls: a worktree row is marked wt" 1 "$("$AGENT" ls | awk '$1=="demo-feat" && $5=="wt"' | wc -l)"
+check "ls: a wide repo does not shift its row's BRANCH off the header" 1 \
+  "$("$AGENT" ls | awk 'NR==1{h=index($0,"BRANCH")} $1=="a-repo-with-a-wide-name"{print (index($0,"trunk")==h)}')"
+check "ls: nor the shell row's" 1 \
+  "$("$AGENT" ls | awk 'NR==1{h=index($0,"STATE")} $1=="main"{print (index($0,"running")==h)}')"
 
 echo "# attach: each device gets its own view"
 if [ "$HAVE_PTY" = 0 ]; then

@@ -413,9 +413,11 @@ FZF_MATCH=(--ansi --delimiter='^  ' --nth=1)
 # narrower, so the columns line up). <cols> is the width a row has to fit, 0 for every column at any width
 # (agent ls). The picker passes what its list can show (UI_TEXT): a phone (about 50) gets NAME AGE STATE, a
 # laptop-sized popup adds HARNESS and BRANCH, a full terminal the whole of `agent ls`. NAME is the one
-# column that gives way, cut with an ellipsis to what the fixed columns leave and never below 8.
+# column that gives way, cut with an ellipsis to what the fixed columns leave and never below 8. Where
+# nothing is clipped (wide, agent ls) REPO and BRANCH grow to their longest value too: a fixed width that
+# one row overflows would push that row's later columns out of line with the header and the rest.
 table() {
-  local header=$1 cols=$2 indent=${3:-0} all tier=wide w=4 bw=18 fixed=0 sw=7 margin=''
+  local header=$1 cols=$2 indent=${3:-0} all tier=wide w=4 rw=4 bw=18 fixed=0 sw=7 margin=''
   [ "$indent" = 0 ] || margin='  '
   local name harness repo branch wt cwd state created devices
   all=$(rows)
@@ -424,7 +426,11 @@ table() {
     if [ "$cols" -lt 70 ]; then tier=narrow; elif [ "$cols" -lt 106 ]; then tier=medium; fi
   fi
   [ "$COLOUR" = 0 ] || sw=9                                      # "● running": glyph, space, state
-  while IFS=$SEP read -r name _; do [ "${#name}" -le "$w" ] || w=${#name}; done <<<"$all"
+  while IFS=$SEP read -r name _ repo branch _; do
+    [ "${#name}" -le "$w" ] || w=${#name}
+    [ "${#repo}" -le "$rw" ] || rw=${#repo}
+    [ "$tier" != wide ] || [ "${#branch}" -le "$bw" ] || bw=${#branch}
+  done <<<"$all"
   case $tier in
     narrow) fixed=$((2 + 5 + 2 + sw)) ;;
     medium) fixed=$((2 + 8 + 2 + bw + 2 + 5 + 2 + sw)) ;;
@@ -443,7 +449,7 @@ table() {
       medium) printf '%s  %s  %s  %s  %s\n' "$(cell "$w" l "${d/-/1}" "$n")" "$(cell 8 l "$hc" "$h")" \
                      "$(cell "$bw" l "${d/-/$C_DIM}" "$b")" "$(cell 5 r "${d/-/$C_DIM}" "$a")" "$s" ;;
       *)      printf '%s  %s  %s  %s  %s  %s  %s  %s\n' "$(cell "$w" l "${d/-/1}" "$n")" "$(cell 8 l "$hc" "$h")" \
-                     "$(cell 16 l "${d#-}" "$r")" "$(cell "$bw" l "${d/-/$C_DIM}" "$b")" "$(cell 2 l "${d/-/$C_WARN}" "$t")" \
+                     "$(cell "$rw" l "${d#-}" "$r")" "$(cell "$bw" l "${d/-/$C_DIM}" "$b")" "$(cell 2 l "${d/-/$C_WARN}" "$t")" \
                      "$(cell 5 r "${d/-/$C_DIM}" "$a")" "$s" "$(cell 0 l "${d/-/$C_DIM}" "$v")" ;;
     esac
   }
