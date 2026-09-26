@@ -17,7 +17,7 @@ once.
 | Picker location | on the host, as the landing of every interactive SSH/mosh login; no WezTerm launcher |
 | Resume depth | re-attach to live processes only; no conversation-ID registry, no restore after reboot |
 | Where a new session runs | `~/workspace/<repo>` by default; `~/workspace/<repo>.wt/<slug>` on branch `agent/<slug>` on request |
-| Picker detail | process facts only: harness, repo, branch, cwd, age, running/exited, attached devices; no hooks |
+| Picker detail | process facts only: harness, repo, branch, cwd, age, running/exited; no hooks |
 | Plain shells | "shell" is a session type in the picker; a pre-existing plain session is listed as one and left alone |
 
 Non-goals: harness conversation resume (`claude --resume`, `omp --resume`), "waiting for you" indicators,
@@ -66,7 +66,7 @@ base itself, so window size follows the attached views.
 
 **Picker.** `agent pick` is an fzf loop: build the list from `agent ls --porcelain`, show it, act, repeat. Rows, in
 order: `new session`, `new shell`, one row per base session (harness, repo, branch, `wt` for a worktree, age,
-`running`/`exited`, attached devices), `kill session`, `plain shell here`, `log out`. No preview window. Attach runs
+`running`/`exited`), `kill session`, `plain shell here`, `log out`. No preview window. Attach runs
 in the foreground; when it returns (detach, kill, harness death) the loop shows the list again.
 
 - `new session` asks for the repo (directories under `~/workspace` with a `.git`, `.wt` trees excluded), the

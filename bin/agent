@@ -419,7 +419,7 @@ FZF_MATCH=(--ansi --delimiter='^  ' --nth=1)
 table() {
   local header=$1 cols=$2 indent=${3:-0} all tier=wide w=4 rw=4 bw=18 fixed=0 sw=7 margin=''
   [ "$indent" = 0 ] || margin='  '
-  local name harness repo branch wt cwd state created devices
+  local name harness repo branch wt cwd state created
   all=$(rows)
   [ -n "$all" ] || return 0
   if [ "$cols" -gt 0 ]; then
@@ -440,25 +440,25 @@ table() {
     [ "$w" -le $((cols - fixed)) ] || w=$((cols - fixed))
     [ "$w" -ge 8 ] || w=8
   fi
-  # line <sgr-for-all|-> <name> <harness> <repo> <branch> <wt> <age> <state-cell> <devices>
+  # line <sgr-for-all|-> <name> <harness> <repo> <branch> <wt> <age> <state-cell>
   line() {
-    local d=$1 n=$2 h=$3 r=$4 b=$5 t=$6 a=$7 s=$8 v=$9 hc
+    local d=$1 n=$2 h=$3 r=$4 b=$5 t=$6 a=$7 s=$8 hc
     hc=$(harness_colour "$h"); [ "$d" = - ] || hc=$d
     case $tier in
       narrow) printf '%s  %s  %s\n' "$(cell "$w" l "${d/-/1}" "$n")" "$(cell 5 r "${d/-/$C_DIM}" "$a")" "$s" ;;
       medium) printf '%s  %s  %s  %s  %s\n' "$(cell "$w" l "${d/-/1}" "$n")" "$(cell 8 l "$hc" "$h")" \
                      "$(cell "$bw" l "${d/-/$C_DIM}" "$b")" "$(cell 5 r "${d/-/$C_DIM}" "$a")" "$s" ;;
-      *)      printf '%s  %s  %s  %s  %s  %s  %s  %s\n' "$(cell "$w" l "${d/-/1}" "$n")" "$(cell 8 l "$hc" "$h")" \
+      *)      printf '%s  %s  %s  %s  %s  %s  %s\n' "$(cell "$w" l "${d/-/1}" "$n")" "$(cell 8 l "$hc" "$h")" \
                      "$(cell "$rw" l "${d#-}" "$r")" "$(cell "$bw" l "${d/-/$C_DIM}" "$b")" "$(cell 2 l "${d/-/$C_WARN}" "$t")" \
-                     "$(cell 5 r "${d/-/$C_DIM}" "$a")" "$s" "$(cell 0 l "${d/-/$C_DIM}" "$v")" ;;
+                     "$(cell 5 r "${d/-/$C_DIM}" "$a")" "$s" ;;
     esac
   }
   if [ "$header" != 0 ]; then
     w=$((w - ${#margin}))                                        # the margin takes its columns from NAME
-    line "$C_DIM" NAME HARNESS REPO BRANCH WT AGE "$(cell "$sw" l "$C_DIM" STATE)" DEVICES | sed "s/^/$margin/"
+    line "$C_DIM" NAME HARNESS REPO BRANCH WT AGE "$(cell "$sw" l "$C_DIM" STATE)" | sed "s/^/$margin/"
     w=$((w + ${#margin}))
   fi
-  while IFS=$SEP read -r name harness repo branch wt cwd state created devices; do
+  while IFS=$SEP read -r name harness repo branch wt cwd state created _; do
     [ "$wt" = wt ] || wt=""
     if [ "$COLOUR" = 0 ]; then
       state=$(cell 7 l '' "$state")
@@ -467,7 +467,7 @@ table() {
     else
       state="$(paint "$C_BAD" '○') $(cell 7 l "$C_BAD" "$state")"
     fi
-    line - "$name" "$harness" "$repo" "$branch" "$wt" "$(age_of "$created")" "$state" "$devices"
+    line - "$name" "$harness" "$repo" "$branch" "$wt" "$(age_of "$created")" "$state"
   done <<<"$all"
   CLIP=0
 }

@@ -137,7 +137,7 @@ check "ls --porcelain: the worktree row" "demo-feat	claude	demo	agent/feat	$HOME
   "$(printf '%s\n' "$porc" | awk -F'\t' '$1=="demo-feat"{print $1"\t"$2"\t"$3"\t"$4"\t"$5}')"
 check "ls --porcelain: created is an epoch" 1 "$(printf '%s\n' "$porc" | awk -F'\t' '{if ($7 !~ /^[0-9]+$/) bad=1} END {print (bad?0:1)}')"
 check "ls --porcelain: ordered by created then name" "$porc" "$(printf '%s\n' "$porc" | sort -t'	' -k7,7n -k1,1)"
-check "ls: human output has a header" 1 "$("$AGENT" ls | head -1 | grep -c '^NAME .*HARNESS .*DEVICES$')"
+check "ls: human output has a header" 1 "$("$AGENT" ls | head -1 | grep -c '^NAME .*HARNESS .*STATE *$')"
 check "ls: one human row per porcelain row" "$(printf '%s\n' "$porc" | wc -l)" "$("$AGENT" ls | tail -n +2 | wc -l)"
 check "ls: a worktree row is marked wt" 1 "$("$AGENT" ls | awk '$1=="demo-feat" && $5=="wt"' | wc -l)"
 check "ls: a wide repo does not shift its row's BRANCH off the header" 1 \
