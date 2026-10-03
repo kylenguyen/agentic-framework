@@ -10,7 +10,7 @@
 #          clip-push --clear      delete every copy held on the host (otherwise an image is pruned by the first
 #                                 push made more than 24 h after it; there is no timer, so that can be days later)
 # The type is printed before the push so the caller can tell what failed; an image push prints the host path after it.
-# CLIP_PUSH_HOST overrides the ssh destination; default <alias>-clip (config/ssh_config.mac.in); <alias>-lan works off the tailnet.
+# CLIP_PUSH_HOST overrides the ssh destination; default <alias>-clip (config/ssh_config.client.in); <alias>-lan works off the tailnet.
 # WezTerm starts child processes with a minimal environment, so PATH is spelled out (Homebrew for pngpaste).
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 set -euo pipefail

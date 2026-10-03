@@ -1,6 +1,6 @@
-# Mac -> host. TEMPLATE: install-mac.sh fills the @AGENT_...@ placeholders from .env (lib/params.sh) and writes the
-# result, minus comments, into a marker block in ~/.ssh/config on the Mac. Without AGENT_HOST_LAN_IP the -lan
-# paragraph is left out.
+# Client (Mac or Linux) -> host. TEMPLATE: install-mac.sh and install-linux.sh fill the @AGENT_...@ placeholders from
+# .env (lib/params.sh) and write the result, minus comments, into a marker block in ~/.ssh/config on the client.
+# Without AGENT_HOST_LAN_IP the -lan paragraph is left out.
 Host @AGENT_HOST@
   HostName @AGENT_HOST_ADDRESS@
   User @AGENT_HOST_USER@
@@ -16,7 +16,7 @@ Host @AGENT_HOST@-lan
   ServerAliveInterval 30
   ForwardAgent no
 
-# Used by clip-push when Cmd+V pushes an image to the host. Kept apart from the main Host so interactive sessions and
+# Used by clip-push when the paste key pushes an image to the host. Kept apart from the main Host so interactive sessions and
 # mosh are untouched: BatchMode never prompts, ConnectTimeout keeps a failed push short, ControlMaster reuses one
 # connection for 10 minutes so pushes after the first take milliseconds.
 Host @AGENT_HOST@-clip

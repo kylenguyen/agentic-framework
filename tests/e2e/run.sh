@@ -72,7 +72,7 @@ check "host: xclip shim linked" "$BOX_REPO/bin/xclip" "$(box readlink "/home/$LO
 check "host: Codex global AGENTS.md links into the repo" "$BOX_REPO/config/workspace/CLAUDE.md" "$(box readlink "/home/$LOGIN/.codex/AGENTS.md")"
 check "host: one codex block in ~/.codex/config.toml" 1 "$(box grep -c 'agentic-framework:codex >>>' "/home/$LOGIN/.codex/config.toml")"
 check "host: the codex block sets project_doc_max_bytes" 1 "$(box grep -c '^project_doc_max_bytes = ' "/home/$LOGIN/.codex/config.toml")"
-has "Parameters for the Macs" "$out" "host: prints the .env block for the Macs"
+has "Parameters for the clients" "$out" "host: prints the .env block for the clients"
 has "tailscale not installed" "$out" "host: tailscale absence is a note, not a failure"
 
 say "host: unit tests inside the container"

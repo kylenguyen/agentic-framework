@@ -201,6 +201,6 @@ if [ "$TOOLS" = 1 ]; then
   note "first-time logins are manual: claude (OAuth) or ANTHROPIC_API_KEY in ~/.config/agents/env; codex login --device-auth or OPENAI_API_KEY piped to codex login --with-api-key; gh auth login"
 fi
 
-say "Parameters for the Macs: put these lines in .env in the agentic-framework checkout there (README.md, section 2)"
+say "Parameters for the clients: put these lines in .env in the agentic-framework checkout on each Mac or Linux client (README.md, section 2)"
 params_env_text | grep -v '^#'
 say "Done. Next: log out and back in, then one-time logins (README.md, section 4)."
