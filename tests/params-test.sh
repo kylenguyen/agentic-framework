@@ -215,10 +215,10 @@ echo "# no deployment literals anywhere in the repo"
   # because it carries the list; .env is the one place the real values belong.
   cd "$REPO" || exit 1
   words='as1|kyle|kylepc|macbook|manee-goby|192\.168\.10\.'
-  hits=$(grep -rnwE --exclude-dir=.git --exclude=.env --exclude=params-test.sh "$words" . || true)
+  hits=$(grep -rnwE --exclude-dir=.git --exclude=.git --exclude=.env --exclude=params-test.sh "$words" . || true)
   [ -z "$hits" ] && ok "scan: no deployment literals in scripts, templates, configs or docs" || bad "scan: deployment literals found" "$hits"
   # .env.example values are examples too: they may appear only there.
-  ex=$(grep -rnw --exclude-dir=.git --exclude=.env --exclude=.env.example --exclude=params-test.sh 'agent-host\.example\.ts\.net\|192\.168\.1\.10' . || true)
+  ex=$(grep -rnw --exclude-dir=.git --exclude=.git --exclude=.env --exclude=.env.example --exclude=params-test.sh 'agent-host\.example\.ts\.net\|192\.168\.1\.10' . || true)
   [ -z "$ex" ] && ok "scan: .env.example values appear only in .env.example" || bad "scan: .env.example values leaked" "$ex"
   left=$(grep -rln '@AGENT_[A-Z_]*@' bin config lib install-host.sh install-mac.sh install-linux.sh | grep -v -e '\.in$' -e '^lib/' || true)   # two -e: BSD grep misreads $\|
   [ -z "$left" ] && ok "scan: placeholders only in .in templates and lib" || bad "scan: placeholders outside templates" "$left"
