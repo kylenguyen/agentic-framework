@@ -6,8 +6,8 @@ rules in `config/workspace/CLAUDE.md` (installed as `~/workspace/CLAUDE.md`, `~/
 
 ## Purpose
 
-Source of truth for one headless Ubuntu host on a Tailscale tailnet that runs coding agents, and for the Macs
-that reach it from WezTerm over SSH or mosh, land in tmux and run one of the four harnesses. The host name,
+Source of truth for one headless Ubuntu host on a Tailscale tailnet that runs coding agents, and for the Mac and
+Linux desktop clients that reach it from WezTerm over SSH or mosh, land in tmux and run one of the four harnesses. The host name,
 address, login and LAN address are parameters (`lib/params.sh`, README "Parameters"), never literals.
 
 `README.md` is the runbook: install order, what each script does, verify blocks, joint checkpoints, rollback,
@@ -23,7 +23,7 @@ Do not assume something exists because the plan describes it. Check this table a
 | 1 access | apt packages, zsh as login shell, linger, auto-updates; sshd and firewall left at OS defaults | `install-host.sh` phase 1 |
 | 2 sessions | tmux, session picker (`bin/agent`), zsh + oh-my-zsh, WezTerm domain | `bin/agent`, `config/` |
 | 3 harnesses | mise, uv, gh, the four harnesses, the Oh My Pi `pi-web-access` plugin, secrets file, shared rules, Claude settings, Codex global rules and config block | `install-host.sh` phases 2 to 4 |
-| 4 clipboard bridge | Cmd+V on a Mac pushes an image to `~/.clip/<stamp>.png` on the host and pastes that path into the pane; Ctrl+V in Claude Code is served by the `xclip` shim; copies return over OSC 52 | `bin/clip-put`, `bin/xclip`, `bin/clip-push-mac.sh.in`, `config/wezterm-agent-host.lua.in` |
+| 4 clipboard bridge | Cmd+V on a Mac (Ctrl+Shift+V on Linux) pushes an image to `~/.clip/<stamp>.png` on the host and pastes that path into the pane; Ctrl+V in Claude Code is served by the `xclip` shim; copies return over OSC 52 | `bin/clip-put`, `bin/xclip`, `bin/clip-push-mac.sh.in`, `bin/clip-push-linux.sh.in`, `config/wezterm-agent-host.lua.in` |
 | 5 automation | `agent run`/`logs`/`stop`/`clean`, `agent-worker`, systemd units, GitHub runner workflow | planned, not started |
 | 6 isolation | `docker/Dockerfile.agent-sandbox`, `agent run --sandbox` | planned, not started |
 
@@ -34,28 +34,32 @@ phase 5 or 6, update this table and section 8 of the plan doc.
 
 | Path | What it is | Installed to |
 |---|---|---|
-| `lib/params.sh` | the parameters: `.env` loading without executing it, validators, derivation from the system on the host, `params_render` for `.in` templates, the Mac's ssh config text. Must run under macOS bash 3.2 | sourced by both install scripts and the tests |
-| `.env.example` | the four `AGENT_HOST_*` parameters with example values | copied to `.env` (gitignored) on host and Macs |
+| `lib/params.sh` | the parameters: `.env` loading without executing it, validators, derivation from the system on the host, `params_render` for `.in` templates, the clients' ssh config text. Must run under macOS bash 3.2 | sourced by every install script and the tests |
+| `lib/client.sh` | the client steps shared by `install-mac.sh` and `install-linux.sh`: `.env` bootstrap, `block`, ssh config and key, WezTerm include, `clip-push` and PATH block, key login, the closing summary. Must run under macOS bash 3.2 and BSD tools | sourced by the client scripts |
+| `.env.example` | the four `AGENT_HOST_*` parameters with example values | copied to `.env` (gitignored) on host and clients |
 | `secrets.env.example` | secret variable names only | copied once to `~/.config/agents/env`, mode 600 |
 | `install-host.sh` | idempotent host setup, phases 1 to 4, run as the host login, never root. Phase 1 (root steps via `as_root`) is skipped by `--no-root`; network installs (oh-my-zsh, mise toolchains, uv, harnesses) by `--no-tools`. Phases 2 to 4 symlink configs, write marker blocks, install `bin/` | run in place |
 | `install-mac.sh` | idempotent Mac client setup, no sudo: `.env` (prompted when absent), mosh, pngpaste, `~/.ssh/config` block, WezTerm include, `clip-push`, PATH block in `~/.zshrc`, then key login to the host (`ssh-copy-id`, one password prompt at most). Exits 1 with the fix when it cannot finish | run on the Mac |
+| `install-linux.sh` | the same for a Linux desktop: the ssh client, mosh, wl-clipboard and xclip (gawk where awk is absent) through apt, dnf, pacman or zypper (`sudo` via `as_root`, only for what is missing; `sudo -A` when `SUDO_ASKPASS` is set; `--no-packages` skips it), then the shared steps with the Linux `clip-push` and the PATH block in the login shell's rc file. Refuses to run as root or on the host (`~/.local/bin/clip-put` present) | run on the Linux client |
 | `bin/agent` | sessions on the host: `new`, `ls [--porcelain]`, `attach`, `pick [--switch]`, `switch`, `kill [--force] [--keep-worktree]`. One harness run in one repo is one base tmux session; each device attaches its own grouped view. `pick` is the login landing. tmux is the only state. Header comment has the model and the test hooks | `~/.local/bin/agent` |
 | `bin/clip-put` | stdin to `~/.clip`: a PNG becomes `<UTC stamp>-<random>.png` and its path is printed, `latest` is repointed at it; text replaces `latest`. Prunes `.png` older than `CLIP_KEEP_MINUTES` (1440) on every push; `--clear` empties the spool | `~/.local/bin/clip-put` |
 | `bin/xclip` | clipboard shim: serves `~/.clip/latest` to Claude Code on Ctrl+V; copies go back via OSC 52 | `~/.local/bin/xclip` |
 | `bin/clip-push-mac.sh.in` | template: pngpaste or pbpaste piped over `ssh <alias>-clip` into `clip-put`; prints the type, then the host path for an image. WezTerm runs `--if-image` on Cmd+V and pastes line 2 | `~/.local/bin/clip-push` on the Mac |
+| `bin/clip-push-linux.sh.in` | template: the same contract, reading the clipboard with `wl-paste` (Wayland) or `xclip` (X11); only `image/png` is an image | `~/.local/bin/clip-push` on a Linux client |
 | `config/tmux.conf` | OSC 52 passthrough, mouse, history; prefix `g` opens the picker in a popup, prefix `c` keeps the cwd, `status-left` shows session and harness | `~/.tmux.conf` |
 | `config/zshenv` | sources `agents-env.sh` for every zsh, including `ssh <host> <cmd>` | `~/.zshenv` |
 | `config/zshrc` | oh-my-zsh (robbyrussell, git plugin, updates off), then the interactive fragments | `~/.zshrc` |
 | `config/bashrc.d/agents-env.sh` | PATH and secrets for every shell, including non-interactive SSH; POSIX sh | top of `~/.bashrc`, and from `~/.zshenv` |
 | `config/bashrc.d/mise.sh`, `tmux-autoattach.sh` | interactive-only bits, valid in bash and zsh; `tmux-autoattach.sh` runs `agent pick` for interactive SSH logins and logs out on exit 3 | bottom of `~/.bashrc` and end of `~/.zshrc` |
-| `config/ssh_config.mac.in` | template: `Host <alias>`, `<alias>-lan` (dropped without a LAN address), `<alias>-clip` (BatchMode, ControlMaster) | `agent-host` marker block in `~/.ssh/config` on the Mac |
-| `config/wezterm-agent-host.lua.in` | template: SSH domain `<alias>`, Cmd+Shift+A tab, Cmd+V image push then paste of the host path, default colour scheme | `~/.config/wezterm/wezterm-agent-host.lua` |
+| `config/ssh_config.client.in` | template: `Host <alias>`, `<alias>-lan` (dropped without a LAN address), `<alias>-clip` (BatchMode, ControlMaster) | `agent-host` marker block in `~/.ssh/config` on each client |
+| `config/wezterm-agent-host.lua.in` | template: SSH domain `<alias>`, new-tab key, paste key with image push then paste of the host path, default colour scheme. Keys follow `wezterm.target_triple`: Cmd+Shift+A and Cmd+V on macOS, Ctrl+Shift+A and Ctrl+Shift+V elsewhere | `~/.config/wezterm/wezterm-agent-host.lua` |
 | `config/claude-settings.json` | Claude Code allow and deny lists, model, status line command | `~/.claude/settings.json` |
 | `config/statusline-command.sh` | Claude Code status line, two lines; needs jq | `~/.claude/statusline-command.sh` |
 | `config/workspace/CLAUDE.md` | house rules for every repo under `~/workspace` and every harness | `~/workspace/CLAUDE.md`, `~/workspace/AGENTS.md`, `~/.codex/AGENTS.md` |
 | `tests/agent-test.sh` | unit tests for `bin/agent` and the login fragment: throwaway HOME, stand-in harness, own tmux socket | anywhere; no sudo, network or Docker |
-| `tests/params-test.sh` | unit tests for `lib/params.sh`, every rendered template checked with real tools, a dry run of `install-mac.sh`, and the literal scan | anywhere; no sudo or network |
+| `tests/params-test.sh` | unit tests for `lib/params.sh`, every rendered template checked with real tools, dry runs of `install-mac.sh` and `install-linux.sh --no-packages`, and the literal scan | anywhere; no sudo or network |
 | `tests/e2e/run.sh` | two Docker containers, a host (`box`, real sshd, login `alice`) and a Mac stand-in with two Mac users: both install scripts twice against each other, key login, idempotency, Cmd+V routing through the rendered WezTerm module under Lua 5.4 (`wezterm-paste.lua`, stub `wezterm` table), the spool, the `xclip` calls Claude Code makes, OSC 52, a second Mac, and the picker under `AGENT_PICK_FILTER` | docker without sudo; network for the image builds |
+| `tests/e2e/linux.sh` | `install-linux.sh` on Ubuntu, Debian, Fedora, Arch and openSUSE (`Dockerfile.linux`, `DISTROS=` for a subset) against the run.sh host image: packages through sudo with a password (`shims/linux/askpass`), key login, `clip-push` against a real X clipboard (Xvfb) and on Ubuntu a real Wayland one (headless sway), the Linux paste key through `wezterm-paste.lua`, a second run with no prompts, and the refusal on the host | docker without sudo; network during the run (distro mirrors) |
 | `tests/e2e/tui.sh` | the picker as a human meets it: keystrokes into a real `agent pick` over `ssh -tt`, every menu row and flow, two Macs on one session | same containers; about 12 min |
 | `tests/e2e/harness-paste.sh` | a pasted image path attached inside the real Claude Code, Oh My Pi and OpenCode (`Dockerfile.harness`, versions pinned to the live host). The indicator strings are version-specific; run it when a harness is upgraded | docker without sudo; network and a few hundred MB for the first build |
 
@@ -77,11 +81,12 @@ invent new ones.
   a real file in the way, no-op when the link is right).
 - **Marker blocks** for files the scripts share with the user or a tool: `~/.bashrc` and `~/.codex/config.toml`
   on the host (Codex writes into that file itself, so it cannot be a symlink), `~/.ssh/config` and `~/.zshrc`
-  on the Mac. The `block` helper wraps content in `# >>> agentic-framework:<marker> >>>` and
+  on the Mac, `~/.ssh/config` and the login shell's rc file on a Linux client. The `block` helper (in
+  `lib/client.sh` for the clients) wraps content in `# >>> agentic-framework:<marker> >>>` and
   `# <<< agentic-framework:<marker> <<<` and replaces the block in place. New content gets a new marker
   name; never append unmarked lines.
-- **Nothing on the host identifies a Mac.** Every Mac uses the same `.env`, the push is anonymous and the
-  last pusher wins. No Mac login names or per-Mac placeholders anywhere.
+- **Nothing on the host identifies a client.** Every client uses the same `.env`, the push is anonymous and the
+  last pusher wins. No client login names or per-client placeholders anywhere.
 - **Network installs sit behind `--no-tools`** in `install-host.sh`, each guarded with `command -v` (or
   `[ -d ]` for `~/.oh-my-zsh`) so a re-run skips it.
 - **Shell fragments run under bash and zsh.** `~/.zshrc` and `~/.zshenv` source the same
@@ -90,7 +95,8 @@ invent new ones.
 - **Root steps only through `as_root`, only in phase 1, only when needed.** One `sudo` call per command,
   never a root shell, each behind a check that needs no sudo (`cmp`, `dpkg-query`, `getent`,
   `/var/lib/systemd/linger`, `systemctl is-enabled`), so a configured host never prompts. Nothing outside
-  phase 1 calls `sudo`. `install-mac.sh` stays sudo-free.
+  phase 1 calls `sudo`. `install-mac.sh` stays sudo-free. `install-linux.sh` has its own `as_root`, used only by
+  its package step and only for packages whose command is missing (`command -v`), under the same rules.
 - **sshd, the firewall and `tailscale` are out of scope** for the scripts. Do not add configuration for them.
 
 ## Conventions
@@ -123,11 +129,12 @@ Run these on the host without sudo before you open a PR. If `shellcheck` is miss
 bash tests/agent-test.sh             # N passed, 0 failed
 bash tests/params-test.sh            # N passed, 0 failed
 bash tests/e2e/run.sh                # about 3 min; N passed, 0 failed
+bash tests/e2e/linux.sh              # about 10 min with five distros; N passed, 0 failed
 bash tests/e2e/tui.sh                # about 12 min; N passed, 0 failed
 bash tests/e2e/harness-paste.sh      # about 4 min plus the first image build; N passed, 0 failed
-shellcheck -x install-host.sh install-mac.sh bin/agent bin/xclip bin/clip-put config/statusline-command.sh config/bashrc.d/*.sh tests/e2e/harness-paste.sh
-shellcheck -x -s bash lib/params.sh tests/params-test.sh tests/agent-test.sh bin/clip-push-mac.sh.in
-bash -n install-host.sh install-mac.sh bin/agent bin/xclip bin/clip-put bin/clip-push-mac.sh.in config/statusline-command.sh lib/params.sh
+shellcheck -x install-host.sh install-mac.sh install-linux.sh tests/e2e/linux.sh bin/agent bin/xclip bin/clip-put config/statusline-command.sh config/bashrc.d/*.sh tests/e2e/harness-paste.sh
+shellcheck -x -s bash lib/params.sh lib/client.sh tests/params-test.sh tests/agent-test.sh bin/clip-push-mac.sh.in bin/clip-push-linux.sh.in
+bash -n install-host.sh install-mac.sh install-linux.sh bin/agent bin/xclip bin/clip-put bin/clip-push-mac.sh.in bin/clip-push-linux.sh.in config/statusline-command.sh lib/params.sh lib/client.sh
 printf '{"model":{"display_name":"M"},"workspace":{"current_dir":"%s"}}' "$PWD" | bash config/statusline-command.sh   # two lines: ➜ agentic-framework git:(branch) [M], then ctx —
 zsh -n config/zshenv config/zshrc config/bashrc.d/*.sh
 NO_TMUX=1 zsh -ic 'echo $ZSH_THEME; type omz; command -v mise'   # robbyrussell, function, mise path
@@ -140,8 +147,9 @@ python3 -m json.tool config/claude-settings.json >/dev/null
 ```
 
 Which suite to run: `agent-test.sh` for `bin/agent` or the login fragment; `params-test.sh` for anything
-under `lib/`, a template, or a doc (the literal scan); `e2e/run.sh` for either install script or the
-clipboard bridge; `e2e/tui.sh` for the picker's menus; `e2e/harness-paste.sh` when a harness is upgraded
+under `lib/`, a template, or a doc (the literal scan); `e2e/run.sh` for any install script, `lib/client.sh` or the
+clipboard bridge; `e2e/linux.sh` as well for `install-linux.sh`, `lib/client.sh`, the Linux `clip-push` or the
+WezTerm module; `e2e/tui.sh` for the picker's menus; `e2e/harness-paste.sh` when a harness is upgraded
 or the paste path changes.
 
 `./install-host.sh --no-tools --no-root` is the real idempotency test, but it rewrites `~/.bashrc`,
@@ -150,10 +158,11 @@ or the paste path changes.
 from `~/workspace/agentic-framework`, never from a worktree, only when your change touches those paths,
 and say so in the PR.
 
-Needs a human, never attempt on this host: phase 1 of `install-host.sh`, `install-mac.sh`, and every joint
-checkpoint in the README that involves a Mac. Inside the e2e containers all of that is fair game. What the
+Needs a human, never attempt on this host: phase 1 of `install-host.sh`, `install-mac.sh`, `install-linux.sh`
+(it refuses here anyway), and every joint checkpoint in the README that involves a client. Inside the e2e containers all of that is fair game. What the
 containers cannot cover, report as unverified in the PR body: real systemd and tailscale, macOS itself (BSD
-awk, bash 3.2), WezTerm's own runtime, and the tailnet.
+awk, bash 3.2), a real Linux desktop session (what WezTerm passes to `clip-push`), WezTerm's own runtime, and the
+tailnet.
 
 ## Boundaries
 

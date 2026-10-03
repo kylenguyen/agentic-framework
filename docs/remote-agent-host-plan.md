@@ -1,10 +1,13 @@
 # Remote coding-agent host: design
 
 Target: one headless Ubuntu Server LTS box on a Tailscale tailnet, called `<host>` below, with a single login
-`<user>`; several macOS clients, each running WezTerm, reach it over the tailnet with a LAN fallback for SSH. The
+`<user>`; several macOS or Linux desktop clients, each running WezTerm, reach it over the tailnet with a LAN
+fallback for SSH. The
 real names, addresses and login are parameters (`.env` or the system; see `lib/params.sh` and README "Parameters");
-the repo carries none of them. `<lan-ip>` stands for the host's LAN address. Windows and phone clients are out of
-scope; the design does not block them.
+the repo carries none of them. `<lan-ip>` stands for the host's LAN address. A Linux client runs
+`install-linux.sh`, which shares every step with `install-mac.sh` (`lib/client.sh`) except packages, the clipboard
+reader and the WezTerm keys; "the Mac" below covers it unless a Linux note says otherwise. Windows and phone clients
+are out of scope; the design does not block them.
 
 Each phase has four parts: what to set up on <host>, what to set up on the Mac, how to test <host> alone, how to
 test the Mac alone. A joint checkpoint closes the phase. This document holds the design and the per-phase tests; the
@@ -76,7 +79,7 @@ path into the pane, which every harness attaches as an image.
 
 ### On the Mac
 
-1. `~/.ssh/config` entries, rendered from `config/ssh_config.mac.in`:
+1. `~/.ssh/config` entries, rendered from `config/ssh_config.client.in`:
    ```
    Host <host>
      HostName <host>
@@ -311,7 +314,7 @@ demand while a push moves only what is deliberately pasted.
    piped to `ssh <host>-clip '~/.local/bin/clip-put'`, and for an image the host path `clip-put` printed follows on
    a second line. With `--if-image` text is reported but not pushed. WezTerm starts it with a minimal environment,
    so the script sets its own PATH. `CLIP_PUSH_HOST=<host>-lan` when off the tailnet.
-3. `Host <host>-clip` in `~/.ssh/config` (repo `config/ssh_config.mac.in`): same key as `<host>`, `BatchMode yes`,
+3. `Host <host>-clip` in `~/.ssh/config` (repo `config/ssh_config.client.in`): same key as `<host>`, `BatchMode yes`,
    `ConnectTimeout 3`, `ControlMaster auto` with `ControlPersist 10m` so every push after the first takes
    milliseconds. Separate from `Host <host>` so interactive sessions and mosh keep their own settings.
 4. `config/wezterm-agent-host.lua.in` binds Cmd+V: if the pane is the `<host>` SSH domain, or a local pane whose
@@ -320,6 +323,13 @@ demand while a push moves only what is deliberately pasted.
    succeeded: `pane:paste` of the path on line 2, delivered as one bracketed paste, so the harness sees a paste and
    attaches the image. Push failed, or no path came back: a toast shows why and nothing is pasted, so a stale or
    guessed path is never attached. Any other pane gets the ordinary paste. Ctrl+V is left unbound.
+
+On a Linux client: `bin/clip-push-linux.sh.in` keeps the same arguments and output, reading the clipboard with
+`wl-paste` when `WAYLAND_DISPLAY` is set and `xclip -selection clipboard` otherwise (`install-linux.sh` installs
+both, through sudo, only when missing). The module binds Ctrl+Shift+V and Ctrl+Shift+A instead of Cmd+V and
+Cmd+Shift+A, chosen from `wezterm.target_triple`: Cmd is Super on Linux and desktops claim Super+V. WezTerm on Linux
+passes the desktop session's environment to `clip-push`, so it only tops up PATH. Automated:
+`tests/e2e/linux.sh` on five distributions (X11 via Xvfb everywhere, Wayland via headless sway on Ubuntu).
 
 ### Test the host alone
 
@@ -464,17 +474,19 @@ the worktree and `ls -la /etc` unchanged on the host.
 Entries marked (phase 5) or (phase 6) do not exist yet.
 
 ```
-README.md       runbook: which doc to read, what the two scripts do, verify blocks, joint checkpoints
+README.md       runbook: which doc to read, what the install scripts do, verify blocks, joint checkpoints
 AGENTS.md       status table, layout, install contract and boundaries for agents editing this repo
 bin/            agent (sessions: new/ls/attach/pick/switch/kill; phase 5 adds run/logs/stop/clean),
-                xclip (shim), clip-put, clip-push-mac.sh.in (template), agent-worker (phase 5)
-config/         tmux.conf, zshenv, zshrc, ssh_config.mac.in, wezterm-agent-host.lua.in,
+                xclip (shim), clip-put, clip-push-{mac,linux}.sh.in (templates), agent-worker (phase 5)
+config/         tmux.conf, zshenv, zshrc, ssh_config.client.in, wezterm-agent-host.lua.in,
                 claude-settings.json, statusline-command.sh, bashrc.d/{agents-env,mise,tmux-autoattach}.sh,
                 workspace/CLAUDE.md (house rules)
-lib/            params.sh: .env loading, validation, derivation on the host, template rendering
-tests/          params-test.sh (library, templates, install-mac.sh dry run, literal scan)
+lib/            params.sh: .env loading, validation, derivation on the host, template rendering;
+                client.sh: the steps install-mac.sh and install-linux.sh share
+tests/          params-test.sh (library, templates, client script dry runs, literal scan)
                 agent-test.sh (bin/agent and the login fragment, own tmux socket and HOME)
-                e2e/ (containers: both install scripts, the clipboard bridge, the session picker, the harnesses)
+                e2e/ (containers: the install scripts, Linux clients on five distros, the clipboard bridge, the
+                session picker, the harnesses)
 systemd/        agent@.service, agent-worker.service, agent-<job>.timer templates (phase 5)
 docker/         Dockerfile.agent-sandbox (phase 6)
 docs/           this design, session-picker-plan.md, clipboard-paste-path-plan.md, agents-md-two-layer-plan.md,
