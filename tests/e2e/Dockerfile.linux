@@ -1,0 +1,37 @@
+# e2e Linux desktop client, one image per distro: tests/e2e/linux.sh builds it with --build-arg BASE=<image>.
+# What install-linux.sh installs (the ssh client, mosh, wl-clipboard, xclip) is deliberately absent, so the script
+# has to install it through sudo, which asks for linuxuser's password (shims/linux/askpass answers it). Present: sudo,
+# Xvfb (a real X server, so xclip reads a real clipboard), Lua 5.4 for tests/e2e/wezterm-paste.lua, and with
+# WAYLAND=1 a headless sway, so wl-paste reads a real Wayland clipboard too. Not covered: a real desktop session,
+# WezTerm's own runtime, Flatpak. openSUSE's sudo asks for root's password (Defaults targetpw), as on a real install,
+# so root gets the same password there.
+ARG BASE=ubuntu:24.04
+FROM ${BASE}
+ARG WAYLAND=0
+ARG SUDO_PASSWORD=linux-pw
+COPY shims/linux/ /usr/local/bin/
+RUN set -e; \
+    if command -v apt-get >/dev/null; then \
+      export DEBIAN_FRONTEND=noninteractive; apt-get update; \
+      apt-get install -y --no-install-recommends sudo ca-certificates file lua5.4 xvfb; \
+      if [ "$WAYLAND" = 1 ]; then apt-get install -y --no-install-recommends sway; fi; \
+      rm -rf /var/lib/apt/lists/*; \
+    elif command -v dnf >/dev/null; then \
+      dnf install -y sudo file lua xorg-x11-server-Xvfb shadow-utils; \
+      if [ "$WAYLAND" = 1 ]; then dnf install -y sway; fi; dnf clean all; \
+    elif command -v pacman >/dev/null; then \
+      pacman -Syu --noconfirm --needed sudo file lua xorg-server-xvfb; \
+      if [ "$WAYLAND" = 1 ]; then pacman -S --noconfirm --needed sway; fi; pacman -Scc --noconfirm; \
+    elif command -v zypper >/dev/null; then \
+      zypper --non-interactive install sudo file lua54 xorg-x11-server-Xvfb shadow; \
+      if [ "$WAYLAND" = 1 ]; then zypper --non-interactive install sway; fi; zypper clean -a; \
+      echo "root:$SUDO_PASSWORD" | chpasswd; \
+    fi; \
+    command -v lua5.4 >/dev/null || ln -s "$(command -v lua)" /usr/local/bin/lua5.4; \
+    chmod 755 /usr/local/bin/*; \
+    useradd -m -s /bin/bash linuxuser; echo "linuxuser:$SUDO_PASSWORD" | chpasswd; \
+    echo 'linuxuser ALL=(ALL) ALL' > /etc/sudoers.d/e2e; chmod 440 /etc/sudoers.d/e2e
+USER linuxuser
+WORKDIR /home/linuxuser
+# The X server is the container's main process; DISPLAY=:99 is passed to every exec that needs it.
+CMD ["Xvfb", ":99", "-nolisten", "tcp", "-screen", "0", "640x480x24"]

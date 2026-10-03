@@ -1,0 +1,9 @@
+#!/bin/sh
+# SSH_ASKPASS and SUDO_ASKPASS program for the e2e Linux clients: answers sudo's prompt ("[sudo] password for ...",
+# the user's or, on openSUSE, root's) with the client password and ssh's ("alice@box's password: ") with the host's.
+# Every call is logged to /tmp/askpass.log, so a run that should not have prompted can be caught.
+echo "$(id -un): $1" >> /tmp/askpass.log
+case "$1" in
+  *sudo*|*"password for $(id -un)"*) echo "${E2E_SUDO_PASSWORD:?}" ;;
+  *) echo "${E2E_PASSWORD:?}" ;;
+esac
