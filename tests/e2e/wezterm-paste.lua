@@ -1,5 +1,5 @@
 -- tests/e2e/wezterm-paste.lua: run the rendered WezTerm module (~/.config/wezterm/wezterm-agent-host.lua) under
--- plain Lua 5.4 with a stub `wezterm` table, so the Cmd+V decision runs as WezTerm would run it, against the real
+-- plain Lua 5.4 with a stub `wezterm` table, so the paste-key decision runs as WezTerm would run it, against the real
 -- clip-push and the real host. Everything WezTerm would do is printed as one line per event for the shell to check:
 --   action PasteFrom Clipboard        the pane got an ordinary paste
 --   paste <text>                      pane:paste(text): the path clip-put printed, as one bracketed paste
@@ -11,6 +11,8 @@
 --   local  [proc]         a local pane whose foreground process is <proc> (default zsh)
 --   domain                a pane in the host's SSH domain
 -- CLIP_PUSH_HOST in the environment reaches clip-push unchanged, so an unreachable alias exercises the failure path.
+-- WEZ_TRIPLE stands in for wezterm.target_triple (default a Mac's); the paste key follows it, so a Linux client sets
+-- x86_64-unknown-linux-gnu. DISPLAY and WAYLAND_DISPLAY pass through to clip-push like the rest of the environment.
 local HOME = os.getenv("HOME")
 local scenario, proc = arg[1], arg[2] or "zsh"
 if not scenario then io.stderr:write("usage: wezterm-paste.lua apply | local [proc] | domain\n"); os.exit(2) end
@@ -18,7 +20,7 @@ if not scenario then io.stderr:write("usage: wezterm-paste.lua apply | local [pr
 -- Stub of the parts of the wezterm module the agent-host module touches. Actions are plain tables the shell can
 -- read; run_child_process really runs the command and returns (success, stdout, stderr) like WezTerm does.
 local function shq(s) return "'" .. s:gsub("'", "'\\''") .. "'" end
-local wezterm = { home_dir = HOME }
+local wezterm = { home_dir = HOME, target_triple = os.getenv("WEZ_TRIPLE") or "aarch64-apple-darwin" }
 wezterm.action = setmetatable({}, { __index = function(_, name) return function(a) return { name = name, arg = a } end end })
 wezterm.action_callback = function(fn) return { name = "callback", fn = fn } end
 wezterm.config_builder = function() return {} end
@@ -54,8 +56,8 @@ if scenario == "apply" then
 end
 
 local paste
-for _, k in ipairs(config.keys) do if k.key == "v" and k.mods == "CMD" then paste = k.action.fn end end
-if not paste then io.stderr:write("no CMD+v binding in the module\n"); os.exit(1) end
+for _, k in ipairs(config.keys) do if k.key == "v" and k.action.name == "callback" then paste = k.action.fn end end
+if not paste then io.stderr:write("no paste-key callback in the module\n"); os.exit(1) end
 
 local domain = config.ssh_domains[1].name
 local pane = {

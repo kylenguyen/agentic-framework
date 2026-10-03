@@ -18,7 +18,7 @@ expect_fail() { local n=$1; shift; local err; if err=$("$@" 2>&1 >/dev/null); th
   if [ -n "$err" ]; then ok "$n"; else bad "$n" "failed silently"; fi; fi; }
 
 echo "# syntax"
-for f in lib/params.sh tests/params-test.sh; do bash -n "$REPO/$f" && ok "bash -n $f" || bad "bash -n $f"; done
+for f in lib/params.sh lib/client.sh install-mac.sh install-linux.sh tests/params-test.sh; do bash -n "$REPO/$f" && ok "bash -n $f" || bad "bash -n $f"; done
 
 echo "# params_load"
 ( fresh
@@ -89,7 +89,7 @@ echo "# params_derive_host"
 ( fresh; AGENT_HOST_LAN_IP=10.9.0.9; AGENT_HOST=custom; params_derive_host >/dev/null 2>&1
   check "derive: .env lan ip override wins" 10.9.0.9 "$AGENT_HOST_LAN_IP"; check "derive: .env alias wins" custom "$AGENT_HOST" )
 
-echo "# Mac templates: ssh config, clip-push, install-mac.sh entry"
+echo "# client templates: ssh config, clip-push for each platform, install-mac.sh and install-linux.sh entry"
 ( fresh; AGENT_HOST=box; AGENT_HOST_ADDRESS=box.tail.ts.net; AGENT_HOST_USER=alice; AGENT_HOST_LAN_IP=10.0.0.5
   params_ssh_config_text > "$T/sshcfg" || bad "sshcfg: renders" "$?"
   grep -q '^#' "$T/sshcfg" && bad "sshcfg: comments stripped" || ok "sshcfg: comments stripped"
@@ -115,6 +115,26 @@ echo "# Mac templates: ssh config, clip-push, install-mac.sh entry"
   params_render "$REPO/bin/clip-push-mac.sh.in" "$T/clip-push" || bad "clip-push: renders" "$?"
   bash -n "$T/clip-push" && ok "clip-push: bash -n on the rendered script" || bad "clip-push: bash -n"
   grep -q 'host=${CLIP_PUSH_HOST:-box-clip}' "$T/clip-push" && ok "clip-push: default destination is <alias>-clip" || bad "clip-push: default destination" "$(grep 'host=' "$T/clip-push")"
+  params_render "$REPO/bin/clip-push-linux.sh.in" "$T/clip-push-linux" || bad "clip-push linux: renders" "$?"
+  bash -n "$T/clip-push-linux" && ok "clip-push linux: bash -n on the rendered script" || bad "clip-push linux: bash -n"
+  grep -q 'host=${CLIP_PUSH_HOST:-box-clip}' "$T/clip-push-linux" && ok "clip-push linux: default destination is <alias>-clip" || bad "clip-push linux: default destination"
+  out=$(env -u DISPLAY -u WAYLAND_DISPLAY bash "$T/clip-push-linux" --if-image 2>&1); rc=$?
+  check "clip-push linux: no display -> exit 1" 1 "$rc"
+  case "$out" in *"needs wl-paste under Wayland or xclip under X11"*) ok "clip-push linux: says what it needs";; *) bad "clip-push linux: says what it needs" "$out";; esac
+)
+( # install-linux.sh: the same entry contract as install-mac.sh, plus its refusal to run on the host itself.
+  mkdir -p "$T/lrepo" "$T/lhome"; cp -R "$REPO/install-linux.sh" "$REPO/lib" "$REPO/config" "$REPO/bin" "$T/lrepo/"; rm -f "$T/lrepo/.env"
+  out=$(HOME=$T/lhome bash "$T/lrepo/install-linux.sh" </dev/null 2>&1); rc=$?
+  check "install-linux: no .env and no terminal -> exit 2" 2 "$rc"
+  case "$out" in *"AGENT_HOST is not set"*) ok "install-linux: says what is missing";; *) bad "install-linux: says what is missing" "$out";; esac
+  check "install-linux: wrote nothing to HOME" "" "$(ls -A "$T/lhome")"
+  HOME=$T/lhome bash "$T/lrepo/install-linux.sh" --bogus </dev/null >/dev/null 2>&1; check "install-linux: unknown option -> exit 2" 2 "$?"
+  mkdir -p "$T/lhost/.local/bin"; touch "$T/lhost/.local/bin/clip-put"
+  printf 'AGENT_HOST=box\nAGENT_HOST_USER=alice\n' > "$T/lrepo/.env"
+  out=$(HOME=$T/lhost bash "$T/lrepo/install-linux.sh" </dev/null 2>&1); rc=$?
+  check "install-linux: on the agent host -> exit 1" 1 "$rc"
+  case "$out" in *"looks like the agent host"*) ok "install-linux: says it is the host";; *) bad "install-linux: says it is the host" "$out";; esac
+  check "install-linux: on the host, touched nothing" ".local" "$(ls -A "$T/lhost")"
 )
 ( # install-mac.sh must settle its parameters before it touches anything, so its entry is testable anywhere.
   mkdir -p "$T/repo" "$T/home"; cp -R "$REPO/install-mac.sh" "$REPO/lib" "$REPO/config" "$REPO/bin" "$T/repo/"; rm -f "$T/repo/.env"
@@ -170,6 +190,24 @@ echo "# WezTerm module and a Linux dry run of install-mac.sh"
   case "$out2" in *"wezterm.lua includes wezterm-agent-host"*) ok "dry run: second run sees the include";; *) bad "dry run: second run sees the include" "$out2";; esac
 )
 
+echo "# Linux dry run of install-linux.sh (--no-packages: no sudo)"
+( # As for install-mac.sh: everything up to the ssh probes runs against a throwaway HOME, then the unreachable host
+  # ends the run with exit 1. SHELL=bash puts the PATH block in ~/.bashrc, as on a stock Ubuntu desktop.
+  mkdir -p "$T/lx/repo" "$T/lx/home/.ssh"
+  cp -R "$REPO/install-linux.sh" "$REPO/lib" "$REPO/config" "$REPO/bin" "$T/lx/repo/"
+  printf 'AGENT_HOST=aftest.invalid\nAGENT_HOST_ADDRESS=box.invalid\nAGENT_HOST_USER=alice\n' > "$T/lx/repo/.env"
+  out=$(HOME=$T/lx/home SHELL=/bin/bash PATH=/usr/bin:/bin bash "$T/lx/repo/install-linux.sh" --no-packages </dev/null 2>&1); rc=$?
+  check "linux dry run: exits 1 at the unreachable host, not earlier" 1 "$rc"
+  case "$out" in *"aftest.invalid (box.invalid) is not reachable"*) ok "linux dry run: reached the login phase";; *) bad "linux dry run: reached the login phase" "$out";; esac
+  case "$out" in *"check \`tailscale status\`"*) ok "linux dry run: the hint names tailscale status, not the Mac menu bar";; *) bad "linux dry run: tailscale hint" "$out";; esac
+  check "linux dry run: ssh -G aftest.invalid -> alice@box.invalid" "box.invalid alice" "$(ssh -G -F "$T/lx/home/.ssh/config" aftest.invalid 2>/dev/null | awk '/^hostname /{h=$2} /^user /{u=$2} END{print h, u}')"
+  check "linux dry run: minimal wezterm.lua with the include" 1 "$(grep -c 'require("wezterm-agent-host").apply(config)' "$T/lx/home/.config/wezterm/wezterm.lua")"
+  grep -q 'wl-paste --list-types' "$T/lx/home/.local/bin/clip-push" && ok "linux dry run: the Linux clip-push is installed" || bad "linux dry run: the Linux clip-push is installed"
+  check "linux dry run: PATH block in ~/.bashrc" 1 "$(grep -c 'agentic-framework:path >>>' "$T/lx/home/.bashrc")"
+  [ -e "$T/lx/home/.zshrc" ] && bad "linux dry run: ~/.zshrc left alone under bash" || ok "linux dry run: ~/.zshrc left alone under bash"
+  case "$out" in *"Ctrl+Shift+V pushes images"*) ok "linux dry run: names Ctrl+Shift+V";; *) bad "linux dry run: names Ctrl+Shift+V" "$out";; esac
+)
+
 echo "# no deployment literals anywhere in the repo"
 ( # The repo describes a framework, not one deployment: no file, comment or doc may name a real host, login, LAN or
   # tailnet. Placeholders in the docs are <host>, <user>, <lan-ip>; the tests use box, alice and 10.x.
@@ -182,7 +220,7 @@ echo "# no deployment literals anywhere in the repo"
   # .env.example values are examples too: they may appear only there.
   ex=$(grep -rnw --exclude-dir=.git --exclude=.env --exclude=.env.example --exclude=params-test.sh 'agent-host\.example\.ts\.net\|192\.168\.1\.10' . || true)
   [ -z "$ex" ] && ok "scan: .env.example values appear only in .env.example" || bad "scan: .env.example values leaked" "$ex"
-  left=$(grep -rln '@AGENT_[A-Z_]*@' bin config lib install-host.sh install-mac.sh | grep -v -e '\.in$' -e '^lib/' || true)   # two -e: BSD grep misreads $\|
+  left=$(grep -rln '@AGENT_[A-Z_]*@' bin config lib install-host.sh install-mac.sh install-linux.sh | grep -v -e '\.in$' -e '^lib/' || true)   # two -e: BSD grep misreads $\|
   [ -z "$left" ] && ok "scan: placeholders only in .in templates and lib" || bad "scan: placeholders outside templates" "$left"
 )
 

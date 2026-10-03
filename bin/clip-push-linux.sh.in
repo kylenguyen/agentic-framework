@@ -1,0 +1,61 @@
+#!/bin/bash
+# clip-push: send the Linux desktop clipboard to the agent host so a harness there can paste it. The Linux twin of
+# bin/clip-push-mac.sh.in: same arguments, same output, same host side.
+# WezTerm runs `clip-push --if-image` on Ctrl+Shift+V in a pane connected to the host
+# (config/wezterm-agent-host.lua.in): an image is pushed, clip-put on the host stores it as ~/.clip/<stamp>.png and
+# prints that path (the second output line), and WezTerm pastes the path into the pane, which the harness attaches as
+# an image. Text is reported only and WezTerm pastes it natively.
+# TEMPLATE: install-linux.sh renders @AGENT_HOST@ from .env and installs the result as ~/.local/bin/clip-push.
+# Usage:   clip-push              push the clipboard (image or text); prints image/png or text/plain
+#          clip-push --if-image   push only if the clipboard holds an image; prints the type either way
+#          clip-push --clear      delete every copy held on the host (otherwise an image is pruned by the first
+#                                 push made more than 24 h after it)
+# The clipboard is read with wl-paste under Wayland (WAYLAND_DISPLAY set) and xclip under X11 (DISPLAY set), both
+# installed by install-linux.sh. Only image/png counts as an image, as on the Mac.
+# CLIP_PUSH_HOST overrides the ssh destination; default <alias>-clip (config/ssh_config.client.in).
+# WezTerm on Linux passes the desktop session's environment on, so PATH is only topped up, not replaced.
+export PATH="${PATH:+$PATH:}/usr/local/bin:/usr/bin:/bin"
+set -euo pipefail
+host=${CLIP_PUSH_HOST:-@AGENT_HOST@-clip}
+# shellcheck disable=SC2088  # the ~ is for the remote shell
+remote() { ssh -o BatchMode=yes -o ConnectTimeout=3 "$host" "~/.local/bin/clip-put $*"; }
+
+if_image=0
+case "${1:-}" in
+  --clear) remote --clear </dev/null; exit 0 ;;
+  --if-image) if_image=1 ;;
+  "") ;;
+  *) echo 'usage: clip-push [--if-image|--clear]' >&2; exit 2 ;;
+esac
+
+# types / png / text: the clipboard's offered MIME types, its PNG bytes, its text. An empty clipboard makes the
+# readers fail, which counts as text with nothing in it.
+if [ -n "${WAYLAND_DISPLAY:-}" ] && command -v wl-paste >/dev/null; then
+  types() { wl-paste --list-types; }
+  png()   { wl-paste --no-newline --type image/png; }
+  text()  { wl-paste --no-newline; }
+elif [ -n "${DISPLAY:-}" ] && command -v xclip >/dev/null; then
+  types() { xclip -selection clipboard -t TARGETS -o; }
+  png()   { xclip -selection clipboard -t image/png -o; }
+  text()  { xclip -selection clipboard -o; }
+else
+  echo 'clip-push: no clipboard to read: needs wl-paste under Wayland or xclip under X11 (re-run ./install-linux.sh)' >&2
+  exit 1
+fi
+
+# Matched with case, not `types | grep -q`: grep -q quits at the first match, and under pipefail the writer's SIGPIPE
+# would turn a found image into "text".
+offered=$(types 2>/dev/null || true)
+nl='
+'
+case "$nl$offered$nl" in
+  *"${nl}image/png${nl}"*) is_image=1 ;;
+  *) is_image=0 ;;
+esac
+if [ "$is_image" = 1 ]; then
+  echo image/png
+  png | remote
+else
+  echo text/plain
+  [ "$if_image" = 1 ] || { text 2>/dev/null || true; } | remote
+fi

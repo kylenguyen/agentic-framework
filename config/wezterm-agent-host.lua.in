@@ -1,11 +1,19 @@
--- WezTerm: SSH domain for the agent host and clipboard push. TEMPLATE: install-mac.sh fills @AGENT_HOST@,
--- @AGENT_HOST_ADDRESS@ and @AGENT_HOST_USER@ from .env and writes ~/.config/wezterm/wezterm-agent-host.lua, then adds
+-- WezTerm: SSH domain for the agent host and clipboard push. TEMPLATE: install-mac.sh and install-linux.sh fill
+-- @AGENT_HOST@, @AGENT_HOST_ADDRESS@ and @AGENT_HOST_USER@ from .env and write
+-- ~/.config/wezterm/wezterm-agent-host.lua, then add
 --   require("wezterm-agent-host").apply(config)
--- before `return config` in the wezterm.lua it finds.
+-- before `return config` in the wezterm.lua they find.
 local wezterm = require("wezterm")
 local M = {}
 
--- Cmd+V in a pane connected to the host (its SSH domain, or a local pane whose foreground process is ssh or
+-- Keys. Cmd+V on macOS: no terminal application reads Cmd, so it can be taken over. On Linux CMD means Super, which
+-- desktops keep for themselves (GNOME opens its notification list on Super+V), and Ctrl+V belongs to the application
+-- in the pane, so the routing hangs off Ctrl+Shift+V, WezTerm's own paste key there. Same reasoning for the new tab.
+local MAC = (wezterm.target_triple or ""):find("darwin") ~= nil
+local PASTE_KEY = MAC and { key = "v", mods = "CMD" } or { key = "v", mods = "CTRL|SHIFT" }
+local TAB_KEY = MAC and { key = "a", mods = "CMD|SHIFT" } or { key = "a", mods = "CTRL|SHIFT" }
+
+-- The paste key in a pane connected to the host (its SSH domain, or a local pane whose foreground process is ssh or
 -- mosh-client). A pty carries text only, so an image cannot be pasted the normal way: clip-push --if-image ships it
 -- over SSH into clip-put on the host, which stores it as ~/.clip/<stamp>.png and prints that path, and the path is
 -- pasted into the pane (pane:paste honours bracketed paste, so it arrives as one paste, not keystrokes). The
@@ -36,7 +44,7 @@ local function paste_via_host(window, pane)
     local why
     if not called then why = tostring(ok)                                 -- clip-push could not be run at all
     elseif not ok then why = (stderr or "")                               -- it ran and failed; it said why
-    else why = "host clip-put is older than this Mac's config; git pull on the host" end
+    else why = "host clip-put is older than this client's config; git pull on the host" end
     window:toast_notification(HOST .. " clipboard", "clip-push failed: " .. why, nil, 5000)
     return
   end
@@ -53,16 +61,16 @@ function M.apply(config)
   })
   -- tmux on the host advertises tmux-256color; xterm-256color is what the remote terminfo has.
   config.term = "xterm-256color"
-  -- Shared look for every Mac. A wezterm.lua that sets color_scheme before the require line keeps its own.
+  -- Shared look for every client. A wezterm.lua that sets color_scheme before the require line keeps its own.
   config.color_scheme = config.color_scheme or "Tokyo Night"
   -- OSC 52 clipboard writes are on by default in WezTerm; tmux set-clipboard on passes them through.
   config.keys = config.keys or {}
   table.insert(config.keys, {
-    key = "a", mods = "CMD|SHIFT",
+    key = TAB_KEY.key, mods = TAB_KEY.mods,
     action = wezterm.action.SpawnCommandInNewTab { domain = { DomainName = HOST } },
   })
   table.insert(config.keys, {
-    key = "v", mods = "CMD",
+    key = PASTE_KEY.key, mods = PASTE_KEY.mods,
     action = wezterm.action_callback(paste_via_host),
   })
   return config
