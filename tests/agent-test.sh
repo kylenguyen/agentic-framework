@@ -350,7 +350,18 @@ else
   fi
 fi
 # The picker is the login landing, so a host without fzf has to say so rather than drop the operator nowhere.
-nofzf=$(printf '%s' "$PATH" | tr ':' '\n' | while read -r d; do [ -x "$d/fzf" ] || printf '%s:' "$d"; done)
+# A directory holding fzf may also hold env and bash (/usr/bin does), so it is shadowed by a copy of its links
+# without fzf rather than dropped from PATH.
+nofzf=$(printf '%s' "$PATH" | tr ':' '\n' | while read -r d; do
+  if [ -x "$d/fzf" ]; then
+    s="$T/nofzf/$(printf '%s' "$d" | tr '/' '_')"
+    mkdir -p "$s"
+    for f in "$d"/*; do [ "${f##*/}" = fzf ] || ln -sf "$f" "$s/"; done
+    printf '%s:' "$s"
+  else
+    printf '%s:' "$d"
+  fi
+done)
 check "pick: without fzf on PATH, exit 2 and say so" 2 "$(PATH=$nofzf "$AGENT" pick >/dev/null 2>&1; echo $?)"
 has "fzf is not installed" "$(PATH=$nofzf "$AGENT" pick 2>&1 || true)" "pick: without fzf, the message names fzf"
 
