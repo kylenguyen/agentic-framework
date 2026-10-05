@@ -212,10 +212,11 @@ echo "# no deployment literals anywhere in the repo"
 ( # The repo describes a framework, not one deployment: no file, comment or doc may name a real host, login, LAN or
   # tailnet. Placeholders in the docs are <host>, <user>, <lan-ip>; the tests use box, alice and 10.x.
   # Add a word here when a deployment value slips in and gets fixed, so it cannot come back. This file is skipped
-  # because it carries the list; .env is the one place the real values belong.
+  # because it carries the list; .env is the one place the real values belong. config/claude-settings.json is
+  # skipped too: it is the operator's live ~/.claude/settings.json and names their own checkout.
   cd "$REPO" || exit 1
   words='as1|kyle|kylepc|macbook|manee-goby|192\.168\.10\.'
-  hits=$(grep -rnwE --exclude-dir=.git --exclude=.git --exclude=.env --exclude=params-test.sh "$words" . || true)
+  hits=$(grep -rnwE --exclude-dir=.git --exclude=.git --exclude=.env --exclude=params-test.sh --exclude=claude-settings.json "$words" . || true)
   [ -z "$hits" ] && ok "scan: no deployment literals in scripts, templates, configs or docs" || bad "scan: deployment literals found" "$hits"
   # .env.example values are examples too: they may appear only there.
   ex=$(grep -rnw --exclude-dir=.git --exclude=.git --exclude=.env --exclude=.env.example --exclude=params-test.sh 'agent-host\.example\.ts\.net\|192\.168\.1\.10' . || true)
