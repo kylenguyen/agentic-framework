@@ -205,7 +205,7 @@ echo "# Linux dry run of install-linux.sh (--no-packages: no sudo)"
   grep -q 'wl-paste --list-types' "$T/lx/home/.local/bin/clip-push" && ok "linux dry run: the Linux clip-push is installed" || bad "linux dry run: the Linux clip-push is installed"
   check "linux dry run: PATH block in ~/.bashrc" 1 "$(grep -c 'agentic-framework:path >>>' "$T/lx/home/.bashrc")"
   [ -e "$T/lx/home/.zshrc" ] && bad "linux dry run: ~/.zshrc left alone under bash" || ok "linux dry run: ~/.zshrc left alone under bash"
-  case "$out" in *"Ctrl+Shift+V pushes images"*) ok "linux dry run: names Ctrl+Shift+V";; *) bad "linux dry run: names Ctrl+Shift+V" "$out";; esac
+  case "$out" in *"Ctrl+V pushes images"*) ok "linux dry run: names Ctrl+V";; *) bad "linux dry run: names Ctrl+V" "$out";; esac
 )
 
 echo "# no deployment literals anywhere in the repo"

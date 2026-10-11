@@ -1,7 +1,7 @@
 #!/bin/bash
 # clip-push: send the Linux desktop clipboard to the agent host so a harness there can paste it. The Linux twin of
 # bin/clip-push-mac.sh.in: same arguments, same output, same host side.
-# WezTerm runs `clip-push --if-image` on Ctrl+Shift+V in a pane connected to the host
+# WezTerm runs `clip-push --if-image` on Ctrl+V (or Ctrl+Shift+V) in a pane connected to the host
 # (config/wezterm-agent-host.lua.in): an image is pushed, clip-put on the host stores it as ~/.clip/<stamp>.png and
 # prints that path (the second output line), and WezTerm pastes the path into the pane, which the harness attaches as
 # an image. Text is reported only and WezTerm pastes it natively.

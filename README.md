@@ -134,11 +134,12 @@ Run it as yourself, not with sudo. It does what `install-mac.sh` does, with thes
   is missing the script runs `sudo` for that install and nothing else, so sudo asks for a password once (yours, or
   root's on openSUSE); a configured machine never prompts. `--no-packages` skips this and prints the command instead. Run it on the host and it refuses;
 - `clip-push` reads the clipboard with `wl-paste` when `WAYLAND_DISPLAY` is set, else with `xclip`;
-- the WezTerm keys are Ctrl+Shift+V (paste, image push) and Ctrl+Shift+A (new tab on <host>): Cmd is Super on
-  Linux, which desktops keep for themselves, and Ctrl+V belongs to the program in the pane;
+- the WezTerm keys are Ctrl+V (paste, image push; Ctrl+Shift+V does the same) and Ctrl+Shift+A (new tab on
+  <host>): Cmd is Super on Linux, which desktops keep for themselves. A literal ^V no longer reaches the pane, so
+  use Ctrl+Q for vim's visual block;
 - the PATH block goes in the rc file of your login shell (`~/.bashrc`, `~/.zshrc`, else `~/.profile`).
 
-Then open a new shell and reload WezTerm with Ctrl+Shift+R. In the checkpoints below read Cmd+V as Ctrl+Shift+V,
+Then open a new shell and reload WezTerm with Ctrl+Shift+R. In the checkpoints below read Cmd+V as Ctrl+V,
 Cmd+Shift+A as Ctrl+Shift+A, and `pbpaste` as `wl-paste` (Wayland) or `xclip -selection clipboard -o` (X11).
 
 Verify (Linux client alone): the Mac block above, with `tailscale status | grep <host>` for the Tailscale line, and
@@ -319,7 +320,7 @@ older than this Mac's WezTerm config: `git pull` on the host. For Ctrl+V in Clau
 - `tests/e2e/linux.sh`: `install-linux.sh` on Ubuntu 24.04, Debian 12, Fedora 41, Arch and openSUSE Tumbleweed
   against the same host container (`DISTROS=` picks a subset). Each client starts without the packages, so sudo is
   answered once and the distro's own mirror is used; then key login, `clip-push` against a real X clipboard (Xvfb)
-  and on Ubuntu a real Wayland one (headless sway), Ctrl+Shift+V through the rendered module, and a second run that
+  and on Ubuntu a real Wayland one (headless sway), Ctrl+V and Ctrl+Shift+V through the rendered module, and a second run that
   must prompt for nothing. Needs network during the run. Not covered: a real desktop session and WezTerm itself.
 - `tests/e2e/harness-paste.sh`: the pasted path into the real Claude Code, Oh My Pi and OpenCode in a third
   container image (`tests/e2e/Dockerfile.harness`, versions pinned), each harness having to show the image

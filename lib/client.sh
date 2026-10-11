@@ -3,7 +3,7 @@
 # The caller sets REPO, sources lib/params.sh, then this file, and sets these before calling anything:
 #   CLIENT_SCRIPT   its own name, for "re-run ./<script>" hints
 #   CLIENT_RC       the shell rc file that gets the ~/.local/bin PATH block
-#   KEY_PASTE       how the paste key is written on this platform (Cmd+V, Ctrl+Shift+V)
+#   KEY_PASTE       how the paste key is written on this platform (Cmd+V, Ctrl+V)
 #   KEY_RELOAD      how WezTerm's reload-config key is written (Cmd+Shift+R, Ctrl+Shift+R)
 #   NET_HINT        what to check when the host does not answer (the Tailscale app or daemon)
 # The steps run in this order: client_params, the caller's packages, client_ssh_config, client_wezterm,

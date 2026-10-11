@@ -114,7 +114,8 @@ for distro in $DISTROS; do
     check "$distro $label: the pushed file holds the PNG byte for byte" "$png_sha" "$(box sha256sum "$path" 2>/dev/null | cut -c1-64)"
     # The paste key as WezTerm runs it on Linux: the module under Lua 5.4 with the Linux target triple.
     apply=$(lxe "${o[@]}" -e WEZ_TRIPLE=x86_64-unknown-linux-gnu -- lua5.4 tests/e2e/wezterm-paste.lua apply 2>&1)
-    has "key CTRL|SHIFT v callback" "$apply" "$distro $label: Ctrl+Shift+V is the routing callback"
+    has "key CTRL v callback" "$apply" "$distro $label: Ctrl+V is the routing callback"
+    has "key CTRL|SHIFT v callback" "$apply" "$distro $label: Ctrl+Shift+V is the routing callback too"
     has "key CTRL|SHIFT a SpawnCommandInNewTab $ALIAS" "$apply" "$distro $label: Ctrl+Shift+A opens a tab in the host domain"
     out=$(lxe "${o[@]}" -e WEZ_TRIPLE=x86_64-unknown-linux-gnu -- lua5.4 tests/e2e/wezterm-paste.lua domain 2>&1); path=${out#paste }
     case "$out" in "paste /home/$LOGIN/.clip/"*.png) ok "$distro $label: paste key -> push, then paste the host path";; *) bad "$distro $label: paste key -> push, then paste the host path" "$out";; esac

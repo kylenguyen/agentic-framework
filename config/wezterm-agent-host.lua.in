@@ -7,10 +7,14 @@ local wezterm = require("wezterm")
 local M = {}
 
 -- Keys. Cmd+V on macOS: no terminal application reads Cmd, so it can be taken over. On Linux CMD means Super, which
--- desktops keep for themselves (GNOME opens its notification list on Super+V), and Ctrl+V belongs to the application
--- in the pane, so the routing hangs off Ctrl+Shift+V, WezTerm's own paste key there. Same reasoning for the new tab.
+-- desktops keep for themselves (GNOME opens its notification list on Super+V), so paste is Ctrl+V, as in every other
+-- Linux app, with Ctrl+Shift+V (WezTerm's own paste key there) kept for muscle memory. The price: a literal ^V never
+-- reaches the pane (vim's visual block is Ctrl+Q instead; the shell's quoted-insert is lost). Claude Code's own
+-- Ctrl+V loses nothing: the callback pushes an image and pastes its path, which the harness attaches the same way.
+-- Cmd+Shift+A or Ctrl+Shift+A opens a new tab on the host.
 local MAC = (wezterm.target_triple or ""):find("darwin") ~= nil
-local PASTE_KEY = MAC and { key = "v", mods = "CMD" } or { key = "v", mods = "CTRL|SHIFT" }
+local PASTE_KEYS = MAC and { { key = "v", mods = "CMD" } }
+  or { { key = "v", mods = "CTRL" }, { key = "v", mods = "CTRL|SHIFT" } }
 local TAB_KEY = MAC and { key = "a", mods = "CMD|SHIFT" } or { key = "a", mods = "CTRL|SHIFT" }
 
 -- The paste key in a pane connected to the host (its SSH domain, or a local pane whose foreground process is ssh or
@@ -69,10 +73,12 @@ function M.apply(config)
     key = TAB_KEY.key, mods = TAB_KEY.mods,
     action = wezterm.action.SpawnCommandInNewTab { domain = { DomainName = HOST } },
   })
-  table.insert(config.keys, {
-    key = PASTE_KEY.key, mods = PASTE_KEY.mods,
-    action = wezterm.action_callback(paste_via_host),
-  })
+  for _, k in ipairs(PASTE_KEYS) do
+    table.insert(config.keys, {
+      key = k.key, mods = k.mods,
+      action = wezterm.action_callback(paste_via_host),
+    })
+  end
   return config
 end
 

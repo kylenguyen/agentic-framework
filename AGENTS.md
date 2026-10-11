@@ -23,7 +23,7 @@ Do not assume something exists because the plan describes it. Check this table a
 | 1 access | apt packages, zsh as login shell, linger, auto-updates; sshd and firewall left at OS defaults | `install-host.sh` phase 1 |
 | 2 sessions | tmux, session picker (`bin/agent`), zsh + oh-my-zsh, WezTerm domain | `bin/agent`, `config/` |
 | 3 harnesses | mise, uv, gh, the four harnesses, the Oh My Pi `pi-web-access` plugin, secrets file, shared rules, Claude settings, Codex global rules and config block | `install-host.sh` phases 2 to 4 |
-| 4 clipboard bridge | Cmd+V on a Mac (Ctrl+Shift+V on Linux) pushes an image to `~/.clip/<stamp>.png` on the host and pastes that path into the pane; Ctrl+V in Claude Code is served by the `xclip` shim; copies return over OSC 52 | `bin/clip-put`, `bin/xclip`, `bin/clip-push-mac.sh.in`, `bin/clip-push-linux.sh.in`, `config/wezterm-agent-host.lua.in` |
+| 4 clipboard bridge | Cmd+V on a Mac (Ctrl+V or Ctrl+Shift+V on Linux) pushes an image to `~/.clip/<stamp>.png` on the host and pastes that path into the pane; Ctrl+V in Claude Code is served by the `xclip` shim; copies return over OSC 52 | `bin/clip-put`, `bin/xclip`, `bin/clip-push-mac.sh.in`, `bin/clip-push-linux.sh.in`, `config/wezterm-agent-host.lua.in` |
 | 5 automation | `agent run`/`logs`/`stop`/`clean`, `agent-worker`, systemd units, GitHub runner workflow | planned, not started |
 | 6 isolation | `docker/Dockerfile.agent-sandbox`, `agent run --sandbox` | planned, not started |
 
@@ -52,7 +52,7 @@ phase 5 or 6, update this table and section 8 of the plan doc.
 | `config/bashrc.d/agents-env.sh` | PATH and secrets for every shell, including non-interactive SSH; POSIX sh | top of `~/.bashrc`, and from `~/.zshenv` |
 | `config/bashrc.d/mise.sh`, `tmux-autoattach.sh` | interactive-only bits, valid in bash and zsh; `tmux-autoattach.sh` runs `agent pick` for interactive SSH logins and logs out on exit 3 | bottom of `~/.bashrc` and end of `~/.zshrc` |
 | `config/ssh_config.client.in` | template: `Host <alias>`, `<alias>-lan` (dropped without a LAN address), `<alias>-clip` (BatchMode, ControlMaster) | `agent-host` marker block in `~/.ssh/config` on each client |
-| `config/wezterm-agent-host.lua.in` | template: SSH domain `<alias>`, new-tab key, paste key with image push then paste of the host path, default colour scheme. Keys follow `wezterm.target_triple`: Cmd+Shift+A and Cmd+V on macOS, Ctrl+Shift+A and Ctrl+Shift+V elsewhere | `~/.config/wezterm/wezterm-agent-host.lua` |
+| `config/wezterm-agent-host.lua.in` | template: SSH domain `<alias>`, new-tab key, paste key with image push then paste of the host path, default colour scheme. Keys follow `wezterm.target_triple`: Cmd+Shift+A and Cmd+V on macOS, Ctrl+Shift+A, Ctrl+V and Ctrl+Shift+V elsewhere | `~/.config/wezterm/wezterm-agent-host.lua` |
 | `config/claude-settings.json` | Claude Code allow and deny lists, model, status line command | `~/.claude/settings.json` |
 | `config/statusline-command.sh` | Claude Code status line, two lines; needs jq | `~/.claude/statusline-command.sh` |
 | `config/workspace/CLAUDE.md` | house rules for every repo under `~/workspace` and every harness | `~/workspace/CLAUDE.md`, `~/workspace/AGENTS.md`, `~/.codex/AGENTS.md` |

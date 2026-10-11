@@ -35,7 +35,7 @@ case "${LOGIN_SHELL##*/}" in
   bash) CLIENT_RC=$HOME/.bashrc ;;
   *)    CLIENT_RC=$HOME/.profile ;;
 esac
-KEY_PASTE=Ctrl+Shift+V
+KEY_PASTE=Ctrl+V
 KEY_RELOAD=Ctrl+Shift+R
 NET_HINT="check \`tailscale status\`"
 . "$REPO/lib/params.sh"

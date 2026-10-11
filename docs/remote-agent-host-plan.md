@@ -326,8 +326,10 @@ demand while a push moves only what is deliberately pasted.
 
 On a Linux client: `bin/clip-push-linux.sh.in` keeps the same arguments and output, reading the clipboard with
 `wl-paste` when `WAYLAND_DISPLAY` is set and `xclip -selection clipboard` otherwise (`install-linux.sh` installs
-both, through sudo, only when missing). The module binds Ctrl+Shift+V and Ctrl+Shift+A instead of Cmd+V and
-Cmd+Shift+A, chosen from `wezterm.target_triple`: Cmd is Super on Linux and desktops claim Super+V. WezTerm on Linux
+both, through sudo, only when missing). The module binds Ctrl+V (and Ctrl+Shift+V) and Ctrl+Shift+A instead of
+Cmd+V and Cmd+Shift+A, chosen from `wezterm.target_triple`: Cmd is Super on Linux and desktops claim Super+V. Taking
+Ctrl+V means a literal ^V never reaches the pane (vim's visual block moves to Ctrl+Q); Claude Code's own Ctrl+V gets
+the same result through the callback. WezTerm on Linux
 passes the desktop session's environment to `clip-push`, so it only tops up PATH. Automated:
 `tests/e2e/linux.sh` on five distributions (X11 via Xvfb everywhere, Wayland via headless sway on Ubuntu).
 
