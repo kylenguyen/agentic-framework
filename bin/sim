@@ -9,7 +9,7 @@
 #   sim env                             exports for this worktree's emulator: eval "$(sim env)"
 #   sim run <cmd...>                    run a command in that environment, e.g. sim run ./gradlew test
 #   sim build [args]                    from the app's directory: Metro if not running, then expo run:android for the slot
-#   sim maestro <args...>               Maestro on this worktree's emulator, in a container: sim maestro test .maestro/
+#   sim maestro android|ios <args...>   Maestro on this worktree's emulator or simulator: sim maestro ios test .maestro/
 #   sim metro start|stop|log <P>        Metro for this worktree's slot: android (adb reverse), web, ios (on the Mac)
 #   sim android start|stop|logs <N|all> the emulator units
 #   sim ios start|stop <N|all>          boot or shut down simulators agent-ios-N on the Mac
@@ -108,8 +108,10 @@ a boot (up to a minute). An Android emulator starts clean, so after an idle stop
 - Android: \`sim wait\`, then \`sim build\` from the app's directory: it starts Metro for your emulator and builds,
   installs and opens the dev build. Drive it with the sim-android tools; JS edits reach the app without a rebuild.
   Never \`npx expo run:android\` directly: it would build for port 8081, which is not yours.
-- Maestro flows: \`sim maestro test <flows>\` runs them on your emulator (flows inside this worktree). Never run
-  \`maestro\` directly: it cannot see your emulator and hangs.
+- Maestro flows: \`sim maestro android test <flows>\` runs them on your emulator, \`sim maestro ios test <flows>\`
+  on your iOS simulator, with the app already installed there through the sim-ios tools. Flows must lie inside
+  this worktree. On iOS the run prints where its debug output (logs, screenshots of a failed step) lands on this
+  host. Never run \`maestro\` directly: it cannot see your device and hangs.
 - iOS: \`sim ios prepare\` copies this worktree to the Mac and prints its path there; build and run it with the
   sim-ios tools (workspace under that path's ios/ directory), then \`sim metro start ios\`. After a JS-only
   change, \`sim ios sync\` is enough.
@@ -164,7 +166,7 @@ cmd_build() {
 # a unix socket in a directory both containers mount. Paths Maestro is given must lie inside the worktree, which is
 # mounted at its own path, and so is its HOME, $SIM_CACHE/android/maestro-N, so the debug output path it prints
 # (.maestro/tests/<run>) is right on the host too.
-cmd_maestro() {
+maestro_android() {
   [ $# -gt 0 ] || usage
   command -v docker >/dev/null || die "sim maestro needs docker, usable without sudo"
   local n root image name run home ttyf=() envs=() v rc
@@ -199,6 +201,57 @@ cmd_maestro() {
     "$image" "$(sim_android_serial "$n")" "$@" || rc=$?
   sim_touch android "$n"
   return "$rc"
+}
+
+# Maestro's iOS driver is an XCTest runner that xcodebuild installs on the simulator, so on iOS Maestro runs on the
+# Mac: the launcher sim-maestro (install-ios-runner.sh) runs it on agent-ios-N, in the synced copy of the worktree,
+# which every run syncs first. Paths into the worktree are rewritten to the same paths in that copy, so they must lie
+# inside the worktree. Maestro picks a free port for its driver on every run, so slots run side by side. The run's
+# debug output (logs, a screenshot of a failed step) comes back to $SIM_CACHE/ios/maestro-N.
+maestro_ios() {
+  [ $# -gt 0 ] || usage
+  local n root dir app lock out a k args=() envs=() v tty=() rc
+  n=$(my_slot ios) || exit 1
+  root=$(sim_root); dir=sims/$(sim_tree_name "$root"); app=$(sim_app_rel "$PWD" "$root")
+  out=$SIM_CACHE/ios/maestro-$n
+  mkdir -p "$SIM_STATE/ios"
+  exec {lock}> "$SIM_STATE/ios/$n.maestro.lock"
+  flock -n "$lock" || die "a Maestro run is already going on ios slot $n"
+  sim_touch ios "$n"
+  cmd_ios sync >/dev/null || die "could not sync $root to $AGENT_IOS_HOST"
+  sim_ios_boot "$n" || die "could not boot $(sim_ios_name "$n") on $AGENT_IOS_HOST"
+  rm -f "$SIM_STATE/ios/$n.down"
+  # A long suite is use: keep the reaper off the simulator while it runs.
+  ( exec {lock}>&-; while sleep 60; do sim_touch ios "$n"; done ) >/dev/null 2>&1 &
+  # shellcheck disable=SC2064   # expanded now: the trap runs after this function's locals are gone
+  trap "kill $! 2>/dev/null" EXIT
+  for a in "$@"; do
+    k=; case $a in --*=*) k=${a%%=*}=; a=${a#*=} ;; esac
+    case $a in "$root"/*) a=$(realpath -m -s --relative-to="$root/$app" "$a") ;; esac
+    args+=("$(printf %q "$k$a")")
+  done
+  # Maestro hands MAESTRO_* variables to the flows.
+  for v in $(compgen -e | grep '^MAESTRO_' || true); do envs+=("$(printf %q "$v=${!v}")"); done
+  [ -t 0 ] && [ -t 1 ] && tty=(-tt)
+  rc=0
+  sim_ios_ssh "${tty[@]}" "cd $dir/$app && env ${envs[*]} sim-maestro $n ${args[*]}" || rc=$?
+  sim_touch ios "$n"
+  mkdir -p "$out"
+  if rsync -az --delete -e "ssh ${SIM_SSH_OPTS[*]}" "$AGENT_IOS_USER@$AGENT_IOS_HOST:.cache/agent-sim/maestro-$n/" "$out/" 2>/dev/null; then
+    echo "debug output: $out" >&2
+  else
+    echo "sim maestro: could not fetch the debug output from $AGENT_IOS_HOST" >&2
+  fi
+  return "$rc"
+}
+
+cmd_maestro() {
+  local p=${1:-}; [ $# -gt 0 ] && shift
+  case $p in
+    android) maestro_android "$@" ;;
+    ios) maestro_ios "$@" ;;
+    *) usage ;;
+  esac
 }
 
 cmd_metro() {
@@ -292,7 +345,7 @@ cmd_ios() {
       done ;;
     sync)
       sim_ios_ssh "mkdir -p $dir" || exit 1
-      mapfile -t args < <(sim_rsync_args)
+      local args; mapfile -t args < <(sim_rsync_args)
       rsync "${args[@]}" -e "ssh ${SIM_SSH_OPTS[*]}" "$root/" "$AGENT_IOS_USER@$AGENT_IOS_HOST:$dir/"
       echo "synced to $(sim_ios_ssh 'echo $HOME')/$dir/$app on the Mac" ;;
     prepare)
@@ -302,13 +355,13 @@ cmd_ios() {
         || die "prepare failed on the Mac; the output above says where"
       echo "workspace: $(sim_ios_ssh "ls -d \$HOME/$dir/$app/ios/*.xcworkspace" | head -1)" ;;
     bootstrap)
-      sim_ios_ssh "SIM_XCODEBUILDMCP_VERSION=$SIM_XCODEBUILDMCP_VERSION SIM_IOS_SLOTS=$AGENT_SIM_IOS_SLOTS SIM_IOS_DEVICE_TYPE=$SIM_IOS_DEVICE_TYPE SIM_IOS_WORKFLOWS=$SIM_IOS_WORKFLOWS /bin/bash -s" \
+      sim_ios_ssh "SIM_XCODEBUILDMCP_VERSION=$SIM_XCODEBUILDMCP_VERSION SIM_MAESTRO_VERSION=$SIM_MAESTRO_VERSION SIM_MAESTRO_SHA256=$SIM_MAESTRO_SHA256 SIM_IOS_SLOTS=$AGENT_SIM_IOS_SLOTS SIM_IOS_DEVICE_TYPE=$SIM_IOS_DEVICE_TYPE SIM_IOS_WORKFLOWS=$SIM_IOS_WORKFLOWS /bin/bash -s" \
         < "$REPO/install-ios-runner.sh" ;;
     gc)
       local days=${2:-7}
       [[ $days =~ ^[0-9]+$ ]] || usage
-      # Synced trees, Xcode's DerivedData, and XcodeBuildMCP's own per-workspace DerivedData.
-      sim_ios_ssh "for d in sims Library/Developer/Xcode/DerivedData Library/Developer/XcodeBuildMCP/workspaces; do [ -d \$d ] && find \$d -mindepth 1 -maxdepth 1 -type d -mtime +$days -print -exec rm -rf {} + ; done; df -h \$HOME | tail -1" ;;
+      # Synced trees, Xcode's DerivedData, XcodeBuildMCP's own per-workspace DerivedData, Maestro's debug output.
+      sim_ios_ssh "for d in sims Library/Developer/Xcode/DerivedData Library/Developer/XcodeBuildMCP/workspaces .cache/agent-sim; do [ -d \$d ] && find \$d -mindepth 1 -maxdepth 1 -type d -mtime +$days -print -exec rm -rf {} + ; done; df -h \$HOME | tail -1" ;;
     *) usage ;;
   esac
 }

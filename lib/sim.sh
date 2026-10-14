@@ -38,8 +38,10 @@ SIM_AVD=agent-sim-android
 SIM_AVD_DEVICE=pixel_7
 SIM_IOS_DEVICE_TYPE=com.apple.CoreSimulator.SimDeviceType.iPhone-17
 SIM_IOS_WORKFLOWS=simulator,ui-automation,project-discovery,utilities
-# Maestro runs in a container built from config/sim/Dockerfile.maestro on first use (`sim maestro`). Its adb ports
-# (5037, 5038) are hard-coded per release, so a new version needs the check in docs/simulators-plan.md, Maestro.
+# Maestro: for Android it runs in a container built from config/sim/Dockerfile.maestro on first use (`sim maestro
+# android`); for iOS install-ios-runner.sh installs the same release on the Mac (`sim ios bootstrap`), so one bump
+# moves both. Its adb ports (5037, 5038) are hard-coded per release, so a new version needs the check in
+# docs/simulators-plan.md, Maestro.
 SIM_MAESTRO_VERSION=2.11.0
 SIM_MAESTRO_SHA256=5384593cb4e7a106489e75a821d157dd43f4e438df6bc308b72e82c685e1283a
 sim_maestro_image() { # the image tag: the version and a hash of what builds it, so a change to either builds anew
@@ -228,12 +230,15 @@ sim_ios_shutdown() {
     </dev/null >/dev/null 2>&1
 }
 
-# sim_ios_ssh <cmd...>: run on the Mac as the iOS runner account. BatchMode: an agent can never answer a prompt.
+# sim_ios_ssh [-tt] <cmd...>: run on the Mac as the iOS runner account. BatchMode: an agent can never answer a
+# prompt. -tt gives the command a terminal, so Ctrl-C on the host reaches it.
 SIM_SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=30)
 sim_ios_ssh() {
+  local tty=()
+  [ "${1:-}" = -tt ] && { tty=(-tt); shift; }
   [ -n "${AGENT_IOS_HOST:-}" ] && [ -n "${AGENT_IOS_USER:-}" ] \
     || { sim_fail "AGENT_IOS_HOST and AGENT_IOS_USER must be set in .env (docs/simulators-plan.md)"; return 1; }
-  ssh "${SIM_SSH_OPTS[@]}" "$AGENT_IOS_USER@$AGENT_IOS_HOST" "$@"
+  ssh "${SIM_SSH_OPTS[@]}" "${tty[@]}" "$AGENT_IOS_USER@$AGENT_IOS_HOST" "$@"
 }
 
 # What rsync leaves out when a worktree goes to the Mac: VCS data, dependencies and build output (rebuilt there),
