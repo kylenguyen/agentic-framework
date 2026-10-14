@@ -3,8 +3,10 @@
 // Usage: node tests/mcp-probe.mjs [--call <tool> '<json args>']... -- <command> [args...]
 // Sends initialize, notifications/initialized and tools/list, then each --call in order, and prints one JSON line
 // per response: {"tools": [...names]} then {"call": name, "isError": bool, "text": "...", "images": n}.
-// Exits 1 on a protocol error or timeout (PROBE_TIMEOUT_MS, default 120000 per request).
+// Exits 1 on a protocol error or timeout (PROBE_TIMEOUT_MS, default 120000 per request). With PROBE_IMAGE_DIR set,
+// every image a call returns is written there as <call>-<n>.<ext>, to look at what the agent would see.
 import { spawn } from "node:child_process";
+import { writeFileSync } from "node:fs";
 
 const argv = process.argv.slice(2);
 const calls = [];
@@ -49,7 +51,10 @@ try {
   for (const c of calls) {
     const r = await request("tools/call", { name: c.name, arguments: c.args });
     const text = (r.content || []).filter((x) => x.type === "text").map((x) => x.text).join("\n");
-    const images = (r.content || []).filter((x) => x.type === "image").length;
+    const imgs = (r.content || []).filter((x) => x.type === "image");
+    if (process.env.PROBE_IMAGE_DIR) imgs.forEach((x, i) => writeFileSync(
+      `${process.env.PROBE_IMAGE_DIR}/${c.name}-${i}.${(x.mimeType || "image/png").split("/")[1]}`, Buffer.from(x.data, "base64")));
+    const images = imgs.length;
     console.log(JSON.stringify({ call: c.name, isError: !!r.isError, text: text.slice(0, 4000), images }));
   }
   child.stdin.end(); child.kill();
