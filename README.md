@@ -289,7 +289,8 @@ Host: the host script does it all. Phase 1 adds the emulator and browser librari
 Playwright MCP and mobile-mcp under `~/.local/share/agent-sim`, and the Playwright browsers; phase 4 links `sim`,
 `sim-mcp`, the `agent-sim-android@.service` user unit and `agent-sim-reap.timer`, which stops devices left unused
 for `AGENT_SIM_IDLE_MINUTES` (default 30; the next tool call starts them again). The Android command-line tools are the one manual
-download: unpack them to `~/Android/Sdk/cmdline-tools/latest` and re-run.
+download: unpack them to `~/Android/Sdk/cmdline-tools/latest` and re-run. `sim maestro` (Maestro flows on the
+slot's emulator) needs Docker without sudo and builds its image on first use.
 
 Mac (iOS, optional):
 1. An admin makes a standard (non-admin) account for the runner (`<ios-user>`), installs Xcode with an iOS
@@ -308,6 +309,7 @@ host$ sim status                                      # one line per slot, all f
 host$ cd ~/workspace/agentic-framework && node tests/mcp-probe.mjs --call browser_navigate '{"url":"https://example.com"}' -- sim-mcp web 2>/dev/null | tail -1   # "isError":false, Example Domain
 host$ sim android start 1 && sleep 90 && ANDROID_ADB_SERVER_PORT=5038 ~/Android/Sdk/platform-tools/adb devices   # emulator-5600  device
 host$ node tests/mcp-probe.mjs --call mobile_list_available_devices '{}' -- sim-mcp android 2>/dev/null | tail -1   # one device (named after the AVD)
+host$ cd ~/workspace/<repo> && sim maestro test .maestro/   # with a sim-android session open in that worktree; the first run builds the image
 host$ sim android stop all
 host$ systemctl --user list-timers agent-sim-reap.timer   # next run within 5 minutes
 host$ node tests/mcp-probe.mjs --call session_show_defaults '{}' -- sim-mcp ios 2>/dev/null | tail -1   # simulatorId set
@@ -316,7 +318,7 @@ host$ bash tests/sim-test.sh | tail -1                # N passed, 0 failed
 
 Rollback: `sim android stop all`; `systemctl --user disable --now agent-sim-reap.timer`;
 `rm ~/.local/bin/sim ~/.local/bin/sim-mcp ~/.config/systemd/user/agent-sim-android@.service ~/.config/systemd/user/agent-sim-reap.*`;
-`rm -rf ~/.local/share/agent-sim ~/.cache/agent-sim ~/.android/avd/agent-sim-android.*`; in a repo, delete the `sim-*` entries
+`rm -rf ~/.local/share/agent-sim ~/.cache/agent-sim ~/.android/avd/agent-sim-android.*`; `docker rmi $(docker images -q agent-sim-maestro)`; in a repo, delete the `sim-*` entries
 (`.mcp.json`, `opencode.json`, the `agentic-framework:sim` block in `.codex/config.toml`). On the Mac, as the
 runner: `rm -rf ~/sims ~/.local/bin/sim-xcodebuildmcp`, `xcrun simctl delete agent-ios-1 agent-ios-2`, and the
 `agentic-framework:sim` block in `~/.zshenv`.

@@ -38,6 +38,13 @@ SIM_AVD=agent-sim-android
 SIM_AVD_DEVICE=pixel_7
 SIM_IOS_DEVICE_TYPE=com.apple.CoreSimulator.SimDeviceType.iPhone-17
 SIM_IOS_WORKFLOWS=simulator,ui-automation,project-discovery,utilities
+# Maestro runs in a container built from config/sim/Dockerfile.maestro on first use (`sim maestro`). Its adb ports
+# (5037, 5038) are hard-coded per release, so a new version needs the check in docs/simulators-plan.md, Maestro.
+SIM_MAESTRO_VERSION=2.11.0
+SIM_MAESTRO_SHA256=5384593cb4e7a106489e75a821d157dd43f4e438df6bc308b72e82c685e1283a
+sim_maestro_image() { # the image tag: the version and a hash of what builds it, so a change to either builds anew
+  echo "agent-sim-maestro:$SIM_MAESTRO_VERSION-$(cat "$REPO/config/sim/Dockerfile.maestro" "$REPO/config/sim/maestro-entry.sh" | sha256sum | cut -c1-8)"
+}
 
 # System libraries, Ubuntu 26.04 names. The emulator loads the X/xcb, PulseAudio and font libraries even with
 # -no-window; the rest is Playwright's own list for chromium and webkit (playwright-core nativeDeps, ubuntu26.04).

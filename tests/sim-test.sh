@@ -21,6 +21,7 @@ mkdir -p "$REPO/bin" "$REPO/lib" "$REPO/config" "$T/shims" "$T/log"
 cp "$SRC/lib/params.sh" "$SRC/lib/sim.sh" "$REPO/lib/"
 cp "$SRC/bin/sim" "$SRC/bin/sim-mcp" "$REPO/bin/"
 cp "$SRC/install-ios-runner.sh" "$REPO/"
+mkdir -p "$REPO/config/sim"; cp "$SRC/config/sim/"* "$REPO/config/sim/"
 printf 'AGENT_HOST=box\nAGENT_IOS_HOST=mini.tail.ts.net\nAGENT_IOS_USER=bob\nAGENT_SIM_ANDROID_SLOTS=2\nAGENT_SIM_WEB_SLOTS=2\nAGENT_SIM_IOS_SLOTS=1\n' > "$REPO/.env"
 for c in ssh rsync mise; do
   printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s/log/%s"\nexit 0\n' "$T" "$c" > "$T/shims/$c"
@@ -43,6 +44,17 @@ EOF
 printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s/log/adb"\n' "$T" > "$T/shims/adb"
 printf '#!/bin/sh\nprintf "%%s\\n" "$*" > "%s/log/emulator"\necho "$ANDROID_TMP" > "%s/log/emulator.tmp"\n' "$T" "$T" > "$T/shims/emulator"
 printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s/log/npx"\n' "$T" > "$T/shims/npx"
+# docker: logs every call. The image exists unless $T/docker.noimage does; `ps` prints $T/docker.ps; a run of the
+# Maestro container exits with the code in $T/docker.rc.
+cat > "$T/shims/docker" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >> "$T/log/docker"
+case "\$1 \$2" in
+  "image inspect") [ ! -e "$T/docker.noimage" ] ;;
+  ps*) cat "$T/docker.ps" 2>/dev/null; exit 0 ;;
+  run*) case "\$*" in *" -d "*) exit 0 ;; esac; exit "\$(cat "$T/docker.rc" 2>/dev/null || echo 0)" ;;
+esac
+EOF
 # The MCP server stand-in: records its arguments, environment and input, then serves until stdin closes.
 printf '#!/bin/sh\nprintf "%%s\\n" "$*" > "%s/log/node.args"\nenv > "%s/log/node.env"\ncat > "%s/log/node.in"\n' "$T" "$T" "$T" > "$T/shims/node"
 mkdir -p "$T/prefix/node_modules/.bin"; printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s/log/mobilecli"\n' "$T" > "$T/prefix/node_modules/.bin/mobilecli"
@@ -61,7 +73,7 @@ hold() { ( cd "$2" && . "$REPO/lib/sim.sh" && sim_load_params && sim_lease "$1" 
 wait_for() { local i; for i in $(seq 1 50); do eval "$1" && return 0; sleep 0.1; done; return 1; }
 
 echo "# syntax"
-for f in lib/sim.sh bin/sim bin/sim-mcp install-ios-runner.sh tests/sim-test.sh; do bash -n "$SRC/$f" && ok "bash -n $f" || bad "bash -n $f"; done
+for f in lib/sim.sh bin/sim bin/sim-mcp install-ios-runner.sh tests/sim-test.sh config/sim/maestro-entry.sh; do bash -n "$SRC/$f" && ok "bash -n $f" || bad "bash -n $f"; done
 [ -x "$SRC/bin/sim" ] && [ -x "$SRC/bin/sim-mcp" ] && ok "bin/sim and bin/sim-mcp are executable" || bad "executable bits"
 
 echo "# parameters"
@@ -210,6 +222,45 @@ echo "# sim commands"
   has "ios sync: no node_modules" "--exclude=node_modules" "$r"
   has "ios sync: keeps the Mac's generated ios/" "--filter=P ios/" "$r"
   has "ios sync: deletes what the worktree dropped" "--delete" "$r"
+)
+echo "# sim maestro"
+( cd "$T/ws/app.wt/feat/client" || exit 1; rm -f "$T/log/"* "$T/active"
+  out=$("$REPO/bin/sim" maestro test flows/ 2>&1); rc=$?
+  [ "$rc" != 0 ] && ok "maestro: fails without a lease" || bad "maestro: fails without a lease"
+  has "maestro: says how to get a slot" "sim enable" "$out"
+  hold android "$T/ws/app.wt/feat" 30; holder=$!
+  wait_for "( lib; sim_held android 1 )"
+  touch "$T/docker.noimage"; echo 3 > "$T/docker.rc"
+  MAESTRO_APP_ID=com.x "$REPO/bin/sim" maestro test flows/ >/dev/null 2>"$T/log/maestro.err"; rc=$?
+  check "maestro: Maestro's exit code" 3 "$rc"
+  d=$(cat "$T/log/docker")
+  has "maestro: starts the slot's emulator" "start agent-sim-android@1.service" "$(cat "$T/log/systemctl")"
+  has "maestro: and waits for its boot" "getprop sys.boot_completed" "$(cat "$T/log/adb")"
+  has "maestro: builds the pinned image when missing" "build -q -t agent-sim-maestro:2.11.0-" "$d"
+  has "maestro: of the pinned version" "--build-arg MAESTRO_VERSION=2.11.0" "$d"
+  has "maestro: with its checksum" "MAESTRO_SHA256=5384593c" "$d"
+  relay=$(grep -- '--name agent-sim-maestro-1-adb' "$T/log/docker")
+  has "maestro: relay on the host network" "--network host" "$relay"
+  has "maestro: relay to the slot's adb server" "UNIX-LISTEN:/run/sim/adb.sock,fork,mode=600 TCP:127.0.0.1:5038" "$relay"
+  run=$(grep -- '--name agent-sim-maestro-1 ' "$T/log/docker")
+  lacks "maestro: Maestro on a network of its own" "--network" "$run"
+  has "maestro: Maestro on the slot's serial" " emulator-5600 test flows/" "$run"
+  has "maestro: worktree at its own path" "-v $T/ws/app.wt/feat:$T/ws/app.wt/feat -w $T/ws/app.wt/feat/client" "$run"
+  has "maestro: as the host user" "--user $(id -u):$(id -g)" "$run"
+  has "maestro: HOME at its host path, so printed paths are real" "-e HOME=$HOME/.cache/agent-sim/android/maestro-1" "$run"
+  has "maestro: MAESTRO_ variables reach the flows" "-e MAESTRO_APP_ID" "$run"
+  check "maestro: relay removed after the run" "rm -f agent-sim-maestro-1-adb" "$(tail -1 "$T/log/docker")"
+  [ -e "$T/state/android/1.active" ] && ok "maestro: a run is use" || bad "maestro: a run is use"
+  rm -f "$T/log/docker" "$T/docker.noimage" "$T/docker.rc"
+  "$REPO/bin/sim" maestro hierarchy >/dev/null 2>&1
+  lacks "maestro: no build when the image exists" "build" "$(cat "$T/log/docker")"
+  echo abc123 > "$T/docker.ps"
+  out=$("$REPO/bin/sim" maestro test flows/ 2>&1); rc=$?
+  [ "$rc" != 0 ] && ok "maestro: one run per slot" || bad "maestro: one run per slot"
+  has "maestro: says a run is going" "already going on android slot 1" "$out"
+  rm -f "$T/docker.ps"
+  "$REPO/bin/sim" maestro >/dev/null 2>&1; check "maestro: no arguments is a usage error" 2 "$?"
+  kill "$holder" 2>/dev/null; pkill -P "$holder" 2>/dev/null; wait
 )
 echo "# reap"
 ( lib; rm -rf "$T/state/android" "$T/state/web" "$T/state/ios" "$T/log/"*; mkdir -p "$T/state/android" "$T/state/web" "$T/state/ios"

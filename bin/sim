@@ -9,6 +9,7 @@
 #   sim env                             exports for this worktree's emulator: eval "$(sim env)"
 #   sim run <cmd...>                    run a command in that environment, e.g. sim run ./gradlew test
 #   sim build [args]                    from the app's directory: Metro if not running, then expo run:android for the slot
+#   sim maestro <args...>               Maestro on this worktree's emulator, in a container: sim maestro test .maestro/
 #   sim metro start|stop|log <P>        Metro for this worktree's slot: android (adb reverse), web, ios (on the Mac)
 #   sim android start|stop|logs <N|all> the emulator units
 #   sim ios start|stop <N|all>          boot or shut down simulators agent-ios-N on the Mac
@@ -107,6 +108,8 @@ a boot (up to a minute). An Android emulator starts clean, so after an idle stop
 - Android: \`sim wait\`, then \`sim build\` from the app's directory: it starts Metro for your emulator and builds,
   installs and opens the dev build. Drive it with the sim-android tools; JS edits reach the app without a rebuild.
   Never \`npx expo run:android\` directly: it would build for port 8081, which is not yours.
+- Maestro flows: \`sim maestro test <flows>\` runs them on your emulator (flows inside this worktree). Never run
+  \`maestro\` directly: it cannot see your emulator and hangs.
 - iOS: \`sim ios prepare\` copies this worktree to the Mac and prints its path there; build and run it with the
   sim-ios tools (workspace under that path's ios/ directory), then \`sim metro start ios\`. After a JS-only
   change, \`sim ios sync\` is enough.
@@ -152,6 +155,50 @@ cmd_build() {
   if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then cmd_metro start android; sleep "${SIM_METRO_SETTLE:-5}"; fi
   eval "$(sim_android_env "$n")"
   exec npx expo run:android --port "$port" "$@" </dev/null
+}
+
+# Maestro reaches devices only through adb servers on 5037 and 5038 and a direct scan of the emulator ports, where it
+# hangs on an emulator its slot's server already holds; ANDROID_ADB_SERVER_PORT means nothing to it. So it runs in a
+# container, a network namespace of its own, where both ports lead to this slot's adb server (maestro-entry.sh). The
+# host side of that is a relay container on the host network: the slot's adb server on 127.0.0.1:5037+N, offered as
+# a unix socket in a directory both containers mount. Paths Maestro is given must lie inside the worktree, which is
+# mounted at its own path, and so is its HOME, $SIM_CACHE/android/maestro-N, so the debug output path it prints
+# (.maestro/tests/<run>) is right on the host too.
+cmd_maestro() {
+  [ $# -gt 0 ] || usage
+  command -v docker >/dev/null || die "sim maestro needs docker, usable without sudo"
+  local n root image name run home ttyf=() envs=() v rc
+  n=$(my_slot android) || exit 1
+  root=$(sim_root); image=$(sim_maestro_image); name=agent-sim-maestro-$n
+  run=$SIM_STATE/android/$n.maestro; home=$SIM_CACHE/android/maestro-$n
+  [ -z "$(docker ps -q --filter "name=^$name\$")" ] || die "a Maestro run is already going on android slot $n"
+  sim_touch android "$n"
+  systemctl --user start "$(sim_android_unit "$n")"
+  sim_android_wait "$n" "${SIM_BOOT_TIMEOUT:-180}" || die "$(sim_android_serial "$n") did not boot (sim android logs $n)"
+  if ! docker image inspect "$image" >/dev/null 2>&1; then
+    echo "sim maestro: building $image, once (downloads Maestro $SIM_MAESTRO_VERSION)" >&2
+    docker build -q -t "$image" --build-arg "MAESTRO_VERSION=$SIM_MAESTRO_VERSION" \
+      --build-arg "MAESTRO_SHA256=$SIM_MAESTRO_SHA256" -f "$REPO/config/sim/Dockerfile.maestro" "$REPO/config/sim" >/dev/null \
+      || die "could not build $image"
+  fi
+  rm -rf -- "$run"; mkdir -p "$run" "$home"
+  docker rm -f "$name-adb" >/dev/null 2>&1 || true
+  docker run -d --rm --name "$name-adb" --network host --user "$(id -u):$(id -g)" -v "$run:/run/sim" \
+    --entrypoint socat "$image" UNIX-LISTEN:/run/sim/adb.sock,fork,mode=600 "TCP:127.0.0.1:$(sim_adb_port "$n")" >/dev/null \
+    || die "could not start the adb relay for slot $n"
+  # A long suite is use: keep the reaper off the emulator while it runs.
+  ( while sleep 60; do sim_touch android "$n"; done ) >/dev/null 2>&1 &
+  # shellcheck disable=SC2064   # expanded now: the trap runs after this function's locals are gone
+  trap "kill $! 2>/dev/null; docker rm -f $name-adb >/dev/null 2>&1" EXIT
+  [ -t 0 ] && [ -t 1 ] && ttyf=(-t)
+  # Maestro hands MAESTRO_* variables to the flows.
+  for v in $(compgen -e | grep '^MAESTRO_' || true); do envs+=(-e "$v"); done
+  rc=0
+  docker run --rm -i "${ttyf[@]}" --name "$name" --user "$(id -u):$(id -g)" -e "HOME=$home" "${envs[@]}" \
+    -v "$run:/run/sim" -v "$home:$home" -v "$root:$root" -w "$(pwd -P)" \
+    "$image" "$(sim_android_serial "$n")" "$@" || rc=$?
+  sim_touch android "$n"
+  return "$rc"
 }
 
 cmd_metro() {
@@ -275,6 +322,7 @@ case $sub in
   env) cmd_env ;;
   run) cmd_run "$@" ;;
   build) cmd_build "$@" ;;
+  maestro) cmd_maestro "$@" ;;
   metro) cmd_metro "$@" ;;
   android) cmd_android "$@" ;;
   ios) cmd_ios "$@" ;;

@@ -1,0 +1,17 @@
+# config/sim/Dockerfile.maestro: Maestro for one simulator slot, built on first use by `sim maestro` as
+# agent-sim-maestro:<version>-<hash> (lib/sim.sh pins the version and the checksum). A container is the network namespace
+# that lets Maestro, which knows only the adb ports 5037 and 5038, reach slot N's adb server on 5037+N instead
+# (maestro-entry.sh). The base image is Ubuntu with Java 17, which Maestro needs.
+FROM eclipse-temurin:17-jre-noble
+ARG MAESTRO_VERSION
+ARG MAESTRO_SHA256
+RUN apt-get update && apt-get install -y --no-install-recommends socat unzip curl ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+RUN curl -fsSL -o /tmp/maestro.zip \
+      "https://github.com/mobile-dev-inc/maestro/releases/download/cli-${MAESTRO_VERSION}/maestro.zip" \
+ && echo "${MAESTRO_SHA256}  /tmp/maestro.zip" | sha256sum -c - \
+ && unzip -q /tmp/maestro.zip -d /opt && rm /tmp/maestro.zip
+COPY maestro-entry.sh /usr/local/bin/maestro-entry
+# No telemetry, and no prompt about AI analysis that nobody can answer.
+ENV MAESTRO_CLI_NO_ANALYTICS=1 MAESTRO_CLI_ANALYSIS_NOTIFICATION_DISABLED=true
+ENTRYPOINT ["/usr/local/bin/maestro-entry"]

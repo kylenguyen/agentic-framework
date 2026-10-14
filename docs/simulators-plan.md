@@ -22,8 +22,9 @@ once, in different repos and worktrees, under four harnesses.
 | Registration | per repo (`sim enable` writes `.mcp.json`, `opencode.json`, `.codex/config.toml`) | repos without apps keep a short tool list |
 | JS during development | Expo debug build + Metro: on the host via `adb reverse` for Android, on the Mac for iOS | a JS change needs no native rebuild |
 
-Out of scope: scripted test suites (Maestro, Detox), watching the devices live, physical devices, and release
-builds; each can be added later without changing the slot model.
+Out of scope: Detox, watching the devices live, physical devices, and release builds; each can be added later
+without changing the slot model. Maestro flows run on the slot's emulator with `sim maestro` (added 14 Oct 2026, see
+Maestro below).
 
 ## 2. Architecture
 
@@ -35,7 +36,7 @@ builds; each can be added later without changing the slot model.
    │                                         └─ systemd --user agent-sim-android@N: adb server 5037+N, emulator-(5598+2N)
    └─ sim-mcp ios      lease ios N      → ssh -T <ios-user>@<mac-mini> sim-xcodebuildmcp N
                                              └─ XcodeBuildMCP, session defaults pinned to simulator agent-ios-N
- sim (CLI): status, enable, wait, env, run, build, metro, android, ios sync|prepare|bootstrap|gc
+ sim (CLI): status, enable, wait, env, run, build, maestro, metro, android, ios sync|prepare|bootstrap|gc
 ```
 
 **Leases.** A slot is an flock on `$XDG_RUNTIME_DIR/agent-sim/<platform>/<N>.lock`. `sim-mcp` takes the first
@@ -93,7 +94,35 @@ sets XcodeBuildMCP's session defaults (workspace, scheme) and calls `build_run_s
 - Measured before (14 Oct 2026): an idle emulator held 3.5–3.7 GB and about 0.75 of a core; the three together
   about 11 GB of the host's 28 GB.
 
-**Telemetry.** Off for the servers that have it: `MOBILEMCP_DISABLE_TELEMETRY=1`, `XCODEBUILDMCP_SENTRY_DISABLED=true`.
+**Maestro** (added 14 Oct 2026). Maestro reads no `ANDROID_ADB_SERVER_PORT`. In 2.11.0 (from its bytecode), it finds
+Android devices in two ways: dadb's `Dadb.list()`, which asks an adb server on 5037 and, when that one has no device,
+connects straight to every emulator port from 5555 to 5683; and an adb server on 5038, which is also what a session
+uses. On the host neither works for a slot. The default server on 5037 sees no emulator, so the scan reaches the
+slot's adbd port (5599+2N), where the emulator already serves the slot's adb server and never answers a second
+client: Maestro hangs without a word. And 5038 is slot 1's server, whichever slot the agent holds. Its hidden
+`--host`/`--port` options connect to adbd directly and hang the same way. The emulator only takes console ports up to
+5682, so the slots cannot leave the scan range.
+
+`sim maestro <args>` therefore runs Maestro in a container, which is a network namespace of its own:
+- A relay container on the host network (`socat`, same image) offers the slot's adb server, 127.0.0.1:5037+N, as a
+  unix socket in `$SIM_STATE/android/N.maestro/`.
+- The Maestro container mounts that directory, and its entry point (`config/sim/maestro-entry.sh`) relays its own
+  5037 and 5038 to the socket. Nothing listens in the scan range there, so the scan fails at once and Maestro finds
+  the slot's emulator through 5037. It runs with `--device emulator-(5598+2N)`, as the host user, with the worktree
+  mounted at its own path, and HOME, `~/.cache/agent-sim/android/maestro-N`, too, so the debug output path Maestro
+  prints (`.maestro/tests/<run>`, screenshots of a failed step) is right on the host.
+- The device reaches Metro through the slot's `adb reverse` as before; Maestro's driver traffic goes through adb
+  streams, not a host port, so slots run Maestro at the same time. One run per slot at a time.
+- `agent-sim-maestro:<version>-<hash of the Dockerfile and entry script>` is built on first use from `config/sim/Dockerfile.maestro` (Temurin 17 JRE, Ubuntu
+  noble, socat), with the release zip checked against `SIM_MAESTRO_SHA256`. Docker usable without sudo is the one
+  host requirement; `unshare -rn` would avoid it, but Ubuntu restricts unprivileged user namespaces
+  (`kernel.apparmor_restrict_unprivileged_userns=1`) and lifting that needs root.
+- A new Maestro version needs the same check: the ports it dials (`AndroidDeviceConnection$Companion`,
+  `MaestroSessionManager`, `DeviceService` in its jars) and whether it reads `ANDROID_ADB_SERVER_PORT` by now. If it
+  does, `sim run maestro --device <serial> ...` on the host replaces all of this.
+
+**Telemetry.** Off for the servers that have it: `MOBILEMCP_DISABLE_TELEMETRY=1`, `XCODEBUILDMCP_SENTRY_DISABLED=true`,
+and for Maestro `MAESTRO_CLI_NO_ANALYTICS=1`.
 
 ## 3. Phase 0 findings (14 Oct 2026)
 
@@ -121,6 +150,7 @@ sets XcodeBuildMCP's session defaults (workspace, scheme) and calls `build_run_s
 | `sim wait [secs]` | starts this worktree's emulator if needed and waits for boot |
 | `sim env` / `sim run <cmd>` | the slot's `ANDROID_HOME`, `JAVA_HOME`, `ANDROID_ADB_SERVER_PORT`, `ANDROID_SERIAL` |
 | `sim build [args]` | from the app's directory: starts the slot's Metro if needed, then `expo run:android --port <slot's Metro>` |
+| `sim maestro <args>` | starts the slot's emulator if needed, then `maestro --device <slot's serial> <args>` in a container (above, Maestro); exits with Maestro's code |
 | `sim metro start\|stop\|log <P>` | Metro for the slot, from the current (app) directory |
 | `sim android start\|stop\|logs <N\|all>` | the emulator units |
 | `sim ios start\|stop <N\|all>` | boot (and wait) or shut down `agent-ios-N` on the Mac |
@@ -133,7 +163,8 @@ Exit codes: 0 done, 1 failed (message on stderr), 2 usage.
 - `tests/sim-test.sh`, unit, no sudo, network, emulator or Mac:
   - It runs a copy of the scripts against a test `.env`, with shims for `systemctl`, `ssh`, `rsync`, `mise` and the server.
   - It covers parameters, port maths, names, leasing (grant, pool exhaustion, release when the holder exits, my-slot lookup) and `sim enable` (merge, idempotency, `--only`, invalid JSON).
-  - It also covers the three `sim-mcp` launches with their environment, `sim env`, `run`, `status` and the rsync filter.
+  - It also covers the three `sim-mcp` launches with their environment, `sim env`, `run`, `status`, the rsync filter,
+    and the two containers of `sim maestro` (with a `docker` shim).
 - `tests/mcp-probe.mjs` speaks MCP over stdio the way a harness does: `initialize`, `tools/list`, then `--call`s. It drives the live checks.
 - `tests/params-test.sh` covers the new parameters and the literal scan.
 - Live, by hand, because KVM, the Mac and the tailnet are not in a container (README section 6, verify block):
