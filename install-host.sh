@@ -180,7 +180,15 @@ link "$REPO/bin/sim" "$HOME/.local/bin/sim"
 link "$REPO/bin/sim-mcp" "$HOME/.local/bin/sim-mcp"
 install -d "$HOME/.config/systemd/user"
 link "$REPO/config/systemd/agent-sim-android@.service" "$HOME/.config/systemd/user/agent-sim-android@.service"
-systemctl --user daemon-reload 2>/dev/null || note "systemctl --user unavailable here; run: systemctl --user daemon-reload"
+link "$REPO/config/systemd/agent-sim-reap.service" "$HOME/.config/systemd/user/agent-sim-reap.service"
+link "$REPO/config/systemd/agent-sim-reap.timer" "$HOME/.config/systemd/user/agent-sim-reap.timer"
+if systemctl --user daemon-reload 2>/dev/null; then
+  # Idle devices are stopped every 5 minutes (lib/sim.sh, Uptime); AGENT_SIM_IDLE_MINUTES=0 in .env keeps them up.
+  systemctl --user enable --now agent-sim-reap.timer 2>/dev/null && note "ok   agent-sim-reap.timer" \
+    || note "could not enable agent-sim-reap.timer; run: systemctl --user enable --now agent-sim-reap.timer"
+else
+  note "systemctl --user unavailable here; run: systemctl --user daemon-reload && systemctl --user enable --now agent-sim-reap.timer"
+fi
 
 if [ "$TOOLS" = 1 ]; then
   say "Phase 2: oh-my-zsh"

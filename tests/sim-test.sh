@@ -22,20 +22,35 @@ cp "$SRC/lib/params.sh" "$SRC/lib/sim.sh" "$REPO/lib/"
 cp "$SRC/bin/sim" "$SRC/bin/sim-mcp" "$REPO/bin/"
 cp "$SRC/install-ios-runner.sh" "$REPO/"
 printf 'AGENT_HOST=box\nAGENT_IOS_HOST=mini.tail.ts.net\nAGENT_IOS_USER=bob\nAGENT_SIM_ANDROID_SLOTS=2\nAGENT_SIM_WEB_SLOTS=2\nAGENT_SIM_IOS_SLOTS=1\n' > "$REPO/.env"
-for c in systemctl ssh rsync mise; do
-  printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s/log/%s"\n[ "$1" = is-active ] && echo inactive\nexit 0\n' "$T" "$c" > "$T/shims/$c"
+for c in ssh rsync mise; do
+  printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s/log/%s"\nexit 0\n' "$T" "$c" > "$T/shims/$c"
 done
+# ssh running the Mac's MCP launcher serves until stdin closes, as the real one does.
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s/log/ssh"\ncase "$*" in *sim-xcodebuildmcp*) cat > /dev/null ;; esac\n' "$T" > "$T/shims/ssh"
+# systemctl: a unit is active while its name is a line of $T/active; start and stop edit that file.
+cat > "$T/shims/systemctl" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >> "$T/log/systemctl"
+[ "\$1" = --user ] && shift
+for u; do :; done
+case \$1 in
+  is-active) grep -qx "\$u" "$T/active" 2>/dev/null && { [ "\$2" = -q ] || echo active; exit 0; }; [ "\$2" = -q ] || echo inactive; exit 3 ;;
+  start) echo "\$u" >> "$T/active" ;;
+  stop) grep -vx "\$u" "$T/active" > "$T/active.new" 2>/dev/null; mv "$T/active.new" "$T/active" ;;
+esac
+exit 0
+EOF
 printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s/log/adb"\n' "$T" > "$T/shims/adb"
 printf '#!/bin/sh\nprintf "%%s\\n" "$*" > "%s/log/emulator"\necho "$ANDROID_TMP" > "%s/log/emulator.tmp"\n' "$T" "$T" > "$T/shims/emulator"
 printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s/log/npx"\n' "$T" > "$T/shims/npx"
-# The MCP server stand-in: records its arguments and environment, then serves until stdin closes.
-printf '#!/bin/sh\nprintf "%%s\\n" "$*" > "%s/log/node.args"\nenv > "%s/log/node.env"\ncat > /dev/null\n' "$T" "$T" > "$T/shims/node"
+# The MCP server stand-in: records its arguments, environment and input, then serves until stdin closes.
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" > "%s/log/node.args"\nenv > "%s/log/node.env"\ncat > "%s/log/node.in"\n' "$T" "$T" "$T" > "$T/shims/node"
 mkdir -p "$T/prefix/node_modules/.bin"; printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s/log/mobilecli"\n' "$T" > "$T/prefix/node_modules/.bin/mobilecli"
 chmod +x "$T/shims/"* "$T/prefix/node_modules/.bin/mobilecli"
 export PATH="$T/shims:$PATH" SIM_STATE=$T/state SIM_PREFIX=$T/prefix SIM_NODE=$T/shims/node HOME=$T/home
 mkdir -p "$HOME"
 unset AGENT_HOST AGENT_HOST_ADDRESS AGENT_HOST_USER AGENT_HOST_LAN_IP AGENT_IOS_HOST AGENT_IOS_USER \
-  AGENT_SIM_ANDROID_SLOTS AGENT_SIM_WEB_SLOTS AGENT_SIM_IOS_SLOTS ANDROID_SERIAL ANDROID_ADB_SERVER_PORT \
+  AGENT_SIM_ANDROID_SLOTS AGENT_SIM_WEB_SLOTS AGENT_SIM_IOS_SLOTS AGENT_SIM_IDLE_MINUTES ANDROID_SERIAL ANDROID_ADB_SERVER_PORT \
   XDG_CACHE_HOME SIM_CACHE ANDROID_TMP
 lib() { . "$REPO/lib/sim.sh" && sim_load_params; }
 # a git worktree layout for the tests that need a root: $T/ws/app (checkout) and $T/ws/app.wt/feat (worktree)
@@ -55,6 +70,8 @@ echo "# parameters"
 ( sed -i 's/^AGENT_SIM_WEB_SLOTS=2$//' "$REPO/.env"; lib; check "params: web slots default to 3" 3 "$AGENT_SIM_WEB_SLOTS"
   printf 'AGENT_SIM_WEB_SLOTS=2\n' >> "$REPO/.env" )
 ( . "$REPO/lib/params.sh"; AGENT_IOS_USER="a b"; params_validate 2>/dev/null && bad "params: rejects a bad iOS login" || ok "params: rejects a bad iOS login" )
+( lib; check "params: idle minutes default to 30" 30 "$AGENT_SIM_IDLE_MINUTES" )
+( AGENT_SIM_IDLE_MINUTES=soon; lib 2>/dev/null && bad "params: rejects idle minutes that are not a number" || ok "params: rejects idle minutes that are not a number" )
 
 echo "# ports and names"
 ( lib
@@ -99,6 +116,7 @@ echo "# sim enable"
   check "enable: .mcp.json command is the bare name" sim-mcp "$(jq -r '.mcpServers["sim-web"].command' .mcp.json)"
   check "enable: opencode.json sim-android" '["sim-mcp","android"]' "$(jq -c '.mcp["sim-android"].command' opencode.json)"
   check "enable: codex servers" 3 "$(grep -c '^\[mcp_servers\.sim-' .codex/config.toml)"
+  check "enable: codex waits long enough for a boot" 3 "$(grep -c '^tool_timeout_sec = 300$' .codex/config.toml)"
   has "enable: codex keeps the rest" 'trust_level = "trusted"' "$(cat .codex/config.toml)"
   has "enable: prints the AGENTS.md section" "## Simulators" "$out"
   cp .mcp.json "$T/m1"; cp .codex/config.toml "$T/c1"
@@ -124,19 +142,35 @@ echo "# sim-mcp"
   wait
   ( lib; sim_held web 1 ) && bad "web: slot freed when the server exits" || ok "web: slot freed when the server exits"
 )
-( cd "$T/ws/app" || exit 1; rm -f "$T/log/"*
-  sleep 1 | "$REPO/bin/sim-mcp" android 2>/dev/null; wait
-  has "android: starts the slot's emulator unit" "--user start agent-sim-android@1.service" "$(cat "$T/log/systemctl")"
+call='{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"x","arguments":{}}}'
+init='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
+( cd "$T/ws/app" || exit 1; rm -f "$T/log/"* "$T/active" "$T/state/android/1.active"
+  { printf '%s\n' "$init"; sleep 1; } | "$REPO/bin/sim-mcp" android 2>/dev/null; wait
+  lacks "android: a lease alone starts no emulator" "start agent-sim-android" "$(cat "$T/log/systemctl" 2>/dev/null)"
+  [ -e "$T/state/android/1.active" ] && bad "android: initialize is not use" || ok "android: initialize is not use"
+  rm -f "$T/log/"*
+  { printf '%s\n' "$init" "$call" "$call"; sleep 1; } | "$REPO/bin/sim-mcp" android 2> "$T/log/android.err"; wait
+  check "android: the first tool call starts the emulator, once" 1 "$(grep -c 'start agent-sim-android@1.service' "$T/log/systemctl")"
+  has "android: and waits for its boot" "getprop sys.boot_completed" "$(cat "$T/log/adb")"
+  has "android: says why the call waits" "starting emulator-5600" "$(cat "$T/log/android.err")"
+  check "android: messages reach the server unchanged" "$(printf '%s\n' "$init" "$call" "$call")" "$(cat "$T/log/node.in")"
+  [ -e "$T/state/android/1.active" ] && ok "android: a tool call is use" || bad "android: a tool call is use"
+  [ -e "$T/state/android/1.in" ] && bad "android: relay pipe removed" || ok "android: relay pipe removed"
   has "android: mobile-mcp" "@mobilenext/mobile-mcp/lib/index.js" "$(cat "$T/log/node.args")"
   has "android: the slot's own adb server" "ANDROID_ADB_SERVER_PORT=5038" "$(cat "$T/log/node.env")"
   has "android: telemetry off" "MOBILEMCP_DISABLE_TELEMETRY=1" "$(cat "$T/log/node.env")"
   has "android: a mobilecli daemon of the slot's own" "MOBILECLI_HOME=$T/state/android/1.mobilecli" "$(cat "$T/log/node.env")"
-  check "android: that daemon stopped with the session" "daemon stop" "$(cat "$T/log/mobilecli" 2>/dev/null)"
+  check "android: that daemon stopped with the session" "daemon stop" "$(tail -1 "$T/log/mobilecli" 2>/dev/null)"
 )
 ( cd "$T/ws/app" || exit 1; rm -f "$T/log/"*
   sleep 1 | "$REPO/bin/sim-mcp" ios 2>/dev/null; wait
   has "ios: launcher for slot 1 over ssh" "-T bob@mini.tail.ts.net .local/bin/sim-xcodebuildmcp 1" "$(cat "$T/log/ssh")"
   has "ios: BatchMode, never a prompt" "BatchMode=yes" "$(cat "$T/log/ssh")"
+  lacks "ios: a lease alone boots nothing" "bootstatus" "$(cat "$T/log/ssh")"
+  rm -f "$T/log/"*; touch "$T/state/ios/1.down"
+  { printf '%s\n' "$init" "$call" "$call"; sleep 1; } | "$REPO/bin/sim-mcp" ios 2>/dev/null; wait
+  check "ios: the first tool call boots the simulator, once" 1 "$(grep -c 'xcrun simctl bootstatus agent-ios-1 -b' "$T/log/ssh")"
+  [ -e "$T/state/ios/1.down" ] && bad "ios: boot clears the down mark" || ok "ios: boot clears the down mark"
 )
 ( "$REPO/bin/sim-mcp" tv 2>/dev/null; check "sim-mcp: unknown platform is a usage error" 2 "$?" )
 ( rm -f "$T/log/"*; c=$T/home/.cache/agent-sim/android/2
@@ -176,6 +210,44 @@ echo "# sim commands"
   has "ios sync: no node_modules" "--exclude=node_modules" "$r"
   has "ios sync: keeps the Mac's generated ios/" "--filter=P ios/" "$r"
   has "ios sync: deletes what the worktree dropped" "--delete" "$r"
+)
+echo "# reap"
+( lib; rm -rf "$T/state/android" "$T/state/web" "$T/state/ios" "$T/log/"*; mkdir -p "$T/state/android" "$T/state/web" "$T/state/ios"
+  printf 'agent-sim-android@1.service\nagent-sim-android@2.service\n' > "$T/active"
+  out=$("$REPO/bin/sim" reap)
+  check "reap: slots never used start their clock, nothing stopped" "" "$out"
+  [ -e "$T/state/android/2.active" ] && [ -e "$T/state/ios/1.active" ] && ok "reap: clock files made" || bad "reap: clock files made"
+  touch -d '40 minutes ago' "$T/state/android/1.active" "$T/state/ios/1.active" "$T/state/web/1.active"
+  touch -d '10 minutes ago' "$T/state/android/2.active"
+  setsid sleep 60 & metro=$!; echo "$metro" > "$T/state/web/1.metro"
+  out=$("$REPO/bin/sim" reap)
+  has "reap: idle emulator stopped" "android 1: emulator stopped, unused for 40 min" "$out"
+  lacks "reap: emulator in use kept" "android 2" "$out"
+  check "reap: only that unit" "agent-sim-android@2.service" "$(cat "$T/active")"
+  has "reap: idle iOS simulator shut down" "xcrun simctl shutdown agent-ios-1" "$(cat "$T/log/ssh")"
+  has "reap: with its Metro on the Mac" "pkill -f 'expo start.*--port 8081'" "$(cat "$T/log/ssh")"
+  [ -e "$T/state/ios/1.down" ] && ok "reap: iOS marked down" || bad "reap: iOS marked down"
+  has "reap: idle web Metro stopped" "web 1: Metro stopped" "$out"
+  wait_for "! kill -0 $metro 2>/dev/null" && ok "reap: that Metro is gone" || bad "reap: that Metro is gone"
+  rm -f "$T/log/ssh"; out=$("$REPO/bin/sim" reap)
+  check "reap: second round has nothing to do" "" "$out"
+  [ -e "$T/log/ssh" ] && bad "reap: the Mac is asked once per idle spell" || ok "reap: the Mac is asked once per idle spell"
+  st=$("$REPO/bin/sim" status)
+  has "status: minutes since use" "used 40m ago" "$(echo "$st" | grep '^android  1')"
+  has "status: iOS down" "down" "$(echo "$st" | grep '^ios      1')"
+  touch -d '2 hours ago' "$T/state/android/2.active"
+  out=$(AGENT_SIM_IDLE_MINUTES=0 "$REPO/bin/sim" reap)
+  check "reap: idle minutes 0 never stops" "agent-sim-android@2.service" "$(cat "$T/active")"
+)
+( rm -f "$T/log/"*
+  out=$("$REPO/bin/sim" ios start 1)
+  has "ios start: boots and waits" "xcrun simctl bootstatus agent-ios-1 -b" "$(cat "$T/log/ssh")"
+  [ -e "$T/state/ios/1.down" ] && bad "ios start: clears the down mark" || ok "ios start: clears the down mark"
+  "$REPO/bin/sim" ios stop all >/dev/null
+  has "ios stop all: shuts down" "xcrun simctl shutdown agent-ios-1" "$(cat "$T/log/ssh")"
+  [ -e "$T/state/ios/1.down" ] && ok "ios stop: marks it down" || bad "ios stop: marks it down"
+  "$REPO/bin/sim" ios stop 2 2>/dev/null; check "ios stop: no such slot is a usage error" 2 "$?"
+  "$REPO/bin/sim" android start 3 2>/dev/null; check "android start: no such slot is a usage error" 2 "$?"
 )
 ( "$REPO/bin/sim" nope 2>/dev/null; check "sim: unknown command is a usage error" 2 "$?" )
 

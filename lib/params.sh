@@ -13,10 +13,11 @@
 #   AGENT_IOS_HOST       the Mac that runs the iOS simulators (MagicDNS name)  empty: no iOS
 #   AGENT_IOS_USER       the dedicated, non-admin runner login on that Mac      empty: no iOS
 #   AGENT_SIM_ANDROID_SLOTS, AGENT_SIM_WEB_SLOTS, AGENT_SIM_IOS_SLOTS   slots per platform (0-9)  default 3, 3, 2
+#   AGENT_SIM_IDLE_MINUTES  stop a slot's emulator, simulator and Metro after this long unused; 0 never  default 30
 # Templates carry the same names as @AGENT_HOST@ style placeholders; params_render fills them in and fails on any
 # placeholder left over, so a half-rendered file can never be installed.
 
-PARAMS_NAMES="AGENT_HOST AGENT_HOST_ADDRESS AGENT_HOST_USER AGENT_HOST_LAN_IP AGENT_IOS_HOST AGENT_IOS_USER AGENT_SIM_ANDROID_SLOTS AGENT_SIM_WEB_SLOTS AGENT_SIM_IOS_SLOTS"
+PARAMS_NAMES="AGENT_HOST AGENT_HOST_ADDRESS AGENT_HOST_USER AGENT_HOST_LAN_IP AGENT_IOS_HOST AGENT_IOS_USER AGENT_SIM_ANDROID_SLOTS AGENT_SIM_WEB_SLOTS AGENT_SIM_IOS_SLOTS AGENT_SIM_IDLE_MINUTES"
 
 params_fail() { printf '\033[1;31m!!  %s\033[0m\n' "$*" >&2; return 1; }
 

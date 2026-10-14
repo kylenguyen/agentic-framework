@@ -3,7 +3,7 @@
 # The MCP servers an agent drives the devices with are started by its harness (bin/sim-mcp); this command does what
 # MCP does not: registering a repo, Metro, builds that need the slot's environment, the Mac side, and status.
 #
-#   sim status                          slots per platform, who holds them, which emulators run
+#   sim status                          slots per platform, who holds them, what runs, minutes since last use
 #   sim enable [--only P,P] [dir]       register sim-android, sim-web, sim-ios with every harness for one repo
 #   sim wait [secs]                     block until this worktree's emulator has booted (default 180 s)
 #   sim env                             exports for this worktree's emulator: eval "$(sim env)"
@@ -11,11 +11,14 @@
 #   sim build [args]                    from the app's directory: Metro if not running, then expo run:android for the slot
 #   sim metro start|stop|log <P>        Metro for this worktree's slot: android (adb reverse), web, ios (on the Mac)
 #   sim android start|stop|logs <N|all> the emulator units
+#   sim ios start|stop <N|all>          boot or shut down simulators agent-ios-N on the Mac
+#   sim reap                            stop the devices and Metro of slots unused for AGENT_SIM_IDLE_MINUTES (timer)
 #   sim ios sync                        rsync this worktree to the Mac, print its path there
 #   sim ios prepare                     sync, then npm ci, expo prebuild and pod install on the Mac
 #   sim ios bootstrap                   install or update the runner on the Mac (install-ios-runner.sh)
 #   sim ios gc [days]                   remove synced trees and build output unused for N days (default 7)
 # "This worktree's slot" is the slot leased by an MCP server started from the same git top level.
+# Devices start on first use and stop when unused (lib/sim.sh, Uptime); the commands that use one count as use.
 set -euo pipefail
 REPO=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)
 . "$REPO/lib/sim.sh"
@@ -28,18 +31,46 @@ my_slot() { # my_slot <platform>: this worktree's slot, or a message that says h
 }
 
 cmd_status() {
-  local p n count state
+  local p n count state idle run
   for p in $SIM_PLATFORMS; do
     count=$(sim_slots "$p")
     for ((n = 1; n <= count; n++)); do
       if sim_held "$p" "$n"; then state="leased  pid $(sim_owner_field "$p" "$n" pid)  $(sim_owner_field "$p" "$n" root)"
       else state=free; fi
+      idle=$(sim_idle_secs "$p" "$n") && idle="used $((idle / 60))m ago" || idle=unused
       case $p in
-        android) printf '%-8s %s  %-14s %-8s %s\n' "$p" "$n" "$(sim_android_serial "$n")" \
-                   "$(systemctl --user is-active "agent-sim-android@$n.service" 2>/dev/null || true)" "$state" ;;
-        web)     printf '%-8s %s  %-14s %-8s %s\n' "$p" "$n" "port $(sim_metro_port web "$n")" - "$state" ;;
-        ios)     printf '%-8s %s  %-14s %-8s %s\n' "$p" "$n" "$(sim_ios_name "$n")" - "$state" ;;
+        android) run=$(systemctl --user is-active "$(sim_android_unit "$n")" 2>/dev/null || true)
+                 printf '%-8s %s  %-14s %-8s %-15s %s\n' "$p" "$n" "$(sim_android_serial "$n")" "$run" "$idle" "$state" ;;
+        web)     printf '%-8s %s  %-14s %-8s %-15s %s\n' "$p" "$n" "port $(sim_metro_port web "$n")" - "$idle" "$state" ;;
+        ios)     [ -e "$SIM_STATE/ios/$n.down" ] && run=down || run=-
+                 printf '%-8s %s  %-14s %-8s %-15s %s\n' "$p" "$n" "$(sim_ios_name "$n")" "$run" "$idle" "$state" ;;
       esac
+    done
+  done
+}
+
+# Stops what an idle slot runs (lib/sim.sh, Uptime). A slot never used since boot starts its clock now, so an
+# emulator someone started by hand gets the full idle time too. Prints one line per thing stopped.
+cmd_reap() {
+  local limit=$((10#$AGENT_SIM_IDLE_MINUTES * 60)) p n count idle unit
+  [ "$limit" -gt 0 ] || return 0
+  for p in $SIM_PLATFORMS; do
+    count=$(sim_slots "$p")
+    for ((n = 1; n <= count; n++)); do
+      idle=$(sim_idle_secs "$p" "$n") || { sim_touch "$p" "$n"; continue; }
+      [ "$idle" -ge "$limit" ] || continue
+      case $p in
+        android)
+          unit=$(sim_android_unit "$n")
+          if systemctl --user is-active -q "$unit"; then
+            systemctl --user stop "$unit" && echo "android $n: emulator stopped, unused for $((idle / 60)) min"
+          fi ;;
+        ios)
+          [ -n "${AGENT_IOS_HOST:-}" ] && [ ! -e "$SIM_STATE/ios/$n.down" ] || continue
+          if sim_ios_shutdown "$n"; then touch "$SIM_STATE/ios/$n.down"; echo "ios $n: $(sim_ios_name "$n") shut down, unused for $((idle / 60)) min"
+          else echo "ios $n: $AGENT_IOS_HOST did not answer, next round tries again" >&2; fi ;;
+      esac
+      [ "$p" = ios ] || ! metro_stop_slot "$p" "$n" || echo "$p $n: Metro stopped"
     done
   done
 }
@@ -70,6 +101,8 @@ Commit the three files, and add this to the repo's AGENTS.md so every harness kn
 
 Three MCP servers drive real devices: \`sim-web\` (headless browser), \`sim-android\` (emulator), \`sim-ios\`
 (iOS simulator on a Mac, XcodeBuildMCP). Each holds one device for this session only; \`sim status\` shows them.
+Devices start on first use and stop after half an hour unused (the host decides): the next tool call waits for
+a boot (up to a minute). An Android emulator starts clean, so after an idle stop run \`sim build\` again.
 - Web: \`sim metro start web\` serves the app; open the URL it prints with the sim-web tools.
 - Android: \`sim wait\`, then \`sim build\` from the app's directory: it starts Metro for your emulator and builds,
   installs and opens the dev build. Drive it with the sim-android tools; JS edits reach the app without a rebuild.
@@ -82,11 +115,10 @@ EOF
 
 cmd_wait() {
   local secs=${1:-180} n
-  n=$(my_slot android)
-  eval "$(sim_android_env "$n")"
-  systemctl --user start "agent-sim-android@$n.service"
-  timeout "$secs" adb wait-for-device shell 'while [ "$(getprop sys.boot_completed)" != 1 ]; do sleep 2; done' \
-    || die "$(sim_android_serial "$n") did not boot within $secs s (sim android logs $n)"
+  n=$(my_slot android) || exit 1
+  sim_touch android "$n"
+  systemctl --user start "$(sim_android_unit "$n")"
+  sim_android_wait "$n" "$secs" || die "$(sim_android_serial "$n") did not boot within $secs s (sim android logs $n)"
   echo "$(sim_android_serial "$n") booted"
 }
 
@@ -95,11 +127,19 @@ cmd_env() { local n; n=$(my_slot android) || exit 1; sim_android_env "$n"; }
 cmd_run() {
   [ $# -gt 0 ] || usage
   local n; n=$(my_slot android) || exit 1
+  sim_touch android "$n"
   eval "$(sim_android_env "$n")"
   exec "$@"
 }
 
 metro_pidfile() { echo "$SIM_STATE/$1/$2.metro"; }
+
+metro_stop_slot() { # metro_stop_slot <android|web> <N>: stop the slot's Metro on the host; true when one ran
+  local f pid; f=$(metro_pidfile "$1" "$2")
+  pid=$(cat "$f" 2>/dev/null || true); rm -f "$f"
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || return 1
+  kill -- "-$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
+}
 
 # Builds, installs and opens the dev build on this worktree's emulator, served by the slot's Metro. --port bakes the
 # slot's Metro port into the build and finds Metro already running there, so Expo starts no Metro of its own. Without
@@ -107,6 +147,7 @@ metro_pidfile() { echo "$SIM_STATE/$1/$2.metro"; }
 cmd_build() {
   local n port pid; n=$(my_slot android) || exit 1
   port=$(sim_metro_port android "$n")
+  sim_touch android "$n"
   pid=$(cat "$(metro_pidfile android "$n")" 2>/dev/null || true)
   if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then cmd_metro start android; sleep "${SIM_METRO_SETTLE:-5}"; fi
   eval "$(sim_android_env "$n")"
@@ -117,6 +158,7 @@ cmd_metro() {
   local action=${1:-} p=${2:-} n port root log pid
   case $p in android|web|ios) ;; *) usage ;; esac
   n=$(my_slot "$p"); port=$(sim_metro_port "$p" "$n"); root=$(sim_root)
+  [ "$action" != start ] || sim_touch "$p" "$n"
   log=$SIM_STATE/$p/$n.metro.log
   local app; app=$(sim_app_rel "$PWD" "$root")
   case $action in
@@ -145,9 +187,7 @@ cmd_metro() {
       ;;
     stop)
       if [ "$p" = ios ]; then sim_ios_ssh "pkill -f 'expo start.*--port $port' || true"; return; fi
-      pid=$(cat "$(metro_pidfile "$p" "$n")" 2>/dev/null || true)
-      [ -z "$pid" ] || kill -- "-$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
-      rm -f "$(metro_pidfile "$p" "$n")"
+      metro_stop_slot "$p" "$n" || true
       ;;
     log)
       if [ "$p" = ios ]; then sim_ios_ssh "tail -n 100 sims/$(sim_tree_name "$root")/$app/.metro.log"; else tail -n 100 "$log"; fi
@@ -156,16 +196,21 @@ cmd_metro() {
   esac
 }
 
-android_slots() { # android_slots <N|all>
-  if [ "$1" = all ]; then seq 1 "$AGENT_SIM_ANDROID_SLOTS"
-  else [[ $1 =~ ^[1-9]$ ]] && [ "$1" -le "$AGENT_SIM_ANDROID_SLOTS" ] || die "no android slot $1" 2; echo "$1"; fi
+slots_of() { # slots_of <platform> <N|all>
+  local count; count=$(sim_slots "$1")
+  if [ "$2" = all ]; then seq 1 "$count"
+  else [[ $2 =~ ^[1-9]$ ]] && [ "$2" -le "$count" ] || die "no $1 slot $2" 2; echo "$2"; fi
 }
 
 cmd_android() {
   local action=${1:-} which=${2:-} n
   case $action in
     start|stop) [ -n "$which" ] || usage
-      for n in $(android_slots "$which"); do systemctl --user "$action" "agent-sim-android@$n.service"; done ;;
+      local slots; slots=$(slots_of android "$which") || exit
+      for n in $slots; do
+        [ "$action" = stop ] || sim_touch android "$n"
+        systemctl --user "$action" "$(sim_android_unit "$n")"
+      done ;;
     logs) [ -n "$which" ] || usage; journalctl --user -u "agent-sim-android@$which.service" -n 100 --no-pager ;;
     # The unit's ExecStart: the slot's own adb server, then the emulator registered with it alone.
     run) [ -n "$which" ] || usage
@@ -185,6 +230,19 @@ cmd_ios() {
   local action=${1:-} root dir app
   root=$(sim_root); dir=sims/$(sim_tree_name "$root"); app=$(sim_app_rel "$PWD" "$root")
   case $action in
+    start|stop)
+      local n slots; [ -n "${2:-}" ] || usage
+      slots=$(slots_of ios "$2") || exit
+      for n in $slots; do
+        if [ "$action" = start ]; then
+          sim_touch ios "$n"
+          sim_ios_boot "$n" || die "could not boot $(sim_ios_name "$n") on $AGENT_IOS_HOST"
+          rm -f "$SIM_STATE/ios/$n.down"; echo "$(sim_ios_name "$n") booted"
+        else
+          sim_ios_shutdown "$n" || die "$AGENT_IOS_HOST did not answer"
+          mkdir -p "$SIM_STATE/ios"; touch "$SIM_STATE/ios/$n.down"; echo "$(sim_ios_name "$n") shut down"
+        fi
+      done ;;
     sync)
       sim_ios_ssh "mkdir -p $dir" || exit 1
       mapfile -t args < <(sim_rsync_args)
@@ -211,6 +269,7 @@ cmd_ios() {
 sub=${1:-}; [ $# -gt 0 ] && shift
 case $sub in
   status) cmd_status ;;
+  reap) cmd_reap ;;
   enable) cmd_enable "$@" ;;
   wait) cmd_wait "$@" ;;
   env) cmd_env ;;

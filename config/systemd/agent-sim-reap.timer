@@ -1,0 +1,10 @@
+# Every 5 minutes: `sim reap` (agent-sim-reap.service). Enabled by install-host.sh.
+[Unit]
+Description=agent-sim: stop idle simulators every 5 minutes
+
+[Timer]
+OnCalendar=*:0/5
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

@@ -8,6 +8,14 @@
 # MCP server, which lives as long as the harness session: a crash or exit frees it, nothing has to clean up.
 # Next to each lock, <N>.owner records the holder's pid and worktree; bin/sim finds "my slot" by matching the worktree.
 #
+# Uptime. Nothing runs until it is used, and nothing stays up unused. A lease starts no device: the first tool call
+# through sim-mcp does (an emulator unit, or booting agent-ios-N), and the call waits for the boot. Every tool call and
+# every device command of bin/sim touches <N>.active. `sim reap`, every 5 minutes from a user timer, stops the
+# emulator, the iOS simulator and Metro of every slot whose <N>.active is older than AGENT_SIM_IDLE_MINUTES, leased
+# or not: a harness session (and its lease) can stay open for days in tmux. After a stop the next tool call starts
+# the device again. <N>.down marks an iOS simulator that sim shut down, so the reaper reaches the Mac once per idle
+# spell, and the next call knows to boot it.
+#
 # Ports, all derived from the slot number so nothing has to be allocated:
 #   android N  emulator console 5598+2N (serial emulator-5600, -5602, ...), its own adb server on 5037+N, Metro 8100+N
 #   web N      Expo web dev server 8200+N
@@ -61,11 +69,13 @@ sim_fail() { printf 'sim: %s\n' "$*" >&2; return 1; }
 sim_load_params() {
   . "$REPO/lib/params.sh"
   params_load || return 1
-  : "${AGENT_SIM_ANDROID_SLOTS:=3}" "${AGENT_SIM_WEB_SLOTS:=3}" "${AGENT_SIM_IOS_SLOTS:=2}"
+  : "${AGENT_SIM_ANDROID_SLOTS:=3}" "${AGENT_SIM_WEB_SLOTS:=3}" "${AGENT_SIM_IOS_SLOTS:=2}" "${AGENT_SIM_IDLE_MINUTES:=30}"
   local n
   for n in AGENT_SIM_ANDROID_SLOTS AGENT_SIM_WEB_SLOTS AGENT_SIM_IOS_SLOTS; do
     [[ ${!n} =~ ^[0-9]$ ]] || { sim_fail "$n=${!n}: a slot count from 0 to 9"; return 1; }
   done
+  [[ $AGENT_SIM_IDLE_MINUTES =~ ^[0-9]{1,4}$ ]] \
+    || { sim_fail "AGENT_SIM_IDLE_MINUTES=$AGENT_SIM_IDLE_MINUTES: minutes from 0 (never stop) to 9999"; return 1; }
 }
 
 sim_slots() { # sim_slots <platform>: the configured slot count
@@ -178,6 +188,39 @@ sim_android_env() {
   printf 'export PATH=%q:$PATH\n' "${java:+$java/bin:}$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator"
 }
 
+# --- uptime ----------------------------------------------------------------------------------------------------
+
+sim_touch() { mkdir -p "$SIM_STATE/$1" && touch "$SIM_STATE/$1/$2.active"; }   # sim_touch <platform> <N>: in use now
+
+sim_idle_secs() { # sim_idle_secs <platform> <N>: seconds since the slot was last used; returns 1 when it never was
+  local f=$SIM_STATE/$1/$2.active
+  [ -e "$f" ] || return 1
+  echo $(($(date +%s) - $(stat -c %Y "$f")))
+}
+
+sim_android_unit() { echo "agent-sim-android@$1.service"; }
+
+# sim_android_wait <N> <secs>: block until slot N's emulator has booted. Quiet; returns 1 on timeout.
+sim_android_wait() {
+  ( eval "$(sim_android_env "$1")"
+    timeout "$2" adb wait-for-device shell 'while [ "$(getprop sys.boot_completed)" != 1 ]; do sleep 2; done' ) >/dev/null 2>&1
+}
+
+# sim_ios_boot <N>: boot agent-ios-N on the Mac (nothing if it is up) and wait until it shows its home screen.
+# bootstatus returns about a second before SpringBoard draws (14 Oct 2026: a screenshot then shows the boot spinner),
+# hence the settle after a cold boot.
+sim_ios_boot() {
+  local d; d=$(sim_ios_name "$1")
+  sim_ios_ssh "xcrun simctl list devices | grep -F '$d (' | grep -q '(Booted)' && exit 0; xcrun simctl bootstatus $d -b && sleep ${SIM_IOS_SETTLE:-4}" \
+    </dev/null >/dev/null 2>&1
+}
+
+# sim_ios_shutdown <N>: shut agent-ios-N down and stop the slot's Metro on the Mac; true when the Mac answered.
+sim_ios_shutdown() {
+  sim_ios_ssh "xcrun simctl shutdown $(sim_ios_name "$1") 2>/dev/null; pkill -f 'expo start.*--port $(sim_metro_port ios "$1")'; true" \
+    </dev/null >/dev/null 2>&1
+}
+
 # sim_ios_ssh <cmd...>: run on the Mac as the iOS runner account. BatchMode: an agent can never answer a prompt.
 SIM_SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=30)
 sim_ios_ssh() {
@@ -235,7 +278,8 @@ sim_write_opencode_json() {
 sim_write_codex_toml() {
   local file=$1 p body='' begin='# >>> agentic-framework:sim >>>' end='# <<< agentic-framework:sim <<<' tmp; shift
   for p in "$@"; do
-    body+="[mcp_servers.$(sim_server_name "$p")]"$'\n'"command = \"sim-mcp\""$'\n'"args = [\"$p\"]"$'\n'"startup_timeout_sec = 30"$'\n'
+    # tool_timeout_sec: a call to a device that is down waits for its boot (sim-mcp), Codex's default is 60 s.
+    body+="[mcp_servers.$(sim_server_name "$p")]"$'\n'"command = \"sim-mcp\""$'\n'"args = [\"$p\"]"$'\n'"startup_timeout_sec = 30"$'\n'"tool_timeout_sec = 300"$'\n'
   done
   mkdir -p "$(dirname "$file")"; touch "$file"
   tmp=$(mktemp)

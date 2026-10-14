@@ -1,0 +1,8 @@
+# Stops the emulators, iOS simulators and Metro of simulator slots left unused for AGENT_SIM_IDLE_MINUTES
+# (lib/sim.sh, Uptime). Run by agent-sim-reap.timer; linked into ~/.config/systemd/user by install-host.sh.
+[Unit]
+Description=agent-sim: stop idle simulators
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/sim reap

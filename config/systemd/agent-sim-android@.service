@@ -1,5 +1,6 @@
 # One Android emulator per simulator slot (lib/sim.sh). Linked into ~/.config/systemd/user by install-host.sh.
-# Started by bin/sim-mcp when an agent leases slot %i, stopped by `sim android stop %i`; never enabled at boot.
+# Started by bin/sim-mcp on the first tool call for slot %i (or `sim wait`), stopped by `sim reap` once the slot is
+# idle (agent-sim-reap.timer) or by `sim android stop %i`; never enabled at boot.
 [Unit]
 Description=agent-sim Android emulator, slot %i
 StartLimitIntervalSec=120

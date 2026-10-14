@@ -58,8 +58,8 @@ that hold:
   the running Metro. Expo's default would be 8081, and `--no-bundler` cannot be combined with `--port`.
 
 **Emulators.** One AVD (`agent-sim-android`, Pixel 7, API 35 google_apis x86_64) started `-read-only`, so all slots
-share its image; headless, `swiftshader_indirect`, no snapshot saving. A unit is started on the first lease and left
-running for the next agent; `sim android stop all` frees the memory. A read-only instance writes to qcow2
+share its image; headless, `swiftshader_indirect`, no snapshot saving. A unit is started by the slot's first tool
+call (see Uptime). A read-only instance writes to qcow2
 overlays (about 1 GB at boot, more with use) in `ANDROID_TMP`. The emulator's default is `/tmp`, a tmpfs on the host,
 and a crash leaves them there. Each slot uses `~/.cache/agent-sim/android/N` instead, emptied at every start. The
 unit restarts an emulator that fails, up to 3 times in 2 minutes.
@@ -73,6 +73,25 @@ Mac (no `.git`, `node_modules`, `.env*`, keystores or build output; the Mac's ge
 then runs `npm ci`, `expo prebuild -p ios` and `pod install` there and prints the workspace path. The agent then
 sets XcodeBuildMCP's session defaults (workspace, scheme) and calls `build_run_sim`, `screenshot`, `tap` and so on.
 `sim ios sync` alone is enough after a JS-only change.
+
+**Uptime** (added 14 Oct 2026). The simulators are used in bursts, during app development, and a harness session
+(with its lease) can stay open in tmux for days. So a lease starts nothing, and nothing stays up unused:
+
+- `sim-mcp` passes the harness's messages to the server through a relay. Before each `tools/call` it touches
+  `<N>.active` and, if the slot's device is down, starts it and holds the call until it has booted: the emulator unit
+  and `adb wait-for-device` plus `sys.boot_completed` (about 30 s), or `xcrun simctl bootstatus agent-ios-N -b` on
+  the Mac (a few seconds). `initialize` and `tools/list` pass straight through, so a harness starts as fast as before.
+  Codex gets `tool_timeout_sec = 300` from `sim enable` (its default, 60 s, is close to a cold boot).
+- `sim wait`, `run`, `build`, `metro start`, `android start` and `ios start` count as use too.
+- `sim reap`, every 5 minutes from `agent-sim-reap.timer`, stops the emulator unit, the iOS simulator (with its Metro
+  on the Mac) and the host Metro of every slot unused for `AGENT_SIM_IDLE_MINUTES` (default 30, 0 never), leased or
+  not. A slot with no `<N>.active` yet starts its clock there, so a device started by hand gets the full time.
+  `<N>.down` marks an iOS simulator shut down by `sim`: the reaper reaches the Mac once per idle spell, and the next
+  tool call boots it. Web slots run no device of their own; the reaper stops their Expo web server.
+- Cost: an emulator starts clean (`-read-only`), so after an idle stop the agent runs `sim build` again; Gradle's
+  cache makes that the incremental build. An iOS simulator keeps its installed apps.
+- Measured before (14 Oct 2026): an idle emulator held 3.5–3.7 GB and about 0.75 of a core; the three together
+  about 11 GB of the host's 28 GB.
 
 **Telemetry.** Off for the servers that have it: `MOBILEMCP_DISABLE_TELEMETRY=1`, `XCODEBUILDMCP_SENTRY_DISABLED=true`.
 
@@ -96,13 +115,15 @@ sets XcodeBuildMCP's session defaults (workspace, scheme) and calls `build_run_s
 | Command | Does |
 |---|---|
 | `sim-mcp <android\|web\|ios>` | stdio MCP server for one slot; the lease banner (stderr) names slot and worktree; exits 1 when the pool is full |
-| `sim status` | one line per slot: device, unit state, free or leased (pid, worktree) |
+| `sim status` | one line per slot: device, unit state (iOS: `down` once `sim` shut it down), minutes since last use, free or leased (pid, worktree) |
+| `sim reap` | stop what idle slots run (above, Uptime); run by `agent-sim-reap.timer` |
 | `sim enable [--only P,P] [dir]` | writes or merges the three harness files (only `sim-mcp <platform>`, no host or path), prints the AGENTS.md section |
 | `sim wait [secs]` | starts this worktree's emulator if needed and waits for boot |
 | `sim env` / `sim run <cmd>` | the slot's `ANDROID_HOME`, `JAVA_HOME`, `ANDROID_ADB_SERVER_PORT`, `ANDROID_SERIAL` |
 | `sim build [args]` | from the app's directory: starts the slot's Metro if needed, then `expo run:android --port <slot's Metro>` |
 | `sim metro start\|stop\|log <P>` | Metro for the slot, from the current (app) directory |
 | `sim android start\|stop\|logs <N\|all>` | the emulator units |
+| `sim ios start\|stop <N\|all>` | boot (and wait) or shut down `agent-ios-N` on the Mac |
 | `sim ios sync\|prepare\|bootstrap\|gc [days]` | the Mac side |
 
 Exit codes: 0 done, 1 failed (message on stderr), 2 usage.
