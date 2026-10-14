@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Idempotent host setup, phases 1 to 4. Safe to re-run. Run as the host login, never with sudo.
+# Idempotent host setup, phases 1 to 4 and the device simulation service. Safe to re-run. Run as the host login, never with sudo.
 # Usage: ./install-host.sh [--no-tools] [--no-root]
 #   --no-tools   skip network installs (oh-my-zsh, mise toolchains, uv, the four harnesses)
 #   --no-root    skip phase 1 (the steps that need sudo)
@@ -25,6 +25,7 @@ note() { printf '    %s\n' "$*"; }
 fail() { printf '\033[1;31m!!  %s\033[0m\n' "$*" >&2; exit 1; }
 
 . "$REPO/lib/params.sh"
+. "$REPO/lib/sim.sh"
 params_load || exit 1
 params_derive_host || exit 1
 USER_NAME=$AGENT_HOST_USER
@@ -115,6 +116,14 @@ if [ "$ROOT" = 1 ]; then
     systemctl is-active unattended-upgrades || echo "unattended-upgrades is not active; check: systemctl status unattended-upgrades"
   fi
   note "optional: sudo tailscale up --ssh (Tailscale SSH alongside OpenSSH)"
+
+  say "Phase 1: libraries for the Android emulator and the Playwright browsers (simulators, lib/sim.sh)"
+  MISSING=()
+  for pkg in $SIM_APT_PACKAGES; do
+    [ "$(dpkg-query -W -f='${db:Status-Status}' "$pkg" 2>/dev/null)" = installed ] || MISSING+=("$pkg")
+  done
+  if [ "${#MISSING[@]}" = 0 ]; then note "ok   all installed"
+  else as_root apt-get install -y -q --no-install-recommends "${MISSING[@]}"; fi
 fi
 
 say "Phase 2: tmux + shell"
@@ -166,6 +175,13 @@ link "$REPO/bin/clip-put" "$HOME/.local/bin/clip-put"
 # Every interactive login lands in the picker (config/bashrc.d/tmux-autoattach.sh), so it must be on PATH.
 link "$REPO/bin/agent" "$HOME/.local/bin/agent"
 
+say "Simulators: sim and sim-mcp, the emulator unit (docs/simulators-plan.md)"
+link "$REPO/bin/sim" "$HOME/.local/bin/sim"
+link "$REPO/bin/sim-mcp" "$HOME/.local/bin/sim-mcp"
+install -d "$HOME/.config/systemd/user"
+link "$REPO/config/systemd/agent-sim-android@.service" "$HOME/.config/systemd/user/agent-sim-android@.service"
+systemctl --user daemon-reload 2>/dev/null || note "systemctl --user unavailable here; run: systemctl --user daemon-reload"
+
 if [ "$TOOLS" = 1 ]; then
   say "Phase 2: oh-my-zsh"
   # Plain clone instead of the upstream install.sh: no chsh, no generated ~/.zshrc (ours is a symlink into the
@@ -198,6 +214,25 @@ if [ "$TOOLS" = 1 ]; then
   # Native installer, not npm: it puts a self-updating binary in ~/.local/bin and needs no toolchain.
   command -v claude >/dev/null || curl -fsSL https://claude.ai/install.sh | bash
   claude update || true
+  say "Simulators: JDK 17, Android SDK packages, the shared AVD, pinned MCP servers, Playwright browsers"
+  mise install -y java@temurin-17
+  SDKM=$ANDROID_HOME/cmdline-tools/latest/bin
+  if [ -x "$SDKM/sdkmanager" ]; then
+    export JAVA_HOME; JAVA_HOME=$(mise where java@temurin-17)
+    yes | "$SDKM/sdkmanager" --licenses >/dev/null 2>&1 || true
+    "$SDKM/sdkmanager" --install emulator platform-tools "platforms;android-$SIM_ANDROID_API" "$SIM_ANDROID_IMAGE" | tail -1
+    if [ -d "$HOME/.android/avd/$SIM_AVD.avd" ]; then note "ok   AVD $SIM_AVD"
+    else echo no | "$SDKM/avdmanager" create avd -n "$SIM_AVD" -k "$SIM_ANDROID_IMAGE" -d "$SIM_AVD_DEVICE" >/dev/null; note "made AVD $SIM_AVD"; fi
+  else
+    note "no Android command-line tools: unpack them to $ANDROID_HOME/cmdline-tools/latest (developer.android.com/studio, Command line tools only), then re-run"
+  fi
+  install -d "$SIM_PREFIX"
+  npm install --prefix "$SIM_PREFIX" --no-audit --no-fund --save-exact \
+    "@playwright/mcp@$SIM_PLAYWRIGHT_MCP_VERSION" "@mobilenext/mobile-mcp@$SIM_MOBILE_MCP_VERSION" | tail -1
+  # The browsers Playwright MCP's own playwright build expects, not whatever a global playwright would fetch.
+  "$SIM_PREFIX/node_modules/.bin/playwright" install chromium webkit
+  if [ -n "${AGENT_IOS_HOST:-}" ]; then note "iOS: run \`sim ios bootstrap\` to install or update the runner on $AGENT_IOS_HOST"
+  else note "iOS: set AGENT_IOS_HOST and AGENT_IOS_USER in .env, then run \`sim ios bootstrap\`"; fi
   note "first-time logins are manual: claude (OAuth) or ANTHROPIC_API_KEY in ~/.config/agents/env; codex login --device-auth or OPENAI_API_KEY piped to codex login --with-api-key; gh auth login"
 fi
 

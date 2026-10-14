@@ -1,0 +1,202 @@
+#!/usr/bin/env bash
+# sim: the device simulation service from the command line, for agents and the operator. Model and ports: lib/sim.sh.
+# The MCP servers an agent drives the devices with are started by its harness (bin/sim-mcp); this command does what
+# MCP does not: registering a repo, Metro, builds that need the slot's environment, the Mac side, and status.
+#
+#   sim status                          slots per platform, who holds them, which emulators run
+#   sim enable [--only P,P] [dir]       register sim-android, sim-web, sim-ios with every harness for one repo
+#   sim wait [secs]                     block until this worktree's emulator has booted (default 180 s)
+#   sim env                             exports for this worktree's emulator: eval "$(sim env)"
+#   sim run <cmd...>                    run a command in that environment, e.g. sim run npx expo run:android
+#   sim metro start|stop|log <P>        Metro for this worktree's slot: android (adb reverse), web, ios (on the Mac)
+#   sim android start|stop|logs <N|all> the emulator units
+#   sim ios sync                        rsync this worktree to the Mac, print its path there
+#   sim ios prepare                     sync, then npm ci, expo prebuild and pod install on the Mac
+#   sim ios bootstrap                   install or update the runner on the Mac (install-ios-runner.sh)
+#   sim ios gc [days]                   remove synced trees and build output unused for N days (default 7)
+# "This worktree's slot" is the slot leased by an MCP server started from the same git top level.
+set -euo pipefail
+REPO=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)
+. "$REPO/lib/sim.sh"
+die() { printf 'sim: %s\n' "$*" >&2; exit "${2:-1}"; }
+usage() { sed -n '/^#   sim/s/^# *//p' "${BASH_SOURCE[0]}" >&2; exit 2; }
+sim_load_params
+
+my_slot() { # my_slot <platform>: this worktree's slot, or a message that says how to get one
+  sim_my_slot "$1" || die "no $1 slot is leased for $(sim_root): start a harness session in this worktree after \`sim enable\`, so its sim-$1 MCP server holds one"
+}
+
+cmd_status() {
+  local p n count state
+  for p in $SIM_PLATFORMS; do
+    count=$(sim_slots "$p")
+    for ((n = 1; n <= count; n++)); do
+      if sim_held "$p" "$n"; then state="leased  pid $(sim_owner_field "$p" "$n" pid)  $(sim_owner_field "$p" "$n" root)"
+      else state=free; fi
+      case $p in
+        android) printf '%-8s %s  %-14s %-8s %s\n' "$p" "$n" "$(sim_android_serial "$n")" \
+                   "$(systemctl --user is-active "agent-sim-android@$n.service" 2>/dev/null || true)" "$state" ;;
+        web)     printf '%-8s %s  %-14s %-8s %s\n' "$p" "$n" "port $(sim_metro_port web "$n")" - "$state" ;;
+        ios)     printf '%-8s %s  %-14s %-8s %s\n' "$p" "$n" "$(sim_ios_name "$n")" - "$state" ;;
+      esac
+    done
+  done
+}
+
+cmd_enable() {
+  local only=$SIM_PLATFORMS dir=. p root
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --only) only=${2//,/ }; shift 2 ;;
+      -*) usage ;;
+      *) dir=$1; shift ;;
+    esac
+  done
+  for p in $only; do case " $SIM_PLATFORMS " in *" $p "*) ;; *) die "unknown platform: $p" 2 ;; esac; done
+  root=$(sim_root "$dir")
+  # shellcheck disable=SC2086
+  { sim_write_mcp_json "$root/.mcp.json" $only && sim_write_opencode_json "$root/opencode.json" $only \
+      && sim_write_codex_toml "$root/.codex/config.toml" $only; } || exit 1
+  printf 'wrote .mcp.json (Claude Code, Oh My Pi), opencode.json (OpenCode), .codex/config.toml (Codex) in %s\n' "$root"
+  printf 'servers: %s\n' "$(for p in $only; do printf 'sim-%s ' "$p"; done)"
+  cat <<EOF
+
+Codex reads .codex/config.toml only in a trusted project: answer yes when Codex asks on its first run in the main
+checkout ($(git -C "$root" worktree list --porcelain 2>/dev/null | sed -n '1s/^worktree //p')); its worktrees inherit it.
+Commit the three files, and add this to the repo's AGENTS.md so every harness knows how to use them:
+
+## Simulators
+
+Three MCP servers drive real devices: \`sim-web\` (headless browser), \`sim-android\` (emulator), \`sim-ios\`
+(iOS simulator on a Mac, XcodeBuildMCP). Each holds one device for this session only; \`sim status\` shows them.
+- Web: \`sim metro start web\` serves the app; open the URL it prints with the sim-web tools.
+- Android: \`sim wait\`, then \`sim run npx expo run:android\` builds and installs the dev build on your emulator,
+  and \`sim metro start android\` serves JS to it. Drive it with the sim-android tools.
+- iOS: \`sim ios prepare\` copies this worktree to the Mac and prints its path there; build and run it with the
+  sim-ios tools (workspace under that path's ios/ directory), then \`sim metro start ios\`. After a JS-only
+  change, \`sim ios sync\` is enough.
+EOF
+}
+
+cmd_wait() {
+  local secs=${1:-180} n
+  n=$(my_slot android)
+  eval "$(sim_android_env "$n")"
+  systemctl --user start "agent-sim-android@$n.service"
+  timeout "$secs" adb wait-for-device shell 'while [ "$(getprop sys.boot_completed)" != 1 ]; do sleep 2; done' \
+    || die "$(sim_android_serial "$n") did not boot within $secs s (sim android logs $n)"
+  echo "$(sim_android_serial "$n") booted"
+}
+
+cmd_env() { local n; n=$(my_slot android) || exit 1; sim_android_env "$n"; }
+
+cmd_run() {
+  [ $# -gt 0 ] || usage
+  local n; n=$(my_slot android) || exit 1
+  eval "$(sim_android_env "$n")"
+  exec "$@"
+}
+
+metro_pidfile() { echo "$SIM_STATE/$1/$2.metro"; }
+
+cmd_metro() {
+  local action=${1:-} p=${2:-} n port root log pid
+  case $p in android|web|ios) ;; *) usage ;; esac
+  n=$(my_slot "$p"); port=$(sim_metro_port "$p" "$n"); root=$(sim_root)
+  log=$SIM_STATE/$p/$n.metro.log
+  local app; app=$(sim_app_rel "$PWD" "$root")
+  case $action in
+    start)
+      if [ "$p" = ios ]; then
+        local dir; dir=sims/$(sim_tree_name "$root")/$app
+        sim_ios_ssh "cd $dir && (pkill -f 'expo start.*--port $port' || true); CI=1 nohup npx expo start --port $port > .metro.log 2>&1 < /dev/null & echo started" >/dev/null
+        echo "Metro on the Mac in ~/$dir, port $port (log: sim metro log ios)"
+        [ "$port" = 8081 ] || echo "a debug build finds it only when built with extraArgs [\"RCT_METRO_PORT=$port\"]"
+        return
+      fi
+      cmd_metro stop "$p" >/dev/null 2>&1 || true
+      local args=(--port "$port")
+      [ "$p" = web ] && args+=(--web)
+      (CI=1 BROWSER=none setsid nohup npx expo start "${args[@]}" > "$log" 2>&1 < /dev/null & echo $! > "$(metro_pidfile "$p" "$n")")
+      if [ "$p" = android ]; then
+        eval "$(sim_android_env "$n")"
+        # The dev build asks for localhost:8081 on the device; send that to this slot's Metro on the host.
+        adb reverse tcp:8081 "tcp:$port" >/dev/null || echo "adb reverse failed: is the emulator up? (sim wait)" >&2
+        echo "Metro on port $port, reachable from $(sim_android_serial "$n") as localhost:8081 (log: $log)"
+      else
+        echo "Expo web on http://localhost:$port (log: $log)"
+      fi
+      ;;
+    stop)
+      if [ "$p" = ios ]; then sim_ios_ssh "pkill -f 'expo start.*--port $port' || true"; return; fi
+      pid=$(cat "$(metro_pidfile "$p" "$n")" 2>/dev/null || true)
+      [ -z "$pid" ] || kill -- "-$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
+      rm -f "$(metro_pidfile "$p" "$n")"
+      ;;
+    log)
+      if [ "$p" = ios ]; then sim_ios_ssh "tail -n 100 sims/$(sim_tree_name "$root")/$app/.metro.log"; else tail -n 100 "$log"; fi
+      ;;
+    *) usage ;;
+  esac
+}
+
+android_slots() { # android_slots <N|all>
+  if [ "$1" = all ]; then seq 1 "$AGENT_SIM_ANDROID_SLOTS"
+  else [[ $1 =~ ^[1-9]$ ]] && [ "$1" -le "$AGENT_SIM_ANDROID_SLOTS" ] || die "no android slot $1" 2; echo "$1"; fi
+}
+
+cmd_android() {
+  local action=${1:-} which=${2:-} n
+  case $action in
+    start|stop) [ -n "$which" ] || usage
+      for n in $(android_slots "$which"); do systemctl --user "$action" "agent-sim-android@$n.service"; done ;;
+    logs) [ -n "$which" ] || usage; journalctl --user -u "agent-sim-android@$which.service" -n 100 --no-pager ;;
+    # The unit's ExecStart: the slot's own adb server, then the emulator registered with it alone.
+    run) [ -n "$which" ] || usage
+      eval "$(sim_android_env "$which")"
+      adb start-server
+      exec emulator -avd "$SIM_AVD" -read-only -port "$(sim_android_port "$which")" -no-window -no-audio \
+        -no-boot-anim -gpu swiftshader_indirect -no-snapshot-save ;;
+    *) usage ;;
+  esac
+}
+
+cmd_ios() {
+  local action=${1:-} root dir app
+  root=$(sim_root); dir=sims/$(sim_tree_name "$root"); app=$(sim_app_rel "$PWD" "$root")
+  case $action in
+    sync)
+      sim_ios_ssh "mkdir -p $dir" || exit 1
+      mapfile -t args < <(sim_rsync_args)
+      rsync "${args[@]}" -e "ssh ${SIM_SSH_OPTS[*]}" "$root/" "$AGENT_IOS_USER@$AGENT_IOS_HOST:$dir/"
+      echo "synced to $(sim_ios_ssh 'echo $HOME')/$dir/$app on the Mac" ;;
+    prepare)
+      # Run from the app's directory (a monorepo's client/): the whole worktree goes over, the app is built there.
+      cmd_ios sync
+      sim_ios_ssh "cd $dir/$app && npm ci --no-audit --no-fund && CI=1 npx expo prebuild -p ios --no-install && cd ios && pod install" \
+        || die "prepare failed on the Mac; the output above says where"
+      echo "workspace: $(sim_ios_ssh "ls -d \$HOME/$dir/$app/ios/*.xcworkspace" | head -1)" ;;
+    bootstrap)
+      sim_ios_ssh "SIM_XCODEBUILDMCP_VERSION=$SIM_XCODEBUILDMCP_VERSION SIM_IOS_SLOTS=$AGENT_SIM_IOS_SLOTS SIM_IOS_DEVICE_TYPE=$SIM_IOS_DEVICE_TYPE SIM_IOS_WORKFLOWS=$SIM_IOS_WORKFLOWS /bin/bash -s" \
+        < "$REPO/install-ios-runner.sh" ;;
+    gc)
+      local days=${2:-7}
+      [[ $days =~ ^[0-9]+$ ]] || usage
+      # Synced trees, Xcode's DerivedData, and XcodeBuildMCP's own per-workspace DerivedData.
+      sim_ios_ssh "for d in sims Library/Developer/Xcode/DerivedData Library/Developer/XcodeBuildMCP/workspaces; do [ -d \$d ] && find \$d -mindepth 1 -maxdepth 1 -type d -mtime +$days -print -exec rm -rf {} + ; done; df -h \$HOME | tail -1" ;;
+    *) usage ;;
+  esac
+}
+
+sub=${1:-}; [ $# -gt 0 ] && shift
+case $sub in
+  status) cmd_status ;;
+  enable) cmd_enable "$@" ;;
+  wait) cmd_wait "$@" ;;
+  env) cmd_env ;;
+  run) cmd_run "$@" ;;
+  metro) cmd_metro "$@" ;;
+  android) cmd_android "$@" ;;
+  ios) cmd_ios "$@" ;;
+  *) usage ;;
+esac

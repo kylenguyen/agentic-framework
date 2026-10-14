@@ -1,0 +1,245 @@
+# lib/sim.sh: the device simulation service shared by bin/sim, bin/sim-mcp, install-host.sh and tests/sim-test.sh.
+# Sourced, never executed. Host only (bash 5, GNU tools, util-linux flock). The caller sets REPO.
+#
+# Model. A platform has numbered slots: android 1..AGENT_SIM_ANDROID_SLOTS (emulators on this host), web
+# 1..AGENT_SIM_WEB_SLOTS (headless browsers on this host), ios 1..AGENT_SIM_IOS_SLOTS (simulators agent-ios-N on the
+# Mac named by AGENT_IOS_HOST). A slot is leased by holding an flock on $SIM_STATE/<platform>/<N>.lock. bin/sim-mcp
+# takes the lock and execs the MCP server with the descriptor still open, so the lease lives exactly as long as the
+# MCP server, which lives as long as the harness session: a crash or exit frees it, nothing has to clean up.
+# Next to each lock, <N>.owner records the holder's pid and worktree; bin/sim finds "my slot" by matching the worktree.
+#
+# Ports, all derived from the slot number so nothing has to be allocated:
+#   android N  emulator console 5552+2N (serial emulator-5554, -5556, ...), its own adb server on 5037+N, Metro 8100+N
+#   web N      Expo web dev server 8200+N
+#   ios N      Metro on the Mac 8081 + 10(N-1). Simulators share the Mac's localhost, and a React Native debug build
+#              asks Metro at the port it was built with (RCT_METRO_PORT, default 8081): slot 1 needs nothing, slot 2
+#              builds with RCT_METRO_PORT=8091.
+# Each emulator registers only with its slot's adb server, so the default adb server (5037) sees none of them and
+# an MCP server pointed at slot N's adb server cannot see, let alone drive, another agent's emulator.
+
+# shellcheck disable=SC2034   # the constants and SIM_SLOT/SIM_LOCK_FD are read by the scripts that source this file
+# Pinned versions. The npm packages are installed into SIM_PREFIX by install-host.sh, so starting an MCP server
+# needs no network and never picks up a release nobody has tried.
+SIM_PLAYWRIGHT_MCP_VERSION=0.0.83
+SIM_MOBILE_MCP_VERSION=1.0.6
+SIM_XCODEBUILDMCP_VERSION=2.7.0
+SIM_ANDROID_API=35
+SIM_ANDROID_IMAGE="system-images;android-$SIM_ANDROID_API;google_apis;x86_64"
+SIM_AVD=agent-sim-android
+SIM_AVD_DEVICE=pixel_7
+SIM_IOS_DEVICE_TYPE=com.apple.CoreSimulator.SimDeviceType.iPhone-17
+SIM_IOS_WORKFLOWS=simulator,ui-automation,project-discovery,utilities
+
+# System libraries, Ubuntu 26.04 names. The emulator loads the X/xcb, PulseAudio and font libraries even with
+# -no-window; the rest is Playwright's own list for chromium and webkit (playwright-core nativeDeps, ubuntu26.04).
+SIM_APT_PACKAGES="libpulse0 libx11-xcb1 libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0
+libxcb-render0 libxcb-render-util0 libxcb-shape0 libxcb-shm0 libxcb-sync1 libxcb-util1 libxcb-xfixes0 libxcb-xkb1
+libxi6 libxkbcommon-x11-0 libxkbfile1 libfontconfig1 libice6 libsm6 libjpeg8 libpcre2-16-0 libnss3 libxcomposite1
+libxcursor1 libxdamage1 libxtst6 libgl1 libegl1
+fonts-noto-color-emoji fonts-unifont libfreetype6 xfonts-cyrillic xfonts-scalable fonts-liberation
+fonts-ipafont-gothic fonts-wqy-zenhei fonts-tlwg-loma-otf fonts-freefont-ttf
+libasound2t64 libatk-bridge2.0-0t64 libatk1.0-0t64 libatspi2.0-0t64 libcairo2 libcups2t64 libdbus-1-3 libdrm2
+libgbm1 libglib2.0-0t64 libnspr4 libpango-1.0-0 libx11-6 libxcb1 libxext6 libxfixes3 libxkbcommon0 libxrandr2
+gstreamer1.0-libav gstreamer1.0-plugins-bad gstreamer1.0-plugins-base gstreamer1.0-plugins-good libicu78 libatomic1
+libcairo-gobject2 libenchant-2-2 libepoxy0 libevent-2.1-7t64 libflite1 libgdk-pixbuf-2.0-0 libgles2
+libgstreamer-gl1.0-0 libgstreamer-plugins-bad1.0-0 libgstreamer-plugins-base1.0-0 libgstreamer1.0-0 libgtk-4-1
+libharfbuzz-icu0 libharfbuzz0b libhyphen0 libjpeg-turbo8 liblcms2-2 libmanette-0.2-0 libopus0 libpangocairo-1.0-0
+libpng16-16t64 libsecret-1-0 libvpx12 libwayland-client0 libwayland-egl1 libwayland-server0 libwebp7 libwebpdemux2
+libwoff1 libxml2-16 libxslt1.1 libx264-165 libavif16"
+
+SIM_PLATFORMS="android web ios"
+# Paths. Every one can be overridden, which is how tests/sim-test.sh runs without touching the host.
+: "${SIM_PREFIX:=$HOME/.local/share/agent-sim}"                         # npm prefix for the pinned MCP servers
+: "${SIM_STATE:=${XDG_RUNTIME_DIR:-/tmp/agent-sim-$(id -u)}/agent-sim}"   # locks, owners, Metro logs; gone at reboot
+: "${ANDROID_HOME:=$HOME/Android/Sdk}"
+
+sim_fail() { printf 'sim: %s\n' "$*" >&2; return 1; }
+
+# sim_load_params: the AGENT_IOS_* and AGENT_SIM_* parameters from .env (lib/params.sh), with defaults.
+sim_load_params() {
+  . "$REPO/lib/params.sh"
+  params_load || return 1
+  : "${AGENT_SIM_ANDROID_SLOTS:=3}" "${AGENT_SIM_WEB_SLOTS:=3}" "${AGENT_SIM_IOS_SLOTS:=2}"
+  local n
+  for n in AGENT_SIM_ANDROID_SLOTS AGENT_SIM_WEB_SLOTS AGENT_SIM_IOS_SLOTS; do
+    [[ ${!n} =~ ^[0-9]$ ]] || { sim_fail "$n=${!n}: a slot count from 0 to 9"; return 1; }
+  done
+}
+
+sim_slots() { # sim_slots <platform>: the configured slot count
+  case $1 in
+    android) echo "$AGENT_SIM_ANDROID_SLOTS" ;;
+    web)     echo "$AGENT_SIM_WEB_SLOTS" ;;
+    ios)     echo "$AGENT_SIM_IOS_SLOTS" ;;
+    *) sim_fail "unknown platform: $1 (one of: $SIM_PLATFORMS)" ;;
+  esac
+}
+
+sim_android_port() { echo $((5552 + 2 * $1)); }        # emulator console; adbd listens on this + 1
+sim_android_serial() { echo "emulator-$(sim_android_port "$1")"; }
+sim_adb_port() { echo $((5037 + $1)); }
+sim_metro_port() { # sim_metro_port <platform> <N>
+  case $1 in android) echo $((8100 + $2)) ;; web) echo $((8200 + $2)) ;; ios) echo $((8081 + 10 * ($2 - 1))) ;; esac
+}
+sim_ios_name() { echo "agent-ios-$1"; }
+
+# sim_root [dir]: the worktree a command or an MCP server belongs to: the git top level, else the directory itself.
+sim_root() {
+  local d=${1:-$PWD}
+  git -C "$d" rev-parse --show-toplevel 2>/dev/null || (cd "$d" && pwd -P)
+}
+
+# sim_app_rel [dir] [root]: where the app sits inside its worktree ("." at the top), for a monorepo's client/.
+sim_app_rel() {
+  local d root
+  d=$(cd "${1:-$PWD}" && pwd -P); root=${2:-$(sim_root "$d")}
+  realpath --relative-to="$root" "$d"
+}
+
+# sim_tree_name <root>: a stable directory name for a worktree on the Mac: <repo> for a checkout,
+# <repo>-<slug> for ~/workspace/<repo>.wt/<slug>, the agent session naming (bin/agent).
+sim_tree_name() {
+  local root=$1 parent
+  parent=$(basename "$(dirname "$root")")
+  case $parent in
+    *.wt) echo "${parent%.wt}-$(basename "$root")" ;;
+    *)    basename "$root" ;;
+  esac
+}
+
+# sim_lease <platform> [root]: take the first free slot. Sets SIM_SLOT to its number and SIM_LOCK_FD to the open
+# lock, which the caller keeps open (an exec'd server inherits it) for as long as it wants the slot. Must run in the
+# caller's shell, never in $(...): a subshell would take the lock with it when it exits. Returns 1, having printed
+# who holds what, when every slot is taken.
+sim_lease() {
+  local platform=$1 root=${2:-$(sim_root)} count n fd dir
+  count=$(sim_slots "$platform") || return 1
+  dir=$SIM_STATE/$platform
+  mkdir -p "$dir" || return 1
+  for ((n = 1; n <= count; n++)); do
+    exec {fd}>>"$dir/$n.lock"
+    # -w 0.2, not -n: sim_held probes by taking the lock for an instant, and a lease must not skip a free slot
+    # because `sim status` happened to look at it at the same moment.
+    if flock -w 0.2 "$fd"; then
+      printf 'pid=%s\nroot=%s\nsince=%s\n' "$$" "$root" "$(date +%FT%T)" > "$dir/$n.owner"
+      SIM_SLOT=$n; SIM_LOCK_FD=$fd
+      return 0
+    fi
+    exec {fd}>&-
+  done
+  sim_fail "all $count $platform slots are leased:"
+  sim_holders "$platform" >&2
+  return 1
+}
+
+sim_held() { # sim_held <platform> <N>: true while someone holds the slot (probes by taking the lock for an instant)
+  local f=$SIM_STATE/$1/$2.lock
+  [ -e "$f" ] || return 1
+  ! flock -n "$f" true
+}
+
+sim_owner_field() { # sim_owner_field <platform> <N> <key>
+  sed -n "s/^$3=//p" "$SIM_STATE/$1/$2.owner" 2>/dev/null
+}
+
+sim_holders() { # sim_holders <platform>: one line per leased slot
+  local platform=$1 n count
+  count=$(sim_slots "$platform") || return 1
+  for ((n = 1; n <= count; n++)); do
+    sim_held "$platform" "$n" && printf '  %s %s  pid %s  %s\n' "$platform" "$n" \
+      "$(sim_owner_field "$platform" "$n" pid)" "$(sim_owner_field "$platform" "$n" root)"
+  done
+  return 0
+}
+
+# sim_my_slot <platform> [root]: the slot leased by an MCP server of this worktree, or 1 when there is none.
+sim_my_slot() {
+  local platform=$1 root=${2:-$(sim_root)} n count
+  count=$(sim_slots "$platform") || return 1
+  for ((n = 1; n <= count; n++)); do
+    if sim_held "$platform" "$n" && [ "$(sim_owner_field "$platform" "$n" root)" = "$root" ]; then
+      echo "$n"; return 0
+    fi
+  done
+  return 1
+}
+
+# sim_android_env <N>: the environment that points Android tools at slot N and nothing else.
+sim_android_env() {
+  local java
+  java=$(mise where java@temurin-17 2>/dev/null || true)
+  printf 'export ANDROID_HOME=%q\n' "$ANDROID_HOME"
+  printf 'export ANDROID_SDK_ROOT=%q\n' "$ANDROID_HOME"
+  [ -z "$java" ] || printf 'export JAVA_HOME=%q\n' "$java"
+  printf 'export ANDROID_ADB_SERVER_PORT=%s\n' "$(sim_adb_port "$1")"
+  printf 'export ANDROID_SERIAL=%s\n' "$(sim_android_serial "$1")"
+  printf 'export PATH=%q:$PATH\n' "${java:+$java/bin:}$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator"
+}
+
+# sim_ios_ssh <cmd...>: run on the Mac as the iOS runner account. BatchMode: an agent can never answer a prompt.
+SIM_SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=30)
+sim_ios_ssh() {
+  [ -n "${AGENT_IOS_HOST:-}" ] && [ -n "${AGENT_IOS_USER:-}" ] \
+    || { sim_fail "AGENT_IOS_HOST and AGENT_IOS_USER must be set in .env (docs/simulators-plan.md)"; return 1; }
+  ssh "${SIM_SSH_OPTS[@]}" "$AGENT_IOS_USER@$AGENT_IOS_HOST" "$@"
+}
+
+# What rsync leaves out when a worktree goes to the Mac: VCS data, dependencies and build output (rebuilt there),
+# and .env files, which may hold secrets that have no business on another machine. Excluded paths are also kept
+# safe from --delete on the Mac, so its node_modules and Pods survive every sync.
+SIM_RSYNC_EXCLUDES=(.git node_modules ios/Pods/ ios/build/ android/ .expo/ dist/ web-build/ '.env' '.env.*' '*.keystore' '*.jks' '*.p12' '*.mobileprovision')
+
+sim_rsync_args() { # sim_rsync_args: the rsync options for a sync of a worktree
+  local e
+  printf '%s\n' -az --delete
+  for e in "${SIM_RSYNC_EXCLUDES[@]}"; do printf '%s\n' "--exclude=$e"; done
+  # Expo generates ios/ on the Mac with prebuild; the host has none, and --delete must not take the Mac's away.
+  printf '%s\n' '--filter=P ios/'
+}
+
+# --- per-repo MCP registration (sim enable) -------------------------------------------------------------------
+# Every entry is only `sim-mcp <platform>`: no path, host or login, so the files can be committed to the repo.
+
+sim_server_name() { echo "sim-$1"; }
+
+# sim_write_mcp_json <file> <platform...>: Claude Code and Oh My Pi read a project's .mcp.json.
+sim_write_mcp_json() {
+  local file=$1 p tmp; shift
+  tmp=$(mktemp)
+  [ -s "$file" ] && cat "$file" > "$tmp" || echo '{}' > "$tmp"
+  for p in "$@"; do
+    jq --arg n "$(sim_server_name "$p")" --arg p "$p" \
+      '.mcpServers[$n] = {command: "sim-mcp", args: [$p]}' "$tmp" > "$tmp.new" || { rm -f "$tmp" "$tmp.new"; sim_fail "$file is not valid JSON"; return 1; }
+    mv "$tmp.new" "$tmp"
+  done
+  cat "$tmp" > "$file"; rm -f "$tmp"
+}
+
+# sim_write_opencode_json <file> <platform...>: OpenCode reads a project's opencode.json.
+sim_write_opencode_json() {
+  local file=$1 p tmp; shift
+  tmp=$(mktemp)
+  [ -s "$file" ] && cat "$file" > "$tmp" || echo '{"$schema": "https://opencode.ai/config.json"}' > "$tmp"
+  for p in "$@"; do
+    jq --arg n "$(sim_server_name "$p")" --arg p "$p" \
+      '.mcp[$n] = {type: "local", command: ["sim-mcp", $p], enabled: true}' "$tmp" > "$tmp.new" || { rm -f "$tmp" "$tmp.new"; sim_fail "$file is not valid JSON (comments are not supported)"; return 1; }
+    mv "$tmp.new" "$tmp"
+  done
+  cat "$tmp" > "$file"; rm -f "$tmp"
+}
+
+# sim_write_codex_toml <file> <platform...>: Codex reads a project's .codex/config.toml once the project is trusted
+# (trusting the main checkout covers its worktrees). The servers live in one marker block, replaced on every run.
+sim_write_codex_toml() {
+  local file=$1 p body='' begin='# >>> agentic-framework:sim >>>' end='# <<< agentic-framework:sim <<<' tmp; shift
+  for p in "$@"; do
+    body+="[mcp_servers.$(sim_server_name "$p")]"$'\n'"command = \"sim-mcp\""$'\n'"args = [\"$p\"]"$'\n'"startup_timeout_sec = 30"$'\n'
+  done
+  mkdir -p "$(dirname "$file")"; touch "$file"
+  tmp=$(mktemp)
+  awk -v b="$begin" -v e="$end" '$0==b {skip=1; next} $0==e {skip=0; next} !skip' "$file" > "$tmp"
+  # A table runs to the next header, so the block goes at the end, after a blank line.
+  sed -e :a -e '/^\n*$/{$d;N;ba' -e '}' "$tmp" > "$tmp.trim"
+  { cat "$tmp.trim"; [ -s "$tmp.trim" ] && echo; printf '%s\n%s%s\n' "$begin" "$body" "$end"; } > "$file"
+  rm -f "$tmp" "$tmp.trim"
+}

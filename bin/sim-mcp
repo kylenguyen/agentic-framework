@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# sim-mcp <android|web|ios>: stdio MCP server for one simulator slot, started by a harness from a repo that ran
+# `sim enable`. Leases the first free slot (lib/sim.sh) and runs the real server as its child for as long as the
+# harness keeps it, then exits, which frees the slot. Only this process holds the lock: the server and every helper
+# run with the descriptor closed, so nothing they leave behind (an adb daemon, a mise helper) can keep the slot.
+# stdout belongs to the MCP protocol: every message goes to stderr.
+#   android  mobile-mcp, seeing only its own emulator (the slot's adb server); starts the emulator unit if needed
+#   web      Playwright MCP, headless, in-memory profile; SIM_WEB_BROWSER=webkit|firefox|chromium (default chromium)
+#   ios      XcodeBuildMCP on the Mac over ssh, its session defaults pinned to simulator agent-ios-N
+set -euo pipefail
+REPO=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)
+. "$REPO/lib/sim.sh"
+say() { printf 'sim-mcp: %s\n' "$*" >&2; }
+
+platform=${1:-}
+case $platform in android|web|ios) ;; *) echo "usage: sim-mcp <android|web|ios>" >&2; exit 2 ;; esac
+sim_load_params
+root=$(sim_root)
+sim_lease "$platform" "$root" || exit 1
+n=$SIM_SLOT
+say "$platform slot $n leased for $root (bin/sim status)"
+
+case $platform in
+  android)
+    eval "$(sim_android_env "$n" {SIM_LOCK_FD}>&-)"
+    # Started, not waited for: a harness gives an MCP server seconds to answer, a cold boot takes about a minute.
+    # The agent waits with `sim wait`; until then mobile-mcp simply lists no device.
+    systemctl --user start "agent-sim-android@$n.service" {SIM_LOCK_FD}>&- >&2 || say "could not start agent-sim-android@$n (sim android logs $n)"
+    export MOBILEMCP_DISABLE_TELEMETRY=1
+    server=("${SIM_NODE:-node}" "$SIM_PREFIX/node_modules/@mobilenext/mobile-mcp/lib/index.js")
+    ;;
+  web)
+    out=$SIM_STATE/web/$n.out
+    mkdir -p "$out"
+    server=("${SIM_NODE:-node}" "$SIM_PREFIX/node_modules/@playwright/mcp/cli.js" --headless --isolated
+      --browser "${SIM_WEB_BROWSER:-chromium}" --output-dir "$out")
+    ;;
+  ios)
+    # -T: no terminal, the channel carries JSON-RPC only. The launcher on the Mac is written by install-ios-runner.sh.
+    sim_ios_ssh true </dev/null >/dev/null 2>&1 {SIM_LOCK_FD}>&- || { say "cannot reach $AGENT_IOS_USER@$AGENT_IOS_HOST over ssh"; exit 1; }
+    server=(ssh "${SIM_SSH_OPTS[@]}" -T "$AGENT_IOS_USER@$AGENT_IOS_HOST" ".local/bin/sim-xcodebuildmcp $n")
+    ;;
+esac
+
+# The harness ends the session by closing stdin (the server then exits) or by signalling this process: pass the
+# signal on, so no server outlives its lease.
+"${server[@]}" {SIM_LOCK_FD}>&- <&0 &      # <&0: an async command would get /dev/null
+child=$!
+trap 'kill -TERM "$child" 2>/dev/null' TERM INT HUP
+while :; do
+  wait "$child" && exit 0
+  rc=$?
+  kill -0 "$child" 2>/dev/null || exit "$rc"     # wait was cut short by a trapped signal: wait again
+done
