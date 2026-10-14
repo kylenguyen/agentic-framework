@@ -32,10 +32,10 @@ builds; each can be added later without changing the slot model.
    │ stdio MCP, started by the harness
    ├─ sim-mcp web      lease web N      → Playwright MCP, headless, in-memory profile (chromium; webkit on request)
    ├─ sim-mcp android  lease android N  → mobile-mcp with ANDROID_ADB_SERVER_PORT=5037+N
-   │                                         └─ systemd --user agent-sim-android@N: adb server 5037+N, emulator-(5552+2N)
+   │                                         └─ systemd --user agent-sim-android@N: adb server 5037+N, emulator-(5598+2N)
    └─ sim-mcp ios      lease ios N      → ssh -T <ios-user>@<mac-mini> sim-xcodebuildmcp N
                                              └─ XcodeBuildMCP, session defaults pinned to simulator agent-ios-N
- sim (CLI): status, enable, wait, env, run, metro, android, ios sync|prepare|bootstrap|gc
+ sim (CLI): status, enable, wait, env, run, build, metro, android, ios sync|prepare|bootstrap|gc
 ```
 
 **Leases.** A slot is an flock on `$XDG_RUNTIME_DIR/agent-sim/<platform>/<N>.lock`. `sim-mcp` takes the first
@@ -46,11 +46,23 @@ level, so `sim run`, `sim metro` and `sim wait` act on the device the session's 
 
 **Android isolation.** mobile-mcp lists every device its adb server knows and ignores `ANDROID_SERIAL`. So each
 emulator registers with a private adb server (port 5037+N), started by its unit, and slot N's mobile-mcp and every
-`sim run` command talk to that server only. The default adb server sees no emulator at all.
+`sim run` command talk to that server only. The default adb server sees no emulator at all. Three things make
+that hold:
+- Consoles at 5600 and up. An adb server scans 5555–5585 when it starts and adopts every emulator there, so with
+  the usual 5554+ ports a slot's server that started late saw its neighbours too.
+- One mobilecli daemon per slot. mobile-mcp works through `mobilecli`, whose daemon is shared through a socket in
+  `~/.mobilecli` and keeps the adb server of whoever started it. `sim-mcp` gives each slot its own
+  `MOBILECLI_HOME` and stops that daemon when the session ends.
+- Metro on the slot's port. A default dev build asks `localhost:8081` on the device, which `adb reverse` sends to
+  8100+N. `sim build` passes `--port 8100+N` to `expo run:android`, which bakes that port into the build and reuses
+  the running Metro. Expo's default would be 8081, and `--no-bundler` cannot be combined with `--port`.
 
 **Emulators.** One AVD (`agent-sim-android`, Pixel 7, API 35 google_apis x86_64) started `-read-only`, so all slots
 share its image; headless, `swiftshader_indirect`, no snapshot saving. A unit is started on the first lease and left
-running for the next agent; `sim android stop all` frees the memory.
+running for the next agent; `sim android stop all` frees the memory. A read-only instance writes to qcow2
+overlays (about 1 GB at boot, more with use) in `ANDROID_TMP`. The emulator's default is `/tmp`, a tmpfs on the host,
+and a crash leaves them there. Each slot uses `~/.cache/agent-sim/android/N` instead, emptied at every start. The
+unit restarts an emulator that fails, up to 3 times in 2 minutes.
 
 **Ports** (from the slot number, nothing allocated): Android Metro 8100+N, reversed to the device's 8081; Expo web
 8200+N; iOS Metro on the Mac 8081 for slot 1 and 8091 for slot 2 (a React Native debug build asks the port it was
@@ -68,12 +80,15 @@ sets XcodeBuildMCP's session defaults (workspace, scheme) and calls `build_run_s
 
 | # | Question | Finding |
 |---|---|---|
-| S1 | Does mobile-mcp keep to `ANDROID_SERIAL`? | No: it lists every device of its adb server (source of 1.0.6). Hence one adb server per slot |
+| S1 | Does mobile-mcp keep to `ANDROID_SERIAL`? | No: it lists every device of its adb server (source of 1.0.6). Hence one adb server per slot, consoles above adb's scan range, and one mobilecli daemon per slot (see 2) |
 | S2 | Can the runner boot a simulator, screenshot and build over a non-GUI ssh session? | Yes: boot 23 s, `simctl io screenshot` works, XcodeBuildMCP builds. The runner login also had a console session; untested without one |
 | S3 | CocoaPods without admin? | Yes: mise's precompiled Ruby 3.4 (`MISE_RUBY_COMPILE=false`) and `gem install cocoapods` |
 | S4 | Project-level MCP config per harness? | Claude Code and Oh My Pi read `.mcp.json`; OpenCode reads `opencode.json` `mcp`; Codex reads `.codex/config.toml` only in a trusted project, and trusting the main checkout covers its worktrees (a trusted parent directory does not) |
 | S5 | The emulator on a headless host | needs X/xcb, PulseAudio and font libraries even with `-no-window`; listed in `SIM_APT_PACKAGES` |
 | — | XcodeBuildMCP's simulator default | the name alone leaves `screenshot` asking for a UUID; the Mac launcher resolves `agent-ios-N` to its UUID |
+| S5b | Three emulators together | Boot within 30 s of each other, about 17 GB RAM in use on the host with all three. Two of the first three starts segfaulted a few seconds in; later starts, together and one by one, did not. Cause not found, hence the restart |
+| — | Overlays of a read-only emulator | 1–1.6 GB each in `/tmp`; leftovers from crashed runs filled 12 of the host's 15 GB tmpfs |
+| — | `CI=1 expo start` | turns off Metro's file watching; Metro runs with stdin from `/dev/null` instead |
 | — | A lock probe and a lease at the same instant | the lease skipped a free slot; `sim_lease` now waits 0.2 s per slot |
 
 ## 4. Contract
@@ -84,7 +99,8 @@ sets XcodeBuildMCP's session defaults (workspace, scheme) and calls `build_run_s
 | `sim status` | one line per slot: device, unit state, free or leased (pid, worktree) |
 | `sim enable [--only P,P] [dir]` | writes or merges the three harness files (only `sim-mcp <platform>`, no host or path), prints the AGENTS.md section |
 | `sim wait [secs]` | starts this worktree's emulator if needed and waits for boot |
-| `sim env` / `sim run <cmd>` | the slot's `ANDROID_HOME`, `JAVA_HOME`, `ANDROID_ADB_SERVER_PORT`, `ANDROID_SERIAL`; `sim run npx expo run:android` builds and installs on it |
+| `sim env` / `sim run <cmd>` | the slot's `ANDROID_HOME`, `JAVA_HOME`, `ANDROID_ADB_SERVER_PORT`, `ANDROID_SERIAL` |
+| `sim build [args]` | from the app's directory: starts the slot's Metro if needed, then `expo run:android --port <slot's Metro>` |
 | `sim metro start\|stop\|log <P>` | Metro for the slot, from the current (app) directory |
 | `sim android start\|stop\|logs <N\|all>` | the emulator units |
 | `sim ios sync\|prepare\|bootstrap\|gc [days]` | the Mac side |

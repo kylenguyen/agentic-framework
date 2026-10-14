@@ -7,7 +7,8 @@
 #   sim enable [--only P,P] [dir]       register sim-android, sim-web, sim-ios with every harness for one repo
 #   sim wait [secs]                     block until this worktree's emulator has booted (default 180 s)
 #   sim env                             exports for this worktree's emulator: eval "$(sim env)"
-#   sim run <cmd...>                    run a command in that environment, e.g. sim run npx expo run:android
+#   sim run <cmd...>                    run a command in that environment, e.g. sim run ./gradlew test
+#   sim build [args]                    from the app's directory: Metro if not running, then expo run:android for the slot
 #   sim metro start|stop|log <P>        Metro for this worktree's slot: android (adb reverse), web, ios (on the Mac)
 #   sim android start|stop|logs <N|all> the emulator units
 #   sim ios sync                        rsync this worktree to the Mac, print its path there
@@ -70,8 +71,9 @@ Commit the three files, and add this to the repo's AGENTS.md so every harness kn
 Three MCP servers drive real devices: \`sim-web\` (headless browser), \`sim-android\` (emulator), \`sim-ios\`
 (iOS simulator on a Mac, XcodeBuildMCP). Each holds one device for this session only; \`sim status\` shows them.
 - Web: \`sim metro start web\` serves the app; open the URL it prints with the sim-web tools.
-- Android: \`sim wait\`, then \`sim run npx expo run:android\` builds and installs the dev build on your emulator,
-  and \`sim metro start android\` serves JS to it. Drive it with the sim-android tools.
+- Android: \`sim wait\`, then \`sim build\` from the app's directory: it starts Metro for your emulator and builds,
+  installs and opens the dev build. Drive it with the sim-android tools; JS edits reach the app without a rebuild.
+  Never \`npx expo run:android\` directly: it would build for port 8081, which is not yours.
 - iOS: \`sim ios prepare\` copies this worktree to the Mac and prints its path there; build and run it with the
   sim-ios tools (workspace under that path's ios/ directory), then \`sim metro start ios\`. After a JS-only
   change, \`sim ios sync\` is enough.
@@ -99,6 +101,18 @@ cmd_run() {
 
 metro_pidfile() { echo "$SIM_STATE/$1/$2.metro"; }
 
+# Builds, installs and opens the dev build on this worktree's emulator, served by the slot's Metro. --port bakes the
+# slot's Metro port into the build and finds Metro already running there, so Expo starts no Metro of its own. Without
+# it, Expo falls back to 8081: a Metro shared by every agent, or none. (--port and --no-bundler cannot go together.)
+cmd_build() {
+  local n port pid; n=$(my_slot android) || exit 1
+  port=$(sim_metro_port android "$n")
+  pid=$(cat "$(metro_pidfile android "$n")" 2>/dev/null || true)
+  if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then cmd_metro start android; sleep "${SIM_METRO_SETTLE:-5}"; fi
+  eval "$(sim_android_env "$n")"
+  exec npx expo run:android --port "$port" "$@" </dev/null
+}
+
 cmd_metro() {
   local action=${1:-} p=${2:-} n port root log pid
   case $p in android|web|ios) ;; *) usage ;; esac
@@ -109,7 +123,7 @@ cmd_metro() {
     start)
       if [ "$p" = ios ]; then
         local dir; dir=sims/$(sim_tree_name "$root")/$app
-        sim_ios_ssh "cd $dir && (pkill -f 'expo start.*--port $port' || true); CI=1 nohup npx expo start --port $port > .metro.log 2>&1 < /dev/null & echo started" >/dev/null
+        sim_ios_ssh "cd $dir && (pkill -f 'expo start.*--port $port' || true); nohup npx expo start --port $port > .metro.log 2>&1 < /dev/null & echo started" >/dev/null
         echo "Metro on the Mac in ~/$dir, port $port (log: sim metro log ios)"
         [ "$port" = 8081 ] || echo "a debug build finds it only when built with extraArgs [\"RCT_METRO_PORT=$port\"]"
         return
@@ -117,10 +131,12 @@ cmd_metro() {
       cmd_metro stop "$p" >/dev/null 2>&1 || true
       local args=(--port "$port")
       [ "$p" = web ] && args+=(--web)
-      (CI=1 BROWSER=none setsid nohup npx expo start "${args[@]}" > "$log" 2>&1 < /dev/null & echo $! > "$(metro_pidfile "$p" "$n")")
+      # Not CI=1: that turns off Metro's file watching, and an agent's edit would never reach the device. With stdin
+      # from /dev/null Expo is non-interactive anyway.
+      (BROWSER=none setsid nohup npx expo start "${args[@]}" > "$log" 2>&1 < /dev/null & echo $! > "$(metro_pidfile "$p" "$n")")
       if [ "$p" = android ]; then
         eval "$(sim_android_env "$n")"
-        # The dev build asks for localhost:8081 on the device; send that to this slot's Metro on the host.
+        # A default dev build asks for localhost:8081 on the device; send that to this slot's Metro on the host.
         adb reverse tcp:8081 "tcp:$port" >/dev/null || echo "adb reverse failed: is the emulator up? (sim wait)" >&2
         echo "Metro on port $port, reachable from $(sim_android_serial "$n") as localhost:8081 (log: $log)"
       else
@@ -154,6 +170,10 @@ cmd_android() {
     # The unit's ExecStart: the slot's own adb server, then the emulator registered with it alone.
     run) [ -n "$which" ] || usage
       eval "$(sim_android_env "$which")"
+      # -read-only keeps the instance's writes in qcow2 overlays under ANDROID_TMP, by default /tmp: often RAM, and
+      # left there when the emulator crashes (1.5 GB each). One directory per slot on disk, emptied at every start.
+      export ANDROID_TMP=$SIM_CACHE/android/$which
+      rm -rf -- "$ANDROID_TMP"; mkdir -p "$ANDROID_TMP"
       adb start-server
       exec emulator -avd "$SIM_AVD" -read-only -port "$(sim_android_port "$which")" -no-window -no-audio \
         -no-boot-anim -gpu swiftshader_indirect -no-snapshot-save ;;
@@ -195,6 +215,7 @@ case $sub in
   wait) cmd_wait "$@" ;;
   env) cmd_env ;;
   run) cmd_run "$@" ;;
+  build) cmd_build "$@" ;;
   metro) cmd_metro "$@" ;;
   android) cmd_android "$@" ;;
   ios) cmd_ios "$@" ;;

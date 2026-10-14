@@ -9,13 +9,14 @@
 # Next to each lock, <N>.owner records the holder's pid and worktree; bin/sim finds "my slot" by matching the worktree.
 #
 # Ports, all derived from the slot number so nothing has to be allocated:
-#   android N  emulator console 5552+2N (serial emulator-5554, -5556, ...), its own adb server on 5037+N, Metro 8100+N
+#   android N  emulator console 5598+2N (serial emulator-5600, -5602, ...), its own adb server on 5037+N, Metro 8100+N
 #   web N      Expo web dev server 8200+N
 #   ios N      Metro on the Mac 8081 + 10(N-1). Simulators share the Mac's localhost, and a React Native debug build
 #              asks Metro at the port it was built with (RCT_METRO_PORT, default 8081): slot 1 needs nothing, slot 2
 #              builds with RCT_METRO_PORT=8091.
 # Each emulator registers only with its slot's adb server, so the default adb server (5037) sees none of them and
-# an MCP server pointed at slot N's adb server cannot see, let alone drive, another agent's emulator.
+# an MCP server pointed at slot N's adb server cannot see, let alone drive, another agent's emulator. That needs the
+# consoles above 5585: an adb server also scans 5555-5585 when it starts and adopts every emulator it finds there.
 
 # shellcheck disable=SC2034   # the constants and SIM_SLOT/SIM_LOCK_FD are read by the scripts that source this file
 # Pinned versions. The npm packages are installed into SIM_PREFIX by install-host.sh, so starting an MCP server
@@ -51,6 +52,7 @@ SIM_PLATFORMS="android web ios"
 # Paths. Every one can be overridden, which is how tests/sim-test.sh runs without touching the host.
 : "${SIM_PREFIX:=$HOME/.local/share/agent-sim}"                         # npm prefix for the pinned MCP servers
 : "${SIM_STATE:=${XDG_RUNTIME_DIR:-/tmp/agent-sim-$(id -u)}/agent-sim}"   # locks, owners, Metro logs; gone at reboot
+: "${SIM_CACHE:=${XDG_CACHE_HOME:-$HOME/.cache}/agent-sim}"             # emulator scratch disks: on disk, not in RAM
 : "${ANDROID_HOME:=$HOME/Android/Sdk}"
 
 sim_fail() { printf 'sim: %s\n' "$*" >&2; return 1; }
@@ -75,7 +77,7 @@ sim_slots() { # sim_slots <platform>: the configured slot count
   esac
 }
 
-sim_android_port() { echo $((5552 + 2 * $1)); }        # emulator console; adbd listens on this + 1
+sim_android_port() { echo $((5598 + 2 * $1)); }        # emulator console (at most 5682); adbd on this + 1
 sim_android_serial() { echo "emulator-$(sim_android_port "$1")"; }
 sim_adb_port() { echo $((5037 + $1)); }
 sim_metro_port() { # sim_metro_port <platform> <N>

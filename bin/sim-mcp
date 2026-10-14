@@ -27,11 +27,18 @@ case $platform in
     # The agent waits with `sim wait`; until then mobile-mcp simply lists no device.
     systemctl --user start "agent-sim-android@$n.service" {SIM_LOCK_FD}>&- >&2 || say "could not start agent-sim-android@$n (sim android logs $n)"
     export MOBILEMCP_DISABLE_TELEMETRY=1
+    # mobile-mcp drives the device through mobilecli, whose daemon is found by its socket in MOBILECLI_HOME (default
+    # ~/.mobilecli) and keeps the adb server it started with: shared, every slot would drive the first one's emulator.
+    # One daemon per slot, stopped when the session ends.
+    export MOBILECLI_HOME=$SIM_STATE/android/$n.mobilecli
+    mkdir -p "$MOBILECLI_HOME"
+    after=("$SIM_PREFIX/node_modules/.bin/mobilecli" daemon stop)
     server=("${SIM_NODE:-node}" "$SIM_PREFIX/node_modules/@mobilenext/mobile-mcp/lib/index.js")
     ;;
   web)
+    # Snapshots and screenshots land here, in RAM ($XDG_RUNTIME_DIR): each lease starts from an empty directory.
     out=$SIM_STATE/web/$n.out
-    mkdir -p "$out"
+    rm -rf -- "$out"; mkdir -p "$out"
     server=("${SIM_NODE:-node}" "$SIM_PREFIX/node_modules/@playwright/mcp/cli.js" --headless --isolated
       --browser "${SIM_WEB_BROWSER:-chromium}" --output-dir "$out")
     ;;
@@ -48,7 +55,10 @@ esac
 child=$!
 trap 'kill -TERM "$child" 2>/dev/null' TERM INT HUP
 while :; do
-  wait "$child" && exit 0
+  wait "$child" && { rc=0; break; }
   rc=$?
-  kill -0 "$child" 2>/dev/null || exit "$rc"     # wait was cut short by a trapped signal: wait again
+  kill -0 "$child" 2>/dev/null && continue     # wait was cut short by a trapped signal: wait again
+  break
 done
+[ -z "${after:-}" ] || "${after[@]}" {SIM_LOCK_FD}>&- </dev/null >/dev/null 2>&1 || true
+exit "$rc"

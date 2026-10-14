@@ -25,13 +25,18 @@ printf 'AGENT_HOST=box\nAGENT_IOS_HOST=mini.tail.ts.net\nAGENT_IOS_USER=bob\nAGE
 for c in systemctl ssh rsync mise; do
   printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s/log/%s"\n[ "$1" = is-active ] && echo inactive\nexit 0\n' "$T" "$c" > "$T/shims/$c"
 done
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s/log/adb"\n' "$T" > "$T/shims/adb"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" > "%s/log/emulator"\necho "$ANDROID_TMP" > "%s/log/emulator.tmp"\n' "$T" "$T" > "$T/shims/emulator"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s/log/npx"\n' "$T" > "$T/shims/npx"
 # The MCP server stand-in: records its arguments and environment, then serves until stdin closes.
 printf '#!/bin/sh\nprintf "%%s\\n" "$*" > "%s/log/node.args"\nenv > "%s/log/node.env"\ncat > /dev/null\n' "$T" "$T" > "$T/shims/node"
-chmod +x "$T/shims/"*
+mkdir -p "$T/prefix/node_modules/.bin"; printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s/log/mobilecli"\n' "$T" > "$T/prefix/node_modules/.bin/mobilecli"
+chmod +x "$T/shims/"* "$T/prefix/node_modules/.bin/mobilecli"
 export PATH="$T/shims:$PATH" SIM_STATE=$T/state SIM_PREFIX=$T/prefix SIM_NODE=$T/shims/node HOME=$T/home
 mkdir -p "$HOME"
 unset AGENT_HOST AGENT_HOST_ADDRESS AGENT_HOST_USER AGENT_HOST_LAN_IP AGENT_IOS_HOST AGENT_IOS_USER \
-  AGENT_SIM_ANDROID_SLOTS AGENT_SIM_WEB_SLOTS AGENT_SIM_IOS_SLOTS ANDROID_SERIAL ANDROID_ADB_SERVER_PORT
+  AGENT_SIM_ANDROID_SLOTS AGENT_SIM_WEB_SLOTS AGENT_SIM_IOS_SLOTS ANDROID_SERIAL ANDROID_ADB_SERVER_PORT \
+  XDG_CACHE_HOME SIM_CACHE ANDROID_TMP
 lib() { . "$REPO/lib/sim.sh" && sim_load_params; }
 # a git worktree layout for the tests that need a root: $T/ws/app (checkout) and $T/ws/app.wt/feat (worktree)
 mkdir -p "$T/ws/app/client" && git -C "$T/ws/app" init -q && git -C "$T/ws/app" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
@@ -53,8 +58,8 @@ echo "# parameters"
 
 echo "# ports and names"
 ( lib
-  check "android 1: console port" 5554 "$(sim_android_port 1)"
-  check "android 3: serial" emulator-5558 "$(sim_android_serial 3)"
+  check "android 1: console port" 5600 "$(sim_android_port 1)"
+  check "android 3: serial" emulator-5604 "$(sim_android_serial 3)"
   check "android 2: own adb server" 5039 "$(sim_adb_port 2)"
   check "android 1: Metro" 8101 "$(sim_metro_port android 1)"
   check "web 2: dev server" 8202 "$(sim_metro_port web 2)"
@@ -109,11 +114,13 @@ echo "# sim enable"
 
 echo "# sim-mcp"
 ( cd "$T/ws/app" || exit 1; rm -f "$T/log/"*
+  mkdir -p "$T/state/web/1.out"; touch "$T/state/web/1.out/old.png"
   sleep 2 | "$REPO/bin/sim-mcp" web 2> "$T/log/web.err" &
   wait_for '[ -s "$T/log/node.args" ]' || bad "web: server started" "$(cat "$T/log/web.err")"
   ( lib; sim_held web 1 ) && ok "web: slot held while the server runs" || bad "web: slot held while the server runs"
   has "web: Playwright MCP headless and isolated" "@playwright/mcp/cli.js --headless --isolated --browser chromium" "$(cat "$T/log/node.args")"
   has "web: lease banner on stderr" "web slot 1 leased" "$(cat "$T/log/web.err")"
+  [ -e "$T/state/web/1.out/old.png" ] && bad "web: last lease's output cleared" || ok "web: last lease's output cleared"
   wait
   ( lib; sim_held web 1 ) && bad "web: slot freed when the server exits" || ok "web: slot freed when the server exits"
 )
@@ -123,6 +130,8 @@ echo "# sim-mcp"
   has "android: mobile-mcp" "@mobilenext/mobile-mcp/lib/index.js" "$(cat "$T/log/node.args")"
   has "android: the slot's own adb server" "ANDROID_ADB_SERVER_PORT=5038" "$(cat "$T/log/node.env")"
   has "android: telemetry off" "MOBILEMCP_DISABLE_TELEMETRY=1" "$(cat "$T/log/node.env")"
+  has "android: a mobilecli daemon of the slot's own" "MOBILECLI_HOME=$T/state/android/1.mobilecli" "$(cat "$T/log/node.env")"
+  check "android: that daemon stopped with the session" "daemon stop" "$(cat "$T/log/mobilecli" 2>/dev/null)"
 )
 ( cd "$T/ws/app" || exit 1; rm -f "$T/log/"*
   sleep 1 | "$REPO/bin/sim-mcp" ios 2>/dev/null; wait
@@ -130,6 +139,14 @@ echo "# sim-mcp"
   has "ios: BatchMode, never a prompt" "BatchMode=yes" "$(cat "$T/log/ssh")"
 )
 ( "$REPO/bin/sim-mcp" tv 2>/dev/null; check "sim-mcp: unknown platform is a usage error" 2 "$?" )
+( rm -f "$T/log/"*; c=$T/home/.cache/agent-sim/android/2
+  mkdir -p "$c"; touch "$c/emulator-old.qcow2"
+  "$REPO/bin/sim" android run 2 >/dev/null 2>&1
+  has "android run: the slot's adb server first" "start-server" "$(cat "$T/log/adb")"
+  has "android run: console above adb's scan range" "-read-only -port 5602" "$(cat "$T/log/emulator")"
+  check "android run: scratch disks in the slot's cache dir" "$c" "$(cat "$T/log/emulator.tmp")"
+  [ -e "$c/emulator-old.qcow2" ] && bad "android run: last run's scratch disks cleared" || ok "android run: last run's scratch disks cleared"
+)
 
 echo "# sim commands"
 ( cd "$T/ws/app" || exit 1
@@ -138,13 +155,17 @@ echo "# sim commands"
   has "env: says how to get a slot" "sim enable" "$out"
   hold android "$T/ws/app" 30; holder=$!
   wait_for "( lib; sim_held android 1 )"
-  env=$("$REPO/bin/sim" env); has "env: serial of my slot" "ANDROID_SERIAL=emulator-5554" "$env"
+  env=$("$REPO/bin/sim" env); has "env: serial of my slot" "ANDROID_SERIAL=emulator-5600" "$env"
   has "env: adb server of my slot" "ANDROID_ADB_SERVER_PORT=5038" "$env"
-  check "run: command sees the slot" emulator-5554 "$("$REPO/bin/sim" run sh -c 'echo $ANDROID_SERIAL')"
+  check "run: command sees the slot" emulator-5600 "$("$REPO/bin/sim" run sh -c 'echo $ANDROID_SERIAL')"
   st=$("$REPO/bin/sim" status)
   has "status: leased android slot" "leased  pid" "$(echo "$st" | grep '^android  1')"
   has "status: free web slot" free "$(echo "$st" | grep '^web      1')"
   check "status: one line per slot" 5 "$(echo "$st" | wc -l)"
+  ( cd client && rm -f "$T/log/npx" && SIM_METRO_SETTLE=0 "$REPO/bin/sim" build --variant debug >/dev/null 2>&1 )
+  has "build: starts the slot's Metro first" "expo start --port 8101" "$(head -1 "$T/log/npx" 2>/dev/null)"
+  has "build: expo run:android for the slot's Metro port" "expo run:android --port 8101 --variant debug" "$(tail -1 "$T/log/npx" 2>/dev/null)"
+  "$REPO/bin/sim" metro stop android 2>/dev/null
   kill "$holder" 2>/dev/null; pkill -P "$holder" 2>/dev/null; wait
 )
 ( cd "$T/ws/app.wt/feat/client" || exit 1; rm -f "$T/log/"*

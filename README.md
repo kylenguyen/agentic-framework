@@ -305,15 +305,15 @@ Verify:
 ```
 host$ sim status                                      # one line per slot, all free
 host$ cd ~/workspace/agentic-framework && node tests/mcp-probe.mjs --call browser_navigate '{"url":"https://example.com"}' -- sim-mcp web 2>/dev/null | tail -1   # "isError":false, Example Domain
-host$ sim android start 1 && sleep 90 && ANDROID_ADB_SERVER_PORT=5038 ~/Android/Sdk/platform-tools/adb devices   # emulator-5554  device
-host$ node tests/mcp-probe.mjs --call mobile_list_available_devices '{}' -- sim-mcp android 2>/dev/null | tail -1   # emulator-5554 only
+host$ sim android start 1 && sleep 90 && ANDROID_ADB_SERVER_PORT=5038 ~/Android/Sdk/platform-tools/adb devices   # emulator-5600  device
+host$ node tests/mcp-probe.mjs --call mobile_list_available_devices '{}' -- sim-mcp android 2>/dev/null | tail -1   # one device (named after the AVD)
 host$ sim android stop all
 host$ node tests/mcp-probe.mjs --call session_show_defaults '{}' -- sim-mcp ios 2>/dev/null | tail -1   # simulatorId set
 host$ bash tests/sim-test.sh | tail -1                # N passed, 0 failed
 ```
 
 Rollback: `sim android stop all`; `rm ~/.local/bin/sim ~/.local/bin/sim-mcp ~/.config/systemd/user/agent-sim-android@.service`;
-`rm -rf ~/.local/share/agent-sim ~/.android/avd/agent-sim-android.*`; in a repo, delete the `sim-*` entries
+`rm -rf ~/.local/share/agent-sim ~/.cache/agent-sim ~/.android/avd/agent-sim-android.*`; in a repo, delete the `sim-*` entries
 (`.mcp.json`, `opencode.json`, the `agentic-framework:sim` block in `.codex/config.toml`). On the Mac, as the
 runner: `rm -rf ~/sims ~/.local/bin/sim-xcodebuildmcp`, `xcrun simctl delete agent-ios-1 agent-ios-2`, and the
 `agentic-framework:sim` block in `~/.zshenv`.
