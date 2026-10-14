@@ -12,6 +12,7 @@ checkout, so edit here, never the installed copy.
 | `install-host.sh` | host | the host login; `sudo` per command, only for phase 1 steps not yet done | phase 1: apt packages (tmux, mosh, gh, zsh, fzf, git, curl, file, jq, unattended-upgrades), zsh as login shell, linger, Tailscale auto-update, unattended-upgrades; then symlinked configs, secrets file skeleton, `xclip` shim, `agent` session picker, oh-my-zsh, mise toolchains, uv, the four harnesses |
 | `install-mac.sh` | Mac | you, no sudo | mosh, pngpaste, `~/.ssh/config` block, SSH key and key login to the host, WezTerm include, `clip-push` |
 | `install-linux.sh` | Linux desktop (apt, dnf, pacman or zypper) | you; `sudo` once, only for missing packages | ssh client, mosh, wl-clipboard, xclip; then the same as `install-mac.sh` |
+| `install-ios-runner.sh` | the Mac that runs iOS simulators (optional) | its dedicated non-admin login, no sudo; piped over ssh by `sim ios bootstrap` | mise, Node, Ruby, CocoaPods, XcodeBuildMCP, simulators `agent-ios-N`, the stdio launcher (section 6) |
 
 Order: host prerequisites, then the client script (it puts the client key on the host), then the host script, then
 one-time logins, then the joint checkpoints. The scripts never touch sshd or the firewall.
@@ -30,6 +31,8 @@ No script, template or config carries a host name, address or login. They come f
 | `AGENT_HOST_ADDRESS` | what a client connects to | Tailscale MagicDNS name, else `AGENT_HOST` | `.env`, default `AGENT_HOST` |
 | `AGENT_HOST_USER` | login on the host: ssh `User` | the login running the script; `.env` must agree | `.env`, required |
 | `AGENT_HOST_LAN_IP` | host address on the LAN, for `ssh <alias>-lan` | `src` of the default route | `.env`, optional |
+| `AGENT_IOS_HOST`, `AGENT_IOS_USER` | the Mac that runs the iOS simulators and its runner login (section 6) | `.env`, optional; empty means no iOS | not used |
+| `AGENT_SIM_ANDROID_SLOTS`, `AGENT_SIM_WEB_SLOTS`, `AGENT_SIM_IOS_SLOTS` | simulator slots per platform, 0 to 9 | `.env`, default 3, 3, 2 | not used |
 
 `.env` values override the derived ones, except the login. The host script writes `.env` on its first run and
 prints the lines for the clients at the end. On a client, copy `.env.example` to `.env` and edit it, or let the
@@ -275,6 +278,46 @@ ssh error, and two output lines when it worked. A toast saying no path came back
 older than this Mac's WezTerm config: `git pull` on the host. For Ctrl+V in Claude Code,
 `host$ CLIP_BRIDGE_DEBUG=1 xclip -selection clipboard -t TARGETS -o` shows the shim's decision.
 
+## 6. Simulators (optional: Android, web and iOS for agents)
+
+Agents in a repo that opts in get three MCP servers: `sim-web` (a headless browser), `sim-android` (an emulator on
+the host) and `sim-ios` (a simulator on a Mac, XcodeBuildMCP over ssh). Each harness session holds one device of
+each kind for itself. Design, ports and findings: [docs/simulators-plan.md](docs/simulators-plan.md).
+
+Host: the host script does it all. Phase 1 adds the emulator and browser libraries (`SIM_APT_PACKAGES` in
+`lib/sim.sh`); the network part installs JDK 17 (mise), the Android SDK packages and the shared AVD, the pinned
+Playwright MCP and mobile-mcp under `~/.local/share/agent-sim`, and the Playwright browsers; phase 4 links `sim`,
+`sim-mcp` and the `agent-sim-android@.service` user unit. The Android command-line tools are the one manual
+download: unpack them to `~/Android/Sdk/cmdline-tools/latest` and re-run.
+
+Mac (iOS, optional):
+1. An admin makes a standard (non-admin) account for the runner (`<ios-user>`), installs Xcode with an iOS
+   simulator runtime, runs `sudo xcodebuild -runFirstLaunch`, and logs the account in once at the console.
+2. The host's key goes into `~<ios-user>/.ssh/authorized_keys`; the Mac joins the tailnet.
+3. Add the Mac to `.env` on the host: `AGENT_IOS_HOST=<mac-mini>` (MagicDNS name) and `AGENT_IOS_USER=<ios-user>`.
+4. `host$ sim ios bootstrap`. Re-run it after a version bump in `lib/sim.sh`. It refuses to run with under 15 GB free.
+
+A repo: `host$ cd ~/workspace/<repo> && sim enable`, commit the three files it writes, and paste the section it
+prints into the repo's `AGENTS.md`. Codex asks to trust the repo on its first run there; say yes in the main
+checkout, and its worktrees follow.
+
+Verify:
+```
+host$ sim status                                      # one line per slot, all free
+host$ cd ~/workspace/agentic-framework && node tests/mcp-probe.mjs --call browser_navigate '{"url":"https://example.com"}' -- sim-mcp web 2>/dev/null | tail -1   # "isError":false, Example Domain
+host$ sim android start 1 && sleep 90 && ANDROID_ADB_SERVER_PORT=5038 ~/Android/Sdk/platform-tools/adb devices   # emulator-5554  device
+host$ node tests/mcp-probe.mjs --call mobile_list_available_devices '{}' -- sim-mcp android 2>/dev/null | tail -1   # emulator-5554 only
+host$ sim android stop all
+host$ node tests/mcp-probe.mjs --call session_show_defaults '{}' -- sim-mcp ios 2>/dev/null | tail -1   # simulatorId set
+host$ bash tests/sim-test.sh | tail -1                # N passed, 0 failed
+```
+
+Rollback: `sim android stop all`; `rm ~/.local/bin/sim ~/.local/bin/sim-mcp ~/.config/systemd/user/agent-sim-android@.service`;
+`rm -rf ~/.local/share/agent-sim ~/.android/avd/agent-sim-android.*`; in a repo, delete the `sim-*` entries
+(`.mcp.json`, `opencode.json`, the `agentic-framework:sim` block in `.codex/config.toml`). On the Mac, as the
+runner: `rm -rf ~/sims ~/.local/bin/sim-xcodebuildmcp`, `xcrun simctl delete agent-ios-1 agent-ios-2`, and the
+`agentic-framework:sim` block in `~/.zshenv`.
+
 ## More clients and rebuilds
 
 - Every further Mac or Linux client: section 2 only, with the same `.env` (the host script prints it), then the
@@ -306,9 +349,13 @@ older than this Mac's WezTerm config: `git pull` on the host. For Ctrl+V in Clau
 - [docs/remote-agent-host-plan.md](docs/remote-agent-host-plan.md): design, per-phase tests, and what is still planned.
 - [docs/session-picker-plan.md](docs/session-picker-plan.md): the decisions behind `bin/agent` and the session picker
   (one base session per harness run, an independent view per device), its command contract and its test layers.
+- [docs/simulators-plan.md](docs/simulators-plan.md): the device simulation service: slots and leases, Android
+  isolation, the iOS path over ssh, phase 0 findings, the `sim` contract and its test layers.
 - [AGENTS.md](AGENTS.md): status table, layout, install contract, boundaries for humans and agents.
 - `tests/agent-test.sh`: `bin/agent` and the login fragment against a throwaway HOME, a stand-in harness and a
   tmux socket of its own. Runs anywhere; no sudo, network or Docker.
+- `tests/sim-test.sh`: `lib/sim.sh`, `sim` and `sim-mcp` from a copy of the repo with shims for systemctl, ssh,
+  rsync and the MCP servers: leases, ports, `sim enable`, the three launches. Runs anywhere; no sudo or network.
 - `tests/params-test.sh`: the parameter library, every rendered template, dry runs of `install-mac.sh` and
   `install-linux.sh`, and a
   scan that fails if any file names a real host, login or address. Runs anywhere; no sudo or network.

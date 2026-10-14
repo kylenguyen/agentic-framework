@@ -24,10 +24,12 @@ Do not assume something exists because the plan describes it. Check this table a
 | 2 sessions | tmux, session picker (`bin/agent`), zsh + oh-my-zsh, WezTerm domain | `bin/agent`, `config/` |
 | 3 harnesses | mise, uv, gh, the four harnesses, the Oh My Pi `pi-web-access` plugin, secrets file, shared rules, Claude settings, Codex global rules and config block | `install-host.sh` phases 2 to 4 |
 | 4 clipboard bridge | Cmd+V on a Mac (Ctrl+V or Ctrl+Shift+V on Linux) pushes an image to `~/.clip/<stamp>.png` on the host and pastes that path into the pane; Ctrl+V in Claude Code is served by the `xclip` shim; copies return over OSC 52 | `bin/clip-put`, `bin/xclip`, `bin/clip-push-mac.sh.in`, `bin/clip-push-linux.sh.in`, `config/wezterm-agent-host.lua.in` |
+| simulators | Android emulators and headless browsers on the host, iOS simulators on a Mac over ssh, one slot per harness session through MCP; opt-in per repo with `sim enable` (docs/simulators-plan.md) | `bin/sim`, `bin/sim-mcp`, `lib/sim.sh`, `config/systemd/agent-sim-android@.service`, `install-ios-runner.sh`, `install-host.sh` |
 | 5 automation | `agent run`/`logs`/`stop`/`clean`, `agent-worker`, systemd units, GitHub runner workflow | planned, not started |
 | 6 isolation | `docker/Dockerfile.agent-sandbox`, `agent run --sandbox` | planned, not started |
 
-Planned but absent: `bin/agent-worker`, `systemd/`, `docker/`, `docs/runbook.md`. When you build part of
+Planned but absent: `bin/agent-worker`, `systemd/`, `docker/`, `docs/runbook.md`. (The simulator unit lives in
+`config/systemd/`; phase 5's `systemd/` is still to come.) When you build part of
 phase 5 or 6, update this table and section 8 of the plan doc.
 
 ## Layout
@@ -36,12 +38,17 @@ phase 5 or 6, update this table and section 8 of the plan doc.
 |---|---|---|
 | `lib/params.sh` | the parameters: `.env` loading without executing it, validators, derivation from the system on the host, `params_render` for `.in` templates, the clients' ssh config text. Must run under macOS bash 3.2 | sourced by every install script and the tests |
 | `lib/client.sh` | the client steps shared by `install-mac.sh` and `install-linux.sh`: `.env` bootstrap, `block`, ssh config and key, WezTerm include, `clip-push` and PATH block, key login, the closing summary. Must run under macOS bash 3.2 and BSD tools | sourced by the client scripts |
-| `.env.example` | the four `AGENT_HOST_*` parameters with example values | copied to `.env` (gitignored) on host and clients |
+| `lib/sim.sh` | the device simulation service: pinned versions, apt list, slot ports, leases (flock), the per-harness MCP file writers, rsync filter. Host only, bash 5 | sourced by `bin/sim`, `bin/sim-mcp`, `install-host.sh`, `tests/sim-test.sh` |
+| `.env.example` | the four `AGENT_HOST_*` parameters with example values, and the optional simulator ones commented out | copied to `.env` (gitignored) on host and clients |
 | `secrets.env.example` | secret variable names only | copied once to `~/.config/agents/env`, mode 600 |
 | `install-host.sh` | idempotent host setup, phases 1 to 4, run as the host login, never root. Phase 1 (root steps via `as_root`) is skipped by `--no-root`; network installs (oh-my-zsh, mise toolchains, uv, harnesses) by `--no-tools`. Phases 2 to 4 symlink configs, write marker blocks, install `bin/` | run in place |
 | `install-mac.sh` | idempotent Mac client setup, no sudo: `.env` (prompted when absent), mosh, pngpaste, `~/.ssh/config` block, WezTerm include, `clip-push`, PATH block in `~/.zshrc`, then key login to the host (`ssh-copy-id`, one password prompt at most). Exits 1 with the fix when it cannot finish | run on the Mac |
 | `install-linux.sh` | the same for a Linux desktop: the ssh client, mosh, wl-clipboard and xclip (gawk where awk is absent) through apt, dnf, pacman or zypper (`sudo` via `as_root`, only for what is missing; `sudo -A` when `SUDO_ASKPASS` is set; `--no-packages` skips it), then the shared steps with the Linux `clip-push` and the PATH block in the login shell's rc file. Refuses to run as root or on the host (`~/.local/bin/clip-put` present) | run on the Linux client |
 | `bin/agent` | sessions on the host: `new`, `ls [--porcelain]`, `attach`, `pick [--switch]`, `switch`, `kill [--force] [--keep-worktree]`. One harness run in one repo is one base tmux session; each device attaches its own grouped view. `pick` is the login landing. tmux is the only state. Header comment has the model and the test hooks | `~/.local/bin/agent` |
+| `bin/sim` | the simulators from the shell: `status`, `enable`, `wait`, `env`, `run`, `metro`, `android`, `ios sync\|prepare\|bootstrap\|gc`. Acts on the slot the worktree's MCP server holds | `~/.local/bin/sim` |
+| `bin/sim-mcp` | stdio MCP launcher a harness starts per platform: leases a slot, runs Playwright MCP, mobile-mcp (private adb server) or XcodeBuildMCP over ssh as its child, frees the slot on exit | `~/.local/bin/sim-mcp` |
+| `config/systemd/agent-sim-android@.service` | emulator for slot N, started on lease, never at boot | `~/.config/systemd/user/` |
+| `install-ios-runner.sh` | Mac half of the simulators, as the dedicated non-admin runner, no sudo, bash 3.2: mise, Node 22, Ruby 3.4, CocoaPods, XcodeBuildMCP, `agent-ios-N`, `~/.local/bin/sim-xcodebuildmcp` | piped over ssh by `sim ios bootstrap` |
 | `bin/clip-put` | stdin to `~/.clip`: a PNG becomes `<UTC stamp>-<random>.png` and its path is printed, `latest` is repointed at it; text replaces `latest`. Prunes `.png` older than `CLIP_KEEP_MINUTES` (1440) on every push; `--clear` empties the spool | `~/.local/bin/clip-put` |
 | `bin/xclip` | clipboard shim: serves `~/.clip/latest` to Claude Code on Ctrl+V; copies go back via OSC 52 | `~/.local/bin/xclip` |
 | `bin/clip-push-mac.sh.in` | template: pngpaste or pbpaste piped over `ssh <alias>-clip` into `clip-put`; prints the type, then the host path for an image. WezTerm runs `--if-image` on Cmd+V and pastes line 2 | `~/.local/bin/clip-push` on the Mac |
@@ -57,6 +64,8 @@ phase 5 or 6, update this table and section 8 of the plan doc.
 | `config/statusline-command.sh` | Claude Code status line, two lines; needs jq | `~/.claude/statusline-command.sh` |
 | `config/workspace/CLAUDE.md` | house rules for every repo under `~/workspace` and every harness | `~/workspace/CLAUDE.md`, `~/workspace/AGENTS.md`, `~/.codex/AGENTS.md` |
 | `tests/agent-test.sh` | unit tests for `bin/agent` and the login fragment: throwaway HOME, stand-in harness, own tmux socket | anywhere; no sudo, network or Docker |
+| `tests/sim-test.sh` | unit tests for `lib/sim.sh`, `bin/sim`, `bin/sim-mcp` from a temp copy of the repo with shims (systemctl, ssh, rsync, mise, the server) | anywhere; no sudo, network, emulator or Mac |
+| `tests/mcp-probe.mjs` | a stdio MCP client: initialize, tools/list, `--call`s; drives the live simulator checks in README section 6 | node |
 | `tests/params-test.sh` | unit tests for `lib/params.sh`, every rendered template checked with real tools, dry runs of `install-mac.sh` and `install-linux.sh --no-packages`, and the literal scan | anywhere; no sudo or network |
 | `tests/e2e/run.sh` | two Docker containers, a host (`box`, real sshd, login `alice`) and a Mac stand-in with two Mac users: both install scripts twice against each other, key login, idempotency, Cmd+V routing through the rendered WezTerm module under Lua 5.4 (`wezterm-paste.lua`, stub `wezterm` table), the spool, the `xclip` calls Claude Code makes, OSC 52, a second Mac, and the picker under `AGENT_PICK_FILTER` | docker without sudo; network for the image builds |
 | `tests/e2e/linux.sh` | `install-linux.sh` on Ubuntu, Debian, Fedora, Arch and openSUSE (`Dockerfile.linux`, `DISTROS=` for a subset) against the run.sh host image: packages through sudo with a password (`shims/linux/askpass`), key login, `clip-push` against a real X clipboard (Xvfb) and on Ubuntu a real Wayland one (headless sway), the Linux paste key through `wezterm-paste.lua`, a second run with no prompts, and the refusal on the host | docker without sudo; network during the run (distro mirrors) |
@@ -146,7 +155,8 @@ S=$(mktemp); printf plain | CLIP_BRIDGE_SPOOL=$S bin/clip-put && CLIP_BRIDGE_SPO
 python3 -m json.tool config/claude-settings.json >/dev/null
 ```
 
-Which suite to run: `agent-test.sh` for `bin/agent` or the login fragment; `params-test.sh` for anything
+Which suite to run: `sim-test.sh` for `lib/sim.sh`, `bin/sim`, `bin/sim-mcp` or the unit, plus the live
+checks in README section 6 when the emulator, an MCP version or the Mac side changes; `agent-test.sh` for `bin/agent` or the login fragment; `params-test.sh` for anything
 under `lib/`, a template, or a doc (the literal scan); `e2e/run.sh` for any install script, `lib/client.sh` or the
 clipboard bridge; `e2e/linux.sh` as well for `install-linux.sh`, `lib/client.sh`, the Linux `clip-push` or the
 WezTerm module; `e2e/tui.sh` for the picker's menus; `e2e/harness-paste.sh` when a harness is upgraded
