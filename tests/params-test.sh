@@ -12,7 +12,7 @@ ok()    { echo ok >> "$T/results"; printf 'ok   %s\n' "$1"; }
 bad()   { echo FAIL >> "$T/results"; printf 'FAIL %s\n     %s\n' "$1" "${2:-}"; }
 check() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "expected [$2] got [$3]"; fi; }   # check <name> <expected> <actual>
 # fresh: start a case with no parameters set and the library loaded. Run inside ( ) so cases do not leak.
-fresh() { unset AGENT_HOST AGENT_HOST_ADDRESS AGENT_HOST_USER AGENT_HOST_LAN_IP; . "$REPO/lib/params.sh"; }
+fresh() { unset AGENT_HOST AGENT_HOST_ADDRESS AGENT_HOST_USER AGENT_HOST_LAN_IP AGENT_IOS_HOST AGENT_IOS_USER AGENT_SIM_ANDROID_SLOTS AGENT_SIM_WEB_SLOTS AGENT_SIM_IOS_SLOTS; . "$REPO/lib/params.sh"; }
 # expect_fail <name> <cmd...>: the command must return non-zero and print something on stderr
 expect_fail() { local n=$1; shift; local err; if err=$("$@" 2>&1 >/dev/null); then bad "$n" "succeeded, expected failure"; else
   if [ -n "$err" ]; then ok "$n"; else bad "$n" "failed silently"; fi; fi; }
@@ -31,6 +31,9 @@ echo "# params_load"
 )
 ( fresh; AGENT_HOST=pre; printf 'AGENT_HOST=file\n' > "$T/env2"; params_load "$T/env2"; check "load: environment beats file" pre "$AGENT_HOST" )
 ( fresh; params_load "$T/does-not-exist" && ok "load: missing file is fine" || bad "load: missing file" )
+( fresh; printf 'AGENT_IOS_HOST=mini.tail.ts.net\nAGENT_IOS_USER=bob\nAGENT_SIM_WEB_SLOTS=1\n' > "$T/env3"; params_load "$T/env3"
+  check "load: simulator parameters" "mini.tail.ts.net bob 1" "$AGENT_IOS_HOST $AGENT_IOS_USER $AGENT_SIM_WEB_SLOTS" )
+( fresh; AGENT_IOS_HOST='a b'; expect_fail "validate: bad iOS host" params_validate )
 ( fresh; printf 'AGENT_HOST=a b\n' > "$T/bad1"; expect_fail "load: rejects space in value" params_load "$T/bad1" )
 ( fresh; printf 'OTHER=1\n' > "$T/bad2"; expect_fail "load: rejects foreign key" params_load "$T/bad2" )
 ( fresh; printf 'AGENT_HOST_NOPE=1\n' > "$T/bad3"; expect_fail "load: rejects unknown AGENT_ key" params_load "$T/bad3" )
@@ -215,11 +218,11 @@ echo "# no deployment literals anywhere in the repo"
   # because it carries the list; .env is the one place the real values belong. config/claude-settings.json is
   # skipped too: it is the operator's live ~/.claude/settings.json and names their own checkout.
   cd "$REPO" || exit 1
-  words='as1|kyle|kylepc|macbook|manee-goby|192\.168\.10\.'
+  words='as1|kyle|kylepc|macbook|manee-goby|ios-agent|192\.168\.10\.'
   hits=$(grep -rnwE --exclude-dir=.git --exclude=.git --exclude=.env --exclude=params-test.sh --exclude=claude-settings.json "$words" . || true)
   [ -z "$hits" ] && ok "scan: no deployment literals in scripts, templates, configs or docs" || bad "scan: deployment literals found" "$hits"
   # .env.example values are examples too: they may appear only there.
-  ex=$(grep -rnw --exclude-dir=.git --exclude=.git --exclude=.env --exclude=.env.example --exclude=params-test.sh 'agent-host\.example\.ts\.net\|192\.168\.1\.10' . || true)
+  ex=$(grep -rnw --exclude-dir=.git --exclude=.git --exclude=.env --exclude=.env.example --exclude=params-test.sh 'agent-host\.example\.ts\.net\|192\.168\.1\.10\|mac-mini\.example\.ts\.net\|ios-sim' . || true)
   [ -z "$ex" ] && ok "scan: .env.example values appear only in .env.example" || bad "scan: .env.example values leaked" "$ex"
   left=$(grep -rln '@AGENT_[A-Z_]*@' bin config lib install-host.sh install-mac.sh install-linux.sh | grep -v -e '\.in$' -e '^lib/' || true)   # two -e: BSD grep misreads $\|
   [ -z "$left" ] && ok "scan: placeholders only in .in templates and lib" || bad "scan: placeholders outside templates" "$left"

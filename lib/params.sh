@@ -9,10 +9,14 @@
 #   AGENT_HOST_ADDRESS   what a client connects to (MagicDNS name, FQDN, IP) host: Tailscale DNS name, else AGENT_HOST
 #   AGENT_HOST_USER      login on the host                                 host: always `id -un`; .env must agree
 #   AGENT_HOST_LAN_IP    host address on the LAN; empty drops <alias>-lan   host: `src` of the default route
+# Device simulation service (lib/sim.sh, host only; clients ignore them):
+#   AGENT_IOS_HOST       the Mac that runs the iOS simulators (MagicDNS name)  empty: no iOS
+#   AGENT_IOS_USER       the dedicated, non-admin runner login on that Mac      empty: no iOS
+#   AGENT_SIM_ANDROID_SLOTS, AGENT_SIM_WEB_SLOTS, AGENT_SIM_IOS_SLOTS   slots per platform (0-9)  default 3, 3, 2
 # Templates carry the same names as @AGENT_HOST@ style placeholders; params_render fills them in and fails on any
 # placeholder left over, so a half-rendered file can never be installed.
 
-PARAMS_NAMES="AGENT_HOST AGENT_HOST_ADDRESS AGENT_HOST_USER AGENT_HOST_LAN_IP"
+PARAMS_NAMES="AGENT_HOST AGENT_HOST_ADDRESS AGENT_HOST_USER AGENT_HOST_LAN_IP AGENT_IOS_HOST AGENT_IOS_USER AGENT_SIM_ANDROID_SLOTS AGENT_SIM_WEB_SLOTS AGENT_SIM_IOS_SLOTS"
 
 params_fail() { printf '\033[1;31m!!  %s\033[0m\n' "$*" >&2; return 1; }
 
@@ -25,8 +29,8 @@ params_load() {
   while IFS= read -r line || [ -n "$line" ]; do
     n=$((n + 1))
     case "$line" in ''|'#'*) continue ;; esac
-    if ! [[ $line =~ ^(AGENT_HOST[A-Z_]*)=\"?([A-Za-z0-9_.:/-]*)\"?[[:space:]]*$ ]]; then
-      params_fail "$file:$n: expected AGENT_HOST...=value (letters, digits, . : / _ -), got: $line"; return 1
+    if ! [[ $line =~ ^(AGENT_[A-Z_]+)=\"?([A-Za-z0-9_.:/-]*)\"?[[:space:]]*$ ]]; then
+      params_fail "$file:$n: expected AGENT_...=value (letters, digits, . : / _ -), got: $line"; return 1
     fi
     key=${BASH_REMATCH[1]}
     # shellcheck disable=SC2034
@@ -52,6 +56,8 @@ params_validate() {
   if [ -n "${AGENT_HOST_ADDRESS:-}" ] && ! params_is_addr "$AGENT_HOST_ADDRESS"; then params_fail "AGENT_HOST_ADDRESS=$AGENT_HOST_ADDRESS: hostname, FQDN or IP"; ok=0; fi
   if [ -n "${AGENT_HOST_USER:-}" ]    && ! params_is_user "$AGENT_HOST_USER";    then params_fail "AGENT_HOST_USER=$AGENT_HOST_USER: one login name, no spaces or @"; ok=0; fi
   if [ -n "${AGENT_HOST_LAN_IP:-}" ]  && ! params_is_ipv4 "$AGENT_HOST_LAN_IP";  then params_fail "AGENT_HOST_LAN_IP=$AGENT_HOST_LAN_IP: dotted IPv4"; ok=0; fi
+  if [ -n "${AGENT_IOS_HOST:-}" ]     && ! params_is_addr "$AGENT_IOS_HOST";     then params_fail "AGENT_IOS_HOST=$AGENT_IOS_HOST: hostname, FQDN or IP"; ok=0; fi
+  if [ -n "${AGENT_IOS_USER:-}" ]     && ! params_is_user "$AGENT_IOS_USER";     then params_fail "AGENT_IOS_USER=$AGENT_IOS_USER: one login name, no spaces or @"; ok=0; fi
   [ "$ok" = 1 ]
 }
 
