@@ -314,6 +314,7 @@ host$ node tests/mcp-probe.mjs --call mobile_list_available_devices '{}' -- sim-
 host$ cd ~/workspace/<repo> && sim maestro android test .maestro/   # with a sim-android session open in that worktree; the first run builds the image
 host$ cd ~/workspace/<repo>/<app> && sim maestro ios test .maestro/   # with a sim-ios session and the app installed on its simulator; ends with "maestro run <id>: <dir>" and "latest: <dir>"
 host$ cd ~/workspace/<repo> && sim tunnel ios "$(sim ports ios 1)" --background && sim status && sim tunnel ios --stop   # with an ios slot: "tunnel up: Mac 127.0.0.1:<p> -> host 127.0.0.1:<p>", status shows "tunnel <p>"
+host$ sim doctor all                                  # ok|warn|fail per check and slot; rc 1 on any fail; starts nothing
 host$ sim android stop all
 host$ cd ~/workspace/<repo> && sim lease web --ttl 1h && sim status && sim release web   # a slot without a harness session; status shows "leased cli until"
 host$ systemctl --user list-timers agent-sim-reap.timer   # next run within 5 minutes

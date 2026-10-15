@@ -13,9 +13,12 @@
 #   sim maestro android|ios <args...>   Maestro on this worktree's emulator or simulator, a directory per run: sim maestro ios test .maestro/
 #                                       ios --forward p[,p...]: host ports reachable from the Mac for the run (sim tunnel)
 #   sim tunnel ios <p[,p...]> [--background|--stop|--any-port]   host 127.0.0.1:<p> as 127.0.0.1:<p> on the Mac; ports from sim ports ios
+#   sim maestro P --fresh|--cold ...    first stop Maestro's driver (--fresh), or restart the device (--cold; android: app gone)
 #   sim metro start|stop|log <P>        Metro for this worktree's slot: android (adb reverse), web, ios (on the Mac)
 #   sim metro start <P> [--env K=V]...  with EXPO_PUBLIC_*, the names in SIM_METRO_ENV and each K=V; returns once it answers
 #   sim android start|stop|logs <N|all> the emulator units
+#   sim android restart <N|all>         cold restart of an emulator and its mobilecli daemon; the app is gone (sim build)
+#   sim doctor [P] [N|all]              why a device or driver is unhealthy: this worktree's slots, slot N, or all slots
 #   sim ios start|stop <N|all>          boot or shut down simulators agent-ios-N on the Mac
 #   sim reap                            stop the devices and Metro of slots unused for AGENT_SIM_IDLE_MINUTES (timer)
 #   sim ios sync                        rsync this worktree to the Mac, print its path there
@@ -163,6 +166,9 @@ a boot (up to a minute). An Android emulator starts clean, so after an idle stop
 - iOS flows run on the Mac, so a test stack on this host is out of their reach: \`sim maestro ios --forward <p,p>\`
   (or \`sim tunnel ios <p,p> --background\`) makes host 127.0.0.1:<p> reachable there at 127.0.0.1:<p>, with ports
   from \`sim ports ios\`.
+- A device or Maestro misbehaving (driver deaths, a stuck emulator): \`sim doctor\` says why. Then
+  \`sim maestro android --fresh ...\` resets Maestro's driver; \`sim android restart N\` restarts the emulator cold
+  (the app is gone: \`sim build\` again).
 - Without a harness session (a script, CI), \`sim lease <android|web|ios>\` holds a slot for this worktree (8 h by
   default, \`--ttl\`) and \`sim release <platform>\` frees it.
 - iOS: \`sim ios prepare\` copies this worktree to the Mac and prints its path there; build and run it with the
@@ -495,10 +501,10 @@ cmd_build() {
 # --test-output-dir and --debug-output, as `--x P` or `--x=P`, must name a path inside the worktree (rc 2), which is
 # made absolute. Sets MA_ARGS (Maestro's arguments), and per argument MA_OUT (the absolute output path it carries,
 # else empty) and MA_KEY (`--x=` when the path is in the same argument); MA_GIVEN lists the output flags given.
-# sim's own: --forward p[,p…] (iOS) sets MA_FORWARD.
+# sim's own: --forward p[,p…] (iOS) sets MA_FORWARD, --fresh MA_FRESH=1, --cold MA_COLD=1.
 maestro_args() {
   local root=$1 a p; shift
-  MA_ARGS=(); MA_OUT=(); MA_KEY=(); MA_GIVEN=' '; MA_FORWARD=()
+  MA_ARGS=(); MA_OUT=(); MA_KEY=(); MA_GIVEN=' '; MA_FORWARD=(); MA_FRESH=0; MA_COLD=0
   while [ $# -gt 0 ]; do
     a=$1; shift
     case $a in
@@ -506,6 +512,8 @@ maestro_args() {
         if [ "$a" = --forward ]; then [ $# -gt 0 ] || usage; p=$1; shift; else p=${a#*=}; fi
         p=$(tunnel_parse "$p") || exit 2
         mapfile -t MA_FORWARD <<<"$p" ;;
+      --fresh) MA_FRESH=1 ;;   # reset Maestro's driver before the run (maestro_fresh_android, maestro_ios)
+      --cold) MA_COLD=1 ;;     # restart the device before the run: android_restart, or a shutdown and boot on iOS
       --output|--test-output-dir|--debug-output)
         [ $# -gt 0 ] || die "$a needs a path" 2
         p=$(maestro_out_path "$root" "$1") || exit; shift
@@ -574,8 +582,12 @@ maestro_android() {
   run=$SIM_STATE/android/$n.maestro; home=$SIM_CACHE/android/maestro-$n
   [ -z "$(docker ps -q --filter "name=^$name\$")" ] || die "a Maestro run is already going on android slot $n"
   sim_touch android "$n"
-  systemctl --user start "$(sim_android_unit "$n")"
-  sim_android_wait "$n" "${SIM_BOOT_TIMEOUT:-180}" || die "$(sim_android_serial "$n") did not boot (sim android logs $n)"
+  if [ "$MA_COLD" = 1 ]; then android_restart "$n" >&2
+  else
+    systemctl --user start "$(sim_android_unit "$n")"
+    sim_android_wait "$n" "${SIM_BOOT_TIMEOUT:-180}" || die "$(sim_android_serial "$n") did not boot (sim android logs $n)"
+  fi
+  [ "$MA_FRESH" = 0 ] || maestro_fresh_android "$n"
   if ! docker image inspect "$image" >/dev/null 2>&1; then
     echo "sim maestro: building $image, once (downloads Maestro $SIM_MAESTRO_VERSION)" >&2
     docker build -q -t "$image" --build-arg "MAESTRO_VERSION=$SIM_MAESTRO_VERSION" \
@@ -611,6 +623,25 @@ maestro_android() {
   return "$rc"
 }
 
+# Maestro's Android driver, confirmed read-only on emulator-5600 on 15 Oct 2026 (Maestro 2.11.0): `pm list packages`
+# has dev.mobile.maestro and dev.mobile.maestro.test; while the driver runs, `ps -A` shows a process named
+# dev.mobile.maestro, started by a root `app_process` running `am instrument ... dev.mobile.maestro.test/
+# androidx.test.runner.AndroidJUnitRunner`. A second UiAutomation client shows as a process named uiautomator (what
+# `uiautomator dump` runs as): the documented name, not seen live. Only one client can instrument a device at a time.
+MAESTRO_ANDROID_PACKAGES="dev.mobile.maestro dev.mobile.maestro.test"
+MAESTRO_ANDROID_CLIENTS='dev\.mobile\.maestro|uiautomator'   # process names (ps -A -o NAME) that instrument the device
+# Maestro's iOS driver: the XCTest runner app and its host app on the simulator. The ids are Maestro's documented
+# ones, not yet confirmed on the Mac.
+MAESTRO_IOS_BUNDLES="dev.mobile.maestro-driver-iosUITests.xctrunner dev.mobile.maestro-driver-ios"
+
+# maestro_fresh_android <N>: stop Maestro's driver on slot N's emulator and any stray uiautomator, without a reboot.
+maestro_fresh_android() {
+  local p cmd=''
+  for p in $MAESTRO_ANDROID_PACKAGES; do cmd+="am force-stop $p; "; done
+  ( eval "$(sim_android_env "$1")"; timeout 20 adb shell "${cmd}pkill uiautomator; true" ) >/dev/null 2>&1 || true
+  echo "sim maestro: Maestro's driver stopped on $(sim_android_serial "$1"); this run starts a new one" >&2
+}
+
 # maestro_ios_launcher: the Mac's sim-maestro must speak contract 2, `sim-maestro <N> <run-id> <args...>`.
 maestro_ios_launcher() {
   local v rc=0
@@ -642,8 +673,19 @@ maestro_ios() {
   sim_touch ios "$n"
   maestro_ios_launcher
   cmd_ios sync >/dev/null || die "could not sync $root to $AGENT_IOS_HOST"
+  if [ "$MA_COLD" = 1 ]; then   # the app stays installed: a simulator keeps its data across a shutdown
+    sim_ios_ssh "xcrun simctl shutdown $(sim_ios_name "$n") 2>/dev/null; true" </dev/null >/dev/null 2>&1 \
+      || unavailable "$AGENT_IOS_HOST did not answer"
+    echo "sim maestro: $(sim_ios_name "$n") shut down, booting it again (the app stays installed)" >&2
+  fi
   sim_ios_boot "$n" || die "could not boot $(sim_ios_name "$n") on $AGENT_IOS_HOST"
   rm -f "$SIM_STATE/ios/$n.down"
+  if [ "$MA_FRESH" = 1 ]; then
+    local b cmd=''
+    for b in $MAESTRO_IOS_BUNDLES; do cmd+="xcrun simctl terminate $(sim_ios_name "$n") $b 2>/dev/null; "; done
+    sim_ios_ssh "${cmd}true" </dev/null >/dev/null 2>&1 || unavailable "$AGENT_IOS_HOST did not answer"
+    echo "sim maestro: Maestro's driver stopped on $(sim_ios_name "$n"); this run starts a new one" >&2
+  fi
   maestro_new_run "$base" ios "$@"
   mrun=.cache/agent-sim/maestro-$n/runs/$MR_ID   # the run's directory on the Mac, under the runner's home
   # A long suite is use: keep the reaper off the simulator while it runs.
@@ -788,6 +830,9 @@ cmd_android() {
         [ "$action" = stop ] || sim_touch android "$n"
         systemctl --user "$action" "$(sim_android_unit "$n")"
       done ;;
+    restart) [ -n "$which" ] || usage
+      local slots; slots=$(slots_of android "$which") || exit
+      for n in $slots; do android_restart "$n"; done ;;
     logs) [ -n "$which" ] || usage; journalctl --user -u "agent-sim-android@$which.service" -n 100 --no-pager ;;
     # The unit's ExecStart: the slot's own adb server, then the emulator registered with it alone.
     run) [ -n "$which" ] || usage
@@ -801,6 +846,241 @@ cmd_android() {
         -no-boot-anim -gpu swiftshader_indirect -no-snapshot-save ;;
     *) usage ;;
   esac
+}
+
+# mobilecli_stop <N>: stop slot N's mobilecli daemon (mobile-mcp's), which holds a connection to the adb server that
+# the emulator unit takes down with it; mobile-mcp starts a new one on its next call.
+mobilecli_stop() {
+  MOBILECLI_HOME=$SIM_STATE/android/$1.mobilecli "$SIM_PREFIX/node_modules/.bin/mobilecli" daemon stop </dev/null >/dev/null 2>&1 || true
+}
+
+# android_restart <N>: a cold restart of slot N's emulator (it starts from the clean image, so the app is gone). Exit 3
+# when it does not boot in time.
+android_restart() {
+  local n=$1 unit; unit=$(sim_android_unit "$1")
+  sim_touch android "$n"
+  systemctl --user stop "$unit" || die "could not stop $unit"
+  mobilecli_stop "$n"
+  systemctl --user start "$unit" || die "could not start $unit (sim android logs $n)"
+  sim_android_wait "$n" "${SIM_BOOT_TIMEOUT:-180}" \
+    || unavailable "$(sim_android_serial "$n") did not boot within ${SIM_BOOT_TIMEOUT:-180} s (sim android logs $n)"
+  echo "$(sim_android_serial "$n") restarted cold; the app is gone, run sim build"
+}
+
+# --- sim doctor ------------------------------------------------------------------------------------------------
+# Read-only: it starts, stops, boots and touches nothing (a check is not use), and asks a device only while its unit
+# is active, since adb would start a server of its own on the slot's port. Each check waits at most
+# SIM_DOCTOR_TIMEOUT seconds (10; the Mac's batch of checks three times that), so a hung adb or ssh cannot hang it.
+# Every line goes through doctor_line, the one place that prints one (sim doctor --json hooks in there).
+DOC_FAIL=0
+doctor_line() { # doctor_line <ok|warn|fail> <platform|host> <N|-> <check> <detail>
+  [ "$1" != fail ] || DOC_FAIL=1
+  printf '%-4s  %-7s %s  %-14s %s\n' "$1" "$2" "$3" "$4" "$5"
+}
+
+doc_dur() { # doc_dur <secs>: 2d3h, 3h12m, 12m or 45s
+  local s=$1
+  if [ "$s" -ge 86400 ]; then echo "$((s / 86400))d$((s % 86400 / 3600))h"
+  elif [ "$s" -ge 3600 ]; then echo "$((s / 3600))h$((s % 3600 / 60))m"
+  elif [ "$s" -ge 60 ]; then echo "$((s / 60))m"; else echo "${s}s"; fi
+}
+doc_gb() { awk -v k="$1" 'BEGIN { printf "%.1f", k / 1048576 }'; }   # doc_gb <KiB>: GB with one decimal
+doc_ms() { echo $((($(date +%s%N) - $1) / 1000000)); }                 # doc_ms <start in ns>: ms since
+
+doc_adb() { # doc_adb <args...>: adb on the slot's server and emulator (DOC_ENV), cut off after the check timeout
+  ( eval "$DOC_ENV"; timeout "$DOC_TO" adb "$@" ) 2>/dev/null
+}
+
+# doctor_host: memory, load and disk for the emulators and browsers. SIM_PROC (/proc) is a seam for the tests.
+doctor_host() {
+  local proc=${SIM_PROC:-/proc} kb load cores dir lvl
+  kb=$(awk '/^MemAvailable:/ {print $2}' "$proc/meminfo" 2>/dev/null) || true
+  if [[ $kb =~ ^[0-9]+$ ]]; then
+    lvl=ok; [ "$kb" -ge 3145728 ] || lvl=warn; [ "$kb" -ge 1048576 ] || lvl=fail
+    doctor_line "$lvl" host - memory "$(doc_gb "$kb") GB available"
+  else doctor_line warn host - memory "MemAvailable not found in $proc/meminfo"; fi
+  read -r load _ < "$proc/loadavg" 2>/dev/null || load=
+  cores=$(nproc)
+  if [ -n "$load" ]; then
+    lvl=ok; awk -v l="$load" -v c="$cores" 'BEGIN { exit !(l > c) }' && lvl=warn
+    doctor_line "$lvl" host - load "$load on $cores cores"
+  fi
+  dir=$SIM_CACHE; while [ ! -d "$dir" ]; do dir=$(dirname "$dir"); done
+  kb=$(timeout "$DOC_TO" df -Pk "$dir" 2>/dev/null | awk 'NR == 2 {print $4}') || true
+  if [[ $kb =~ ^[0-9]+$ ]]; then
+    lvl=ok; [ "$kb" -ge 10485760 ] || lvl=warn; [ "$kb" -ge 2097152 ] || lvl=fail
+    doctor_line "$lvl" host - disk "$(doc_gb "$kb") GB free for $SIM_CACHE"
+  else doctor_line warn host - disk "df did not answer for $dir"; fi
+}
+
+doctor_android() {
+  local n=$1 unit st show since nr t0 ms out rc names count pid f base runs r d c dn=0 cn=0 drun=0 crun=0 last=''
+  unit=$(sim_android_unit "$n")
+  st=$(timeout "$DOC_TO" systemctl --user is-active "$unit" 2>/dev/null) || true
+  show=$(timeout "$DOC_TO" systemctl --user show -p ActiveEnterTimestamp -p NRestarts "$unit" 2>/dev/null) || true
+  since=$(sed -n 's/^ActiveEnterTimestamp=//p' <<<"$show"); nr=$(sed -n 's/^NRestarts=//p' <<<"$show")
+  case $st in
+    active)
+      since=$(date -d "$since" +%s 2>/dev/null) && since=", up $(doc_dur $(($(date +%s) - since)))" || since=
+      doctor_line ok android "$n" unit "active$since" ;;
+    activating|reloading) doctor_line warn android "$n" unit "$st: still starting" ;;
+    failed) doctor_line fail android "$n" unit "failed (sim android logs $n)" ;;
+    *) doctor_line ok android "$n" unit "${st:-inactive}: stopped while unused, the next tool call starts it" ;;
+  esac
+  if [[ $nr =~ ^[0-9]+$ ]]; then
+    if [ "$nr" -gt 0 ]; then doctor_line warn android "$n" restarts "$nr: systemd restarted the emulator after it ended (sim android logs $n)"
+    else doctor_line ok android "$n" restarts 0; fi
+  fi
+  if [ "$st" = active ]; then
+    DOC_ENV=$(sim_android_env "$n")
+    rc=0; out=$(doc_adb shell getprop sys.boot_completed | tr -d '\r') || rc=$?
+    if [ "$rc" = 124 ]; then doctor_line fail android "$n" boot "adb did not answer within $DOC_TO s (sim android restart $n)"
+    elif [ "$out" = 1 ]; then doctor_line ok android "$n" boot "sys.boot_completed=1"
+    else doctor_line fail android "$n" boot "sys.boot_completed=${out:-nothing}: booting, or stuck (sim android restart $n)"; fi
+    t0=$(date +%s%N); rc=0; doc_adb shell true >/dev/null || rc=$?; ms=$(doc_ms "$t0")
+    if [ "$rc" != 0 ]; then doctor_line fail android "$n" adb "adb shell true failed (rc $rc) after $ms ms"
+    elif [ "$ms" -gt 5000 ]; then doctor_line fail android "$n" adb "round trip $ms ms (over 5 s)"
+    elif [ "$ms" -gt 500 ]; then doctor_line warn android "$n" adb "round trip $ms ms (over 500 ms)"
+    else doctor_line ok android "$n" adb "round trip $ms ms"; fi
+    rc=0; out=$(doc_adb shell ps -A -o NAME) || rc=$?
+    if [ "$rc" != 0 ]; then doctor_line warn android "$n" instrumentation "ps -A failed (rc $rc)"
+    else
+      names=$(tr -d '\r' <<<"$out" | grep -xE "$MAESTRO_ANDROID_CLIENTS" | paste -sd' ' || true)
+      count=$(wc -w <<<"$names")
+      if [ "$count" -gt 1 ]; then doctor_line warn android "$n" instrumentation "$count clients: $names; only one can drive the device (sim maestro android --fresh)"
+      else doctor_line ok android "$n" instrumentation "${names:-none}"; fi
+    fi
+  fi
+  f=$SIM_STATE/android/$n.mobilecli/daemon.pid
+  pid=$(sed -n 's/.*"pid": *\([0-9]*\).*/\1/p' "$f" 2>/dev/null) || true
+  if [ -z "$pid" ]; then doctor_line ok android "$n" mobilecli "no daemon (mobile-mcp starts one on its first call)"
+  elif kill -0 "$pid" 2>/dev/null; then doctor_line ok android "$n" mobilecli "daemon pid $pid"
+  else doctor_line warn android "$n" mobilecli "daemon pid $pid is gone (stale $f)"; fi
+  # The last AGENT_SIM_KEEP_RUNS Maestro runs: driver deaths in Maestro's logs, crashes and kills in the device log.
+  base=$SIM_CACHE/android/maestro-$n/runs
+  runs=$(find "$base" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort -V | tail -n "$AGENT_SIM_KEEP_RUNS" || true)
+  for r in $runs; do
+    d=$(grep -rhcE 'DeviceServerDiedException|Device server died' --exclude=logcat.txt "$base/$r" 2>/dev/null | awk '{s += $1} END {print s + 0}' || true)
+    c=$(grep -cE 'FATAL EXCEPTION|lowmemorykiller|am_crash' "$base/$r/logcat.txt" 2>/dev/null) || c=0
+    [ "$d" = 0 ] || { dn=$((dn + d)); drun=$((drun + 1)); last=$r; }
+    [ "$c" = 0 ] || { cn=$((cn + c)); crun=$((crun + 1)); }
+  done
+  count=$(wc -w <<<"$runs")
+  if [ "$count" = 0 ]; then doctor_line ok android "$n" driver-deaths "no Maestro runs kept"
+  elif [ "$dn" -gt 0 ]; then doctor_line warn android "$n" driver-deaths "$dn in $drun of the last $count runs, latest in $base/$last (sim maestro android --fresh)"
+  else doctor_line ok android "$n" driver-deaths "none in the last $count runs"; fi
+  if [ "$count" != 0 ]; then
+    if [ "$cn" -gt 0 ]; then doctor_line warn android "$n" device-crashes "$cn FATAL EXCEPTION/lowmemorykiller/am_crash lines in the logcat.txt of $crun of the last $count runs"
+    else doctor_line ok android "$n" device-crashes "none in the last $count runs"; fi
+  fi
+}
+
+# doctor_web <N>: the browsers Playwright MCP's own playwright expects, by the install locations it names.
+DOC_WEB=''
+doctor_web() {
+  local pw=$SIM_PREFIX/node_modules/.bin/playwright out d missing='' have=''
+  if [ -z "$DOC_WEB" ]; then
+    if [ ! -x "$pw" ]; then DOC_WEB="fail|Playwright is not installed under $SIM_PREFIX (install-host.sh)"
+    elif ! out=$(timeout "$DOC_TO" "$pw" install --dry-run chromium webkit 2>/dev/null); then DOC_WEB="fail|playwright install --dry-run failed"
+    else
+      while IFS= read -r d; do
+        if [ -d "$d" ]; then have+="${have:+, }${d##*/}"; else missing+="${missing:+, }${d##*/}"; fi
+      done < <(sed -n 's/^ *Install location: *//p' <<<"$out")
+      if [ -n "$missing" ]; then DOC_WEB="fail|missing $missing (install-host.sh)"
+      elif [ -n "$have" ]; then DOC_WEB="ok|$have"
+      else DOC_WEB="fail|playwright names no browsers"; fi
+    fi
+  fi
+  doctor_line "${DOC_WEB%%|*}" web "$1" browsers "${DOC_WEB#*|}"
+}
+
+# The Mac's side of the ios checks, one ssh for every slot. Runs in the runner's zsh, POSIX sh syntax only.
+DOC_MAC_SCRIPT=$(cat <<'EOF'
+echo "launcher=$(sim-maestro --version 2>/dev/null)"
+echo "xcodebuildmcp=$(xcodebuildmcp --version 2>/dev/null | tail -1)"
+echo "maestro=$(maestro --version 2>/dev/null | tail -1)"
+echo "runtime=$(xcrun simctl list runtimes available 2>/dev/null | awk '/^iOS / {r = $1 " " $2} END {print r}')"
+echo "disk=$(df -Pk "$HOME" | awk 'NR == 2 {print $4}')"
+xcrun simctl list devices 2>/dev/null | sed -n 's/^ *\(agent-ios-[0-9]*\) (.*) (\([A-Za-z ]*\)) *$/device=\1 \2/p'
+EOF
+)
+DOC_MAC=''; DOC_MAC_RC=''; DOC_MAC_MS=''; DOC_MAC_OUT=''
+doc_mac_field() { sed -n "s/^$1=//p" <<<"$DOC_MAC_OUT" | head -1; }
+
+doctor_ios() {
+  local n=$1 rc t0 v name st kb pid ports
+  if [ -z "$DOC_MAC" ]; then
+    t0=$(date +%s%N); rc=0; sim_mac_probe --fresh || rc=$?; DOC_MAC_MS=$(doc_ms "$t0")
+    case $rc in 0) DOC_MAC=up ;; 2) DOC_MAC=none ;; *) DOC_MAC=down ;; esac
+    if [ "$DOC_MAC" = up ]; then
+      DOC_MAC_RC=0
+      DOC_MAC_OUT=$(SIM_SSH_TIMEOUT=$((DOC_TO * 3)) sim_ios_ssh "$DOC_MAC_SCRIPT" </dev/null 2>/dev/null) || DOC_MAC_RC=$?
+    fi
+  fi
+  case $DOC_MAC in
+    none) doctor_line fail ios "$n" mac "AGENT_IOS_HOST and AGENT_IOS_USER are not set in .env"; return ;;
+    down) doctor_line fail ios "$n" mac "unreachable: $AGENT_IOS_USER@$AGENT_IOS_HOST did not answer within ${SIM_MAC_PROBE_TIMEOUT:-5} s"; return ;;
+  esac
+  doctor_line ok ios "$n" mac "$AGENT_IOS_HOST up, answered in $DOC_MAC_MS ms"
+  if [ "$DOC_MAC_RC" != 0 ]; then
+    doctor_line fail ios "$n" checks "the checks on the Mac did not finish within $((DOC_TO * 3)) s (rc $DOC_MAC_RC)"; return
+  fi
+  v=$(doc_mac_field launcher)
+  case $v in
+    2) doctor_line ok ios "$n" launcher "sim-maestro contract 2" ;;
+    '') doctor_line fail ios "$n" launcher "no sim-maestro on the Mac: sim ios bootstrap" ;;
+    *) doctor_line fail ios "$n" launcher "sim-maestro contract $v, sim needs 2: sim ios bootstrap" ;;
+  esac
+  for name in xcodebuildmcp:$SIM_XCODEBUILDMCP_VERSION maestro:$SIM_MAESTRO_VERSION; do
+    v=$(doc_mac_field "${name%%:*}")
+    if [ -z "$v" ]; then doctor_line fail ios "$n" "${name%%:*}" "not installed: sim ios bootstrap"
+    elif [ "$v" = "${name#*:}" ]; then doctor_line ok ios "$n" "${name%%:*}" "$v"
+    else doctor_line warn ios "$n" "${name%%:*}" "$v, pinned ${name#*:}: sim ios bootstrap"; fi
+  done
+  v=$(doc_mac_field runtime)
+  if [ -n "$v" ]; then doctor_line ok ios "$n" runtime "$v"
+  else doctor_line fail ios "$n" runtime "no iOS simulator runtime: an admin installs one (Xcode > Settings > Components)"; fi
+  st=$(sed -n "s/^device=$(sim_ios_name "$n") //p" <<<"$DOC_MAC_OUT" | head -1)
+  case $st in
+    '') doctor_line fail ios "$n" simulator "no $(sim_ios_name "$n") on the Mac: sim ios bootstrap" ;;
+    Booted|Shutdown) doctor_line ok ios "$n" simulator "$(sim_ios_name "$n") $st" ;;
+    *) doctor_line warn ios "$n" simulator "$(sim_ios_name "$n") $st" ;;
+  esac
+  kb=$(doc_mac_field disk)
+  if ! [[ $kb =~ ^[0-9]+$ ]]; then doctor_line warn ios "$n" disk "df gave no answer on the Mac"
+  elif [ "$kb" -lt 15728640 ]; then doctor_line warn ios "$n" disk "$(doc_gb "$kb") GB free, under 15 GB (sim ios gc)"
+  else doctor_line ok ios "$n" disk "$(doc_gb "$kb") GB free"; fi
+  # A background tunnel (sim tunnel ios --background), if any.
+  if [ -e "$(tunnel_file "$n")" ]; then
+    pid=$(tunnel_field "$n" pid) || true
+    if ports=$(tunnel_live "$n"); then doctor_line ok ios "$n" tunnel "ports $ports, pid $pid"
+    else doctor_line warn ios "$n" tunnel "pidfile for ports $(tunnel_field "$n" ports) but pid ${pid:-?} is gone (sim reap removes it)"; fi
+  fi
+}
+
+# sim doctor [P] [N|all]: no arguments, this worktree's leased slots on every platform; P alone, its slot on P;
+# all, every slot. rc 1 when any line is fail.
+cmd_doctor() {
+  local p=${1:-} which=${2:-} plats n list=() pn
+  [ $# -le 2 ] || usage
+  case $p in
+    all) [ -z "$which" ] || usage; plats=$SIM_PLATFORMS; which=all ;;
+    android|web|ios) plats=$p ;;
+    '') plats=$SIM_PLATFORMS ;;
+    *) usage ;;
+  esac
+  DOC_TO=${SIM_DOCTOR_TIMEOUT:-10}
+  [[ $DOC_TO =~ ^[1-9][0-9]*$ ]] || die "SIM_DOCTOR_TIMEOUT=$DOC_TO: a number of seconds" 2
+  for pn in $plats; do
+    if [ -n "$which" ]; then
+      local slots; slots=$(slots_of "$pn" "$which") || exit
+      for n in $slots; do list+=("$pn:$n"); done
+    elif n=$(sim_my_slot "$pn"); then list+=("$pn:$n"); fi
+  done
+  [ ${#list[@]} -gt 0 ] || die "no slot is leased for $(sim_root) (sim doctor all checks every slot)"
+  case " ${list[*]}" in *" android:"*|*" web:"*) doctor_host ;; esac
+  for pn in "${list[@]}"; do "doctor_${pn%%:*}" "${pn#*:}"; done
+  [ "$DOC_FAIL" = 0 ]
 }
 
 cmd_ios() {
@@ -951,8 +1231,7 @@ cmd_wake() {
       unit=$(sim_android_unit "$n")
       if ! systemctl --user is-active -q "$unit"; then
         echo "sim: starting $(sim_android_serial "$n"); this call waits for the boot" >&2
-        # mobilecli's daemon holds a connection to the adb server the emulator unit took down with it.
-        MOBILECLI_HOME=$SIM_STATE/android/$n.mobilecli "$SIM_PREFIX/node_modules/.bin/mobilecli" daemon stop </dev/null >/dev/null 2>&1 || true
+        mobilecli_stop "$n"
         systemctl --user start "$unit" >/dev/null 2>&1 || die "could not start $unit (sim android logs $n)"
       fi
       # Checked on every wake: an emulator restarted behind this session's back is up but not booted yet.
@@ -1008,5 +1287,6 @@ case $sub in
   _wake) cmd_wake "$@" ;;
   _mac) cmd_mac "$@" ;;
   _tunnel_watch) cmd_tunnel_watch "$@" ;;
+  doctor) cmd_doctor "$@" ;;
   *) usage ;;
 esac

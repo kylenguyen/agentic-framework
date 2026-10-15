@@ -3,7 +3,8 @@
 # working directory to ~/maestro.cwd, writes a log and a screenshot into every --debug-output and --test-output-dir
 # directory and a report at every --output path, then exits with the code in ~/maestro.rc (default 0). When
 # ~/maestro.curl holds a URL it fetches it first, as a flow's HTTP call would: body to ~/maestro.curl.out, curl's
-# exit code to ~/maestro.curl.rc.
+# exit code to ~/maestro.curl.rc. `--version` prints the pinned version (lib/sim.sh) and logs nothing.
+[ "${1:-}" = --version ] && { echo 2.11.0; exit 0; }
 printf '%s\n' "$*" >> "$HOME/maestro.log"
 pwd > "$HOME/maestro.cwd"
 if [ -s "$HOME/maestro.curl" ]; then

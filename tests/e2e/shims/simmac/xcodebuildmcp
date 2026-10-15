@@ -1,0 +1,5 @@
+#!/bin/sh
+# e2e stand-in for XcodeBuildMCP on the fake Mac (tests/e2e/sim-mac.sh), for `sim doctor`: `--version` prints the
+# pinned version (lib/sim.sh). The MCP server itself is the sim-xcodebuildmcp stand-in.
+[ "${1:-}" = --version ] && { echo 2.7.0; exit 0; }
+echo "xcodebuildmcp stub: only --version" >&2; exit 1

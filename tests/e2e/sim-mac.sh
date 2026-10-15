@@ -417,6 +417,24 @@ check "tunnel: closed once the lease is released" "" "$(mac_listens "$P1")"
 for _ in $(seq 1 20); do [ -z "$(hx bash -c 'ls "$1"/ios/*.tunnel 2>/dev/null' _ "$STATE")" ] && break; sleep 0.25; done
 check "tunnel: ...and its pidfile removed" "" "$(hx bash -c 'ls "$1"/ios/*.tunnel 2>/dev/null' _ "$STATE")"
 hx pkill -f 'http.server' >/dev/null 2>&1
+say "sim doctor ios against the fake Mac"
+run hx sim doctor ios 1
+check "doctor: rc 0" 0 "$RC"
+has "ok    ios     1  mac            mac up, answered in " "$OUT" "doctor: the probe and its round trip"
+has "ok    ios     1  launcher       sim-maestro contract 2" "$OUT" "doctor: the real launcher's contract"
+has "ok    ios     1  simulator      agent-ios-1 " "$OUT" "doctor: the simulator and its state"
+has "ok    ios     1  xcodebuildmcp  2.7.0" "$OUT" "doctor: xcodebuildmcp at the pin"
+has "ok    ios     1  maestro        2.11.0" "$OUT" "doctor: maestro at the pin"
+has "ok    ios     1  runtime        iOS 26.0" "$OUT" "doctor: the runtime"
+has "ios     1  disk" "$OUT" "doctor: the Mac's free disk"
+before=$(mx cat xcrun.log | grep -cv '^list ')
+mac_pause
+SECONDS_AT=$SECONDS; run hx sim doctor ios 1; took=$((SECONDS - SECONDS_AT))
+check "doctor frozen: rc 1" 1 "$RC"
+has "fail  ios     1  mac            unreachable" "$OUT" "doctor frozen: fail ... unreachable"
+[ "$took" -le 10 ] && ok "doctor frozen: within 10 s (${took}s)" || bad "doctor frozen: within 10 s" "took ${took}s"
+mac_unpause
+check "doctor: changed nothing on the Mac (only simctl list)" "$before" "$(mx cat xcrun.log | grep -cv '^list ')"
 
 pass=$(grep -c '^ok$' "$T/results"); fail=$(grep -c '^FAIL$' "$T/results")
 printf '\n%d passed, %d failed (%ds)\n' "$pass" "$fail" "$SECONDS"

@@ -33,6 +33,7 @@ done
 # A tunnel (-R) prints $T/tunnel.fail to stderr and exits 255 when that file exists; otherwise it marks $T/tunnel.up
 # and holds until a signal. lsof on the Mac (sim tunnel) prints $T/lsof.out when it exists, else, while a tunnel is
 # up, sshd listening on every port it was asked about.
+# The checks of sim doctor (the command that asks xcodebuildmcp --version) print $T/doctor/mac.
 cat > "$T/shims/ssh" <<EOF
 #!/bin/sh
 printf '%s\n' "\$*" >> "$T/log/ssh"
@@ -47,6 +48,7 @@ case "\$*" in
     elif [ -e "$T/tunnel.up" ]; then
       for p in \$(printf '%s\n' "\$*" | sed -n 's/.*for p in \([0-9 ]*\);.*/\1/p'); do printf '=%s\np99\ncsshd\n' "\$p"; done
     fi ;;
+  *"xcodebuildmcp --version"*) cat "$T/doctor/mac" 2>/dev/null ;;
   *sim-xcodebuildmcp*) [ -e "$T/mcp.fake" ] && exec "$SIM_RELAY_NODE" "$T/mcp.fake"; cat > /dev/null ;;
   *"sim-maestro --version"*) cat "$T/sim-maestro.version" 2>/dev/null || echo 2 ;;
   *sim-maestro*) exit "\$(cat "$T/ssh.rc" 2>/dev/null || echo 0)" ;;
@@ -56,7 +58,7 @@ esac
 exit 0
 EOF
 # systemctl: a unit is active while its name is a line of $T/active; start and stop edit that file. A start fails while
-# $T/systemctl.fail exists, and first sleeps for the seconds in $T/wake.delay.
+# $T/systemctl.fail exists, and first sleeps for the seconds in $T/wake.delay. show prints $T/doctor/systemctl.show.
 cat > "$T/shims/systemctl" <<EOF
 #!/bin/sh
 printf '%s\n' "\$*" >> "$T/log/systemctl"
@@ -66,14 +68,17 @@ case \$1 in
   is-active) grep -qx "\$u" "$T/active" 2>/dev/null && { [ "\$2" = -q ] || echo active; exit 0; }; [ "\$2" = -q ] || echo inactive; exit 3 ;;
   start) [ -e "$T/systemctl.fail" ] && exit 1; sleep "\$(cat "$T/wake.delay" 2>/dev/null || echo 0)"; echo "\$u" >> "$T/active" ;;
   stop) grep -vx "\$u" "$T/active" > "$T/active.new" 2>/dev/null; mv "$T/active.new" "$T/active" ;;
+  show) cat "$T/doctor/systemctl.show" 2>/dev/null ;;
 esac
 exit 0
 EOF
-# adb: sys.boot_completed is the content of $T/boot (default 1); wait-for-device waits for it to be 1.
+# adb: sys.boot_completed is the content of $T/boot (default 1); wait-for-device waits for it to be 1. ps -A prints
+# $T/doctor/ps.
 cat > "$T/shims/adb" <<EOF
 #!/bin/sh
 printf '%s\n' "\$*" >> "$T/log/adb"
 case "\$*" in
+  *"ps -A"*) cat "$T/doctor/ps" 2>/dev/null ;;
   *wait-for-device*) while [ "\$(cat "$T/boot" 2>/dev/null || echo 1)" != 1 ]; do sleep 0.1; done ;;
   *"getprop sys.boot_completed"*) cat "$T/boot" 2>/dev/null || echo 1 ;;
 esac
