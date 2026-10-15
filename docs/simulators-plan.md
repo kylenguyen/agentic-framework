@@ -23,8 +23,8 @@ once, in different repos and worktrees, under four harnesses.
 | JS during development | Expo debug build + Metro: on the host via `adb reverse` for Android, on the Mac for iOS | a JS change needs no native rebuild |
 
 Out of scope: Detox, watching the devices live, physical devices, and release builds; each can be added later
-without changing the slot model. Maestro flows run on the slot's emulator with `sim maestro` (added 14 Oct 2026, see
-Maestro below).
+without changing the slot model. Maestro flows run on the slot's emulator or iOS simulator with
+`sim maestro android|ios` (added 14 and 15 Oct 2026, see Maestro below).
 
 ## 2. Architecture
 
@@ -103,7 +103,7 @@ client: Maestro hangs without a word. And 5038 is slot 1's server, whichever slo
 `--host`/`--port` options connect to adbd directly and hang the same way. The emulator only takes console ports up to
 5682, so the slots cannot leave the scan range.
 
-`sim maestro <args>` therefore runs Maestro in a container, which is a network namespace of its own:
+`sim maestro android <args>` therefore runs Maestro in a container, which is a network namespace of its own:
 - A relay container on the host network (`socat`, same image) offers the slot's adb server, 127.0.0.1:5037+N, as a
   unix socket in `$SIM_STATE/android/N.maestro/`.
 - The Maestro container mounts that directory, and its entry point (`config/sim/maestro-entry.sh`) relays its own
@@ -120,6 +120,27 @@ client: Maestro hangs without a word. And 5038 is slot 1's server, whichever slo
 - A new Maestro version needs the same check: the ports it dials (`AndroidDeviceConnection$Companion`,
   `MaestroSessionManager`, `DeviceService` in its jars) and whether it reads `ANDROID_ADB_SERVER_PORT` by now. If it
   does, `sim run maestro --device <serial> ...` on the host replaces all of this.
+
+**Maestro on iOS** (added 15 Oct 2026). Maestro's iOS driver is an XCTest runner that `xcodebuild` installs on the
+simulator, so it runs on the Mac. `sim maestro ios <args>` needs none of the Android tricks:
+- It syncs the worktree (`sim ios sync`), boots `agent-ios-N` if it is down, and runs the launcher
+  `~/.local/bin/sim-maestro N <args>` over ssh in the synced app directory (`~/sims/<tree>/<app>`), with a terminal
+  when it has one, so Ctrl-C reaches Maestro. Flows are edited on the host, so every run syncs first.
+- The launcher (written by `install-ios-runner.sh`) resolves `agent-ios-N` to its UDID and runs
+  `maestro --device <UDID>`, analytics off. For `test` it adds `--test-output-dir ~/.cache/agent-sim/maestro-N/output`
+  (per flow: `commands.json`, logs, the hierarchy and a screenshot of a failed step) and `--debug-output
+  .../debug` (`maestro.log`), emptied at every run. Afterwards the host copies that directory back to
+  `~/.cache/agent-sim/ios/maestro-N` and prints the path.
+- Arguments that are paths inside the worktree (also `--opt=<path>`) are rewritten to the same place in the synced
+  copy; paths outside it do not exist on the Mac. `MAESTRO_*` variables are passed on with `env`.
+- Ports: Maestro picks a free host port for its driver on every run (`TestCommand.selectPort`; the hidden
+  `--driver-host-port` would fail when the port is taken), so slots run side by side (M2). One run per slot at a time,
+  by a host-side flock on `$SIM_STATE/ios/N.maestro.lock`. A keep-alive touches the slot every minute, so the
+  reaper leaves a long suite alone.
+- The Mac gets Java 17 (mise, `java@temurin-17`) and the same `SIM_MAESTRO_VERSION`, checked against
+  `SIM_MAESTRO_SHA256`, in `~/.local/share/maestro/<version>`. No idb, no admin.
+- The app must already be on the simulator (built and installed through the sim-ios tools); Maestro launches it by
+  `appId`.
 
 **Telemetry.** Off for the servers that have it: `MOBILEMCP_DISABLE_TELEMETRY=1`, `XCODEBUILDMCP_SENTRY_DISABLED=true`,
 and for Maestro `MAESTRO_CLI_NO_ANALYTICS=1`.
@@ -139,6 +160,16 @@ and for Maestro `MAESTRO_CLI_NO_ANALYTICS=1`.
 | — | `CI=1 expo start` | turns off Metro's file watching; Metro runs with stdin from `/dev/null` instead |
 | — | A lock probe and a lease at the same instant | the lease skipped a free slot; `sim_lease` now waits 0.2 s per slot |
 
+Maestro on iOS, 15 Oct 2026, Maestro 2.11.0 (help output and bytecode, then live on the Mac, macOS 26.5, Xcode 26.6):
+
+| # | Question | Finding |
+|---|---|---|
+| M1 | Does iOS need more than Xcode and Java 17? | No: a flow against Settings passed with mise's Temurin 17 and nothing else, no idb_companion, no admin |
+| M2 | Can two simulators run Maestro at once? | Yes: Maestro picks a free driver port per run. Two flows on agent-ios-1 and agent-ios-2, started together, ran side by side and both passed. No Mac-wide lock |
+| M3 | Does `--device <UDID>` select the simulator? | Yes: `--device`/`--udid`, top level or on `test` |
+| M4 | `--debug-output` and `--test-output-dir`? | Both exist. The per-flow artefacts (screenshots, `commands.json`, logs) go to `--test-output-dir`; `--debug-output` holds only `maestro.log` |
+| M5 | Does the first run (driver install) work over a non-GUI ssh session? | Yes: 34 s from a shut-down simulator, cold boot included, with no console session for the runner |
+
 ## 4. Contract
 
 | Command | Does |
@@ -150,7 +181,8 @@ and for Maestro `MAESTRO_CLI_NO_ANALYTICS=1`.
 | `sim wait [secs]` | starts this worktree's emulator if needed and waits for boot |
 | `sim env` / `sim run <cmd>` | the slot's `ANDROID_HOME`, `JAVA_HOME`, `ANDROID_ADB_SERVER_PORT`, `ANDROID_SERIAL` |
 | `sim build [args]` | from the app's directory: starts the slot's Metro if needed, then `expo run:android --port <slot's Metro>` |
-| `sim maestro <args>` | starts the slot's emulator if needed, then `maestro --device <slot's serial> <args>` in a container (above, Maestro); exits with Maestro's code |
+| `sim maestro android <args>` | starts the slot's emulator if needed, then `maestro --device <slot's serial> <args>` in a container (above, Maestro); exits with Maestro's code |
+| `sim maestro ios <args>` | syncs, boots `agent-ios-N` if needed, runs Maestro on it on the Mac, copies the debug output back to `~/.cache/agent-sim/ios/maestro-N` (above, Maestro on iOS); exits with Maestro's code |
 | `sim metro start\|stop\|log <P>` | Metro for the slot, from the current (app) directory |
 | `sim android start\|stop\|logs <N\|all>` | the emulator units |
 | `sim ios start\|stop <N\|all>` | boot (and wait) or shut down `agent-ios-N` on the Mac |
@@ -164,7 +196,8 @@ Exit codes: 0 done, 1 failed (message on stderr), 2 usage.
   - It runs a copy of the scripts against a test `.env`, with shims for `systemctl`, `ssh`, `rsync`, `mise` and the server.
   - It covers parameters, port maths, names, leasing (grant, pool exhaustion, release when the holder exits, my-slot lookup) and `sim enable` (merge, idempotency, `--only`, invalid JSON).
   - It also covers the three `sim-mcp` launches with their environment, `sim env`, `run`, `status`, the rsync filter,
-    and the two containers of `sim maestro` (with a `docker` shim).
+    the two containers of `sim maestro android` (with a `docker` shim), and the ssh command, path rewriting, lock and
+    debug output pull of `sim maestro ios`.
 - `tests/mcp-probe.mjs` speaks MCP over stdio the way a harness does: `initialize`, `tools/list`, then `--call`s. It drives the live checks.
 - `tests/params-test.sh` covers the new parameters and the literal scan.
 - Live, by hand, because KVM, the Mac and the tailnet are not in a container (README section 6, verify block):

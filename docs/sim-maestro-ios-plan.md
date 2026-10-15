@@ -1,6 +1,7 @@
 # Maestro on iOS: `sim maestro ios` runs flows on the slot's simulator on the Mac
 
-Plan, 14 Oct 2026. Extends the Maestro section of `docs/simulators-plan.md` (Android only so far). Not implemented yet.
+Plan, 14 Oct 2026. Extends the Maestro section of `docs/simulators-plan.md`. Implemented 15 Oct 2026; Phase 0 answered
+there (§3, M1–M5): Maestro picks a free driver port per run, so there is no Mac-wide lock.
 
 ## Context
 
