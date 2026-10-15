@@ -303,12 +303,15 @@ Mac (iOS, optional):
 
 A repo: `host$ cd ~/workspace/<repo> && sim enable`, commit the three files it writes and `.sim/config` (the repo's
 needs, every key commented out with its default; written only when absent), and paste the section it
-prints into the repo's `AGENTS.md`. Codex asks to trust the repo on its first run there; say yes in the main
-checkout, and its worktrees follow.
+prints into the repo's `AGENTS.md` (`sim enable --print-agents` prints it alone). Codex asks to trust the repo on its
+first run there; say yes in the main checkout, and its worktrees follow. After a sim update, `sim enable --check`
+says (rc 1, with a diff) when those files or the pasted section are out of date; it writes nothing.
 
 Verify:
 ```
 host$ sim status                                      # one line per slot, all free
+host$ sim version && sim status --json | jq length   # "sim contract 2; maestro ..."; the slot count (--json also on ports, lease, doctor)
+host$ cd ~/workspace/<repo> && sim enable --check     # rc 0, "up to date"; rc 1 and a diff when stale
 host$ cd ~/workspace/agentic-framework && node tests/mcp-probe.mjs --call browser_navigate '{"url":"https://example.com"}' -- sim-mcp web 2>/dev/null | tail -1   # "isError":false, Example Domain
 host$ sim android start 1 && sleep 90 && ANDROID_ADB_SERVER_PORT=5038 ~/Android/Sdk/platform-tools/adb devices   # emulator-5600  device
 host$ node tests/mcp-probe.mjs --call mobile_list_available_devices '{}' -- sim-mcp android 2>/dev/null | tail -1   # one device (named after the AVD)

@@ -136,6 +136,9 @@ check "ssh commands find the shims through ~/.zshenv" /home/runner/.local/bin/xc
 has "exec maestro --device" "$(mx cat .local/bin/sim-maestro)" "the real sim-maestro launcher is installed"
 check "sim status lists both ios slots free and off" "ios 1 agent-ios-1 off unused free|ios 2 agent-ios-2 off unused free" \
   "$(hx sim status | awk '$1 == "ios"' | tr -s ' ' | paste -sd'|')"
+has "sim contract 2; maestro " "$(hx sim version)" "sim version prints the contract and the pins"
+check "sim status --json: both ios slots off, no lease, no tunnel" "ios 1 off null []|ios 2 off null []" \
+  "$(hx sim status --json | jq -r '.[] | select(.platform == "ios") | "\(.platform) \(.slot) \(.state) \(.lease) \(.tunnel)"' | paste -sd'|')"
 
 say "shims"
 mxz 'nohup npx expo start --port 8095 > /dev/null 2>&1 < /dev/null &'
@@ -436,6 +439,10 @@ has "ok    ios     1  xcodebuildmcp  2.7.0" "$OUT" "doctor: xcodebuildmcp at the
 has "ok    ios     1  maestro        2.11.0" "$OUT" "doctor: maestro at the pin"
 has "ok    ios     1  runtime        iOS 26.0" "$OUT" "doctor: the runtime"
 has "ios     1  disk" "$OUT" "doctor: the Mac's free disk"
+run hx sim doctor ios 1 --json
+check "doctor --json: rc 0" 0 "$RC"
+check "doctor --json: the same checks as objects, all ok on slot 1" "ok ios 1 mac" \
+  "$(jq -r '([.[] | "\(.level) \(.platform) \(.slot)"] | unique | join(",")) + " " + .[0].check' <<<"$OUT" 2>&1)"
 before=$(mx cat xcrun.log | grep -cv '^list ')
 mac_pause
 SECONDS_AT=$SECONDS; run hx sim doctor ios 1; took=$((SECONDS - SECONDS_AT))

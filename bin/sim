@@ -3,12 +3,15 @@
 # The MCP servers an agent drives the devices with are started by its harness (bin/sim-mcp); this command does what
 # MCP does not: registering a repo, Metro, builds that need the slot's environment, the Mac side, and status.
 #
-#   sim status                          slots per platform, who holds them, what runs, minutes since last use
+#   sim status [--json]                 slots per platform, who holds them, what runs, minutes since last use
+#   sim version [--json]                the contract version (sim enable's AGENTS.md section) and the pinned tool versions
 #   sim enable [--only P,P] [dir]       register sim-android, sim-web, sim-ios with every harness for one repo; .sim/config if absent
+#   sim enable --check [--only P,P] [dir]  rc 1 with what differs when the MCP files, AGENTS.md section or .sim/config are stale
+#   sim enable --print-agents           only the AGENTS.md section, between <!-- sim-contract: N --> markers
 #   sim wait [secs]                     block until this worktree's emulator has booted (default 180 s)
 #   sim env                             exports for this worktree's emulator: eval "$(sim env)"
 #   sim run <cmd...>                    run a command in that environment, e.g. sim run ./gradlew test
-#   sim ports <P> [k|--check]           this worktree's 100 ports for test stacks: eval "$(sim ports web)"; k lists k, --check busy ones
+#   sim ports <P> [k|--check|--json]    this worktree's 100 ports for test stacks: eval "$(sim ports web)"; k lists k, --check busy ones
 #   sim build [args]                    from the app's directory: Metro if not running, then expo run:android for the slot
 #   sim maestro android|ios <args...>   Maestro on this worktree's emulator or simulator, a directory per run: sim maestro ios test .maestro/
 #                                       ios --forward p[,p...]|none: host ports reachable from the Mac for the run (sim tunnel)
@@ -18,18 +21,21 @@
 #   sim metro start <P> [--env K=V]...  with EXPO_PUBLIC_*, the names in SIM_METRO_ENV and each K=V; returns once it answers
 #   sim android start|stop|logs <N|all> the emulator units
 #   sim android restart <N|all>         cold restart of an emulator and its mobilecli daemon; the app is gone (sim build)
-#   sim doctor [P] [N|all]              why a device or driver is unhealthy: this worktree's slots, slot N, or all slots
+#   sim doctor [P] [N|all] [--json]     why a device or driver is unhealthy: this worktree's slots, slot N, or all slots
 #   sim ios start|stop <N|all>          boot or shut down simulators agent-ios-N on the Mac
 #   sim reap                            stop the devices and Metro of slots unused for AGENT_SIM_IDLE_MINUTES (timer)
 #   sim ios sync                        rsync this worktree to the Mac, print its path there
 #   sim ios prepare                     sync, then npm ci, expo prebuild and pod install on the Mac
 #   sim ios bootstrap                   install or update the runner on the Mac (install-ios-runner.sh)
 #   sim ios gc [days]                   remove trees not synced and build output unused for N days (default 7)
-#   sim lease <P> [--ttl DUR] [dir]     hold a slot for this worktree without an MCP server: DUR <n>m|h|d, 8h, at most 7d
+#   sim lease <P> [--ttl DUR] [--json] [dir]  hold a slot for this worktree without an MCP server: DUR <n>m|h|d, 8h, at most 7d
 #   sim release <P> [dir]               free the slot that sim lease took
 # "This worktree's slot" is the slot leased by an MCP server started from the same git top level, or by sim lease.
 # A repo's committed .sim/config states its needs (stack, app_dir, metro_env, forward_ios, ports, keep_runs; lib/sim.sh,
 # sim_repo_config): flags and environment variables beat it, it beats the host's .env. A bad file is rc 2.
+# --json: status an array of {platform, slot, device, state, idle_secs, lease: null|{kind, pid, root, since, until},
+# tunnel}; ports {base, count}; lease {platform, slot, root, until}; doctor an array of {level, platform, slot, check,
+# detail} (host lines: platform "host", slot null); version {contract, maestro, ...}. Exit codes are the same.
 # Exit codes: 0 done, 1 failed, 2 usage, 3 the device or the Mac is unavailable (unreachable): retry later.
 # Devices start on first use and stop when unused (lib/sim.sh, Uptime); the commands that use one count as use.
 set -euo pipefail
@@ -85,24 +91,39 @@ ios_states() {
   done
 }
 
+# sim status [--json]: one line per slot; --json an array of {platform, slot, device, state, idle_secs, lease, tunnel}.
+# device and state are null where the text shows none (web), idle_secs null for a slot never used, lease null or
+# lease_json, tunnel the ports of an ios slot's background tunnel ([] when none).
 cmd_status() {
-  local p n count state idle run tunnel
+  local json=0 p n count device run secs idle state tunnel rows=()
+  case $# in 0) ;; 1) [ "$1" = --json ] || usage; json=1 ;; *) usage ;; esac
   ios_states
   for p in $SIM_PLATFORMS; do
     count=$(sim_slots "$p")
     for ((n = 1; n <= count; n++)); do
-      state=$(lease_state "$p" "$n")
-      idle=$(sim_idle_secs "$p" "$n") && idle="used $((idle / 60))m ago" || idle=unused
+      secs=$(sim_idle_secs "$p" "$n") || secs=''
+      tunnel=''
       case $p in
-        android) run=$(systemctl --user is-active "$(sim_android_unit "$n")" 2>/dev/null || true)
-                 printf '%-8s %s  %-14s %-8s %-15s %s\n' "$p" "$n" "$(sim_android_serial "$n")" "$run" "$idle" "$state" ;;
-        web)     printf '%-8s %s  %-14s %-8s %-15s %s\n' "$p" "$n" "port $(sim_metro_port web "$n")" - "$idle" "$state" ;;
-        ios)     run=${IOS_STATE[$n]:--}
-                 tunnel=$(tunnel_live "$n") && state+="  tunnel $tunnel"
-                 printf '%-8s %s  %-14s %-8s %-15s %s\n' "$p" "$n" "$(sim_ios_name "$n")" "$run" "$idle" "$state" ;;
+        android) device=$(sim_android_serial "$n"); run=$(systemctl --user is-active "$(sim_android_unit "$n")" 2>/dev/null || true) ;;
+        web)     device="port $(sim_metro_port web "$n")"; run=- ;;
+        ios)     device=$(sim_ios_name "$n"); run=${IOS_STATE[$n]:--}; tunnel=$(tunnel_live "$n") || tunnel='' ;;
       esac
+      if [ "$json" = 1 ]; then
+        [ "$p" != web ] || device=''
+        [ "$run" != - ] || run=''
+        rows+=("$(jq -nc --arg p "$p" --argjson n "$n" --arg d "$device" --arg st "$run" --arg idle "$secs" \
+          --argjson lease "$(lease_json "$p" "$n")" --arg t "$tunnel" \
+          '{platform: $p, slot: $n, device: (if $d == "" then null else $d end), state: (if $st == "" then null else $st end),
+            idle_secs: ($idle | tonumber? // null), lease: $lease,
+            tunnel: ($t | split(",") | map(select(. != "") | tonumber))}')")
+        continue
+      fi
+      state=$(lease_state "$p" "$n"); [ -z "$tunnel" ] || state+="  tunnel $tunnel"
+      if [ -n "$secs" ]; then idle="used $((secs / 60))m ago"; else idle=unused; fi
+      printf '%-8s %s  %-14s %-8s %-15s %s\n' "$p" "$n" "$device" "$run" "$idle" "$state"
     done
   done
+  [ "$json" = 0 ] || printf '%s\n' "${rows[@]}" | jq -s .
 }
 
 # reap_ios_reachable: whether this round may reach the Mac; probed once, when the first idle simulator needs it.
@@ -148,17 +169,25 @@ cmd_reap() {
   done
 }
 
+# sim enable [--only P,P] [dir] | --check [--only P,P] [dir] | --print-agents. Without a flag it writes the three MCP
+# files and .sim/config, and prints the AGENTS.md section; --check compares them with what it would write.
 cmd_enable() {
-  local only=$SIM_PLATFORMS dir=. p root
+  local only=$SIM_PLATFORMS dir=. mode=write plain=1 p root
   while [ $# -gt 0 ]; do
     case $1 in
-      --only) only=${2//,/ }; shift 2 ;;
+      --only) [ $# -ge 2 ] || usage; only=${2//,/ }; plain=0; shift 2 ;;
+      --check) [ "$mode" = write ] || usage; mode=check; shift ;;
+      --print-agents) [ "$mode" = write ] || usage; mode=print; shift ;;
       -*) usage ;;
-      *) dir=$1; shift ;;
+      *) dir=$1; plain=0; shift ;;
     esac
   done
+  if [ "$mode" = print ]; then [ "$plain" = 1 ] || usage; agents_section; return 0; fi
   for p in $only; do case " $SIM_PLATFORMS " in *" $p "*) ;; *) die "unknown platform: $p" 2 ;; esac; done
+  [ -d "$dir" ] || die "no directory $dir" 2
   root=$(sim_root "$dir")
+  # shellcheck disable=SC2086
+  if [ "$mode" = check ]; then enable_check "$root" $only; return; fi
   # shellcheck disable=SC2086
   { sim_write_mcp_json "$root/.mcp.json" $only && sim_write_opencode_json "$root/opencode.json" $only \
       && sim_write_codex_toml "$root/.codex/config.toml" $only; } || exit 1
@@ -171,37 +200,111 @@ cmd_enable() {
 
 Codex reads .codex/config.toml only in a trusted project: answer yes when Codex asks on its first run in the main
 checkout ($(git -C "$root" worktree list --porcelain 2>/dev/null | sed -n '1s/^worktree //p')); its worktrees inherit it.
-Commit the three files and .sim/config, and add this to the repo's AGENTS.md so every harness knows how to use them:
+Commit the three files and .sim/config, and add this section to the repo's AGENTS.md (replacing an older one) so every
+harness knows how to use them. sim enable --print-agents prints it alone; sim enable --check tells when it is stale.
 
+EOF
+  agents_section
+}
+
+# agents_section: the section of a repo's AGENTS.md that tells agents how to use sim, between sim-contract markers
+# that carry SIM_CONTRACT_VERSION (lib/sim.sh). Bump that when a change here is one a repo must re-paste.
+agents_section() {
+  printf '<!-- sim-contract: %s -->\n' "$SIM_CONTRACT_VERSION"
+  cat <<'EOF'
 ## Simulators
 
-Three MCP servers drive real devices: \`sim-web\` (headless browser), \`sim-android\` (emulator), \`sim-ios\`
-(iOS simulator on a Mac, XcodeBuildMCP). Each holds one device for this session only; \`sim status\` shows them.
-Devices start on first use and stop after half an hour unused (the host decides): the next tool call waits for
-a boot (up to a minute). An Android emulator starts clean, so after an idle stop run \`sim build\` again.
-- Web: \`sim metro start web\` serves the app; open the URL it prints with the sim-web tools.
-- Android: \`sim wait\`, then \`sim build\` from the app's directory: it starts Metro for your emulator and builds,
+Three MCP servers drive real devices: `sim-web` (headless browser), `sim-android` (emulator), `sim-ios` (iOS
+simulator on a Mac, XcodeBuildMCP). Use them and the `sim` command; never run `maestro` or `expo run:*` directly:
+they cannot see your device, hang, or take ports that are not yours.
+- Devices and leases: each server holds one device (a slot) for this session only, and a worktree gets its last
+  slot back when it is free. `sim status` shows every slot. Devices start on first use (the call waits for the
+  boot) and stop after half an hour unused; an Android emulator starts clean, so after a stop run `sim build` again.
+  Without a harness session (a script, CI, CLI-only work), `sim lease <android|web|ios>` holds a slot for this
+  worktree (8 h by default, `--ttl 2h`) and `sim release <platform>` frees it.
+- Test stacks: `eval "$(sim ports <platform>)"` sets SIM_PORT_BASE and SIM_PORT_COUNT (and SIM_PORTS) to a block of
+  ports no other slot uses; `sim ports <platform> --check` lists the ones already listening.
+- Web: `sim metro start web` serves the app; open the URL it prints with the sim-web tools.
+- Android: `sim wait`, then `sim build` from the app's directory: it starts Metro for your emulator and builds,
   installs and opens the dev build. Drive it with the sim-android tools; JS edits reach the app without a rebuild.
-  Never run \`expo run:android\` yourself: it would build for port 8081, which is not yours.
-- Maestro flows: \`sim maestro android test <flows>\` runs them on your emulator, \`sim maestro ios test <flows>\`
-  on your iOS simulator, with the app already installed there through the sim-ios tools. Flows and \`--output\`
-  paths must lie inside this worktree; reports land at those paths. Each run ends by printing its directory on
-  this host (logs, screenshots of a failed step, on Android logcat.txt) and a \`latest\` link to it. Never run
-  \`maestro\` directly: it cannot see your device and hangs.
-- iOS flows run on the Mac, so a test stack on this host is out of their reach: \`sim maestro ios --forward <p,p>\`
-  (or \`sim tunnel ios <p,p> --background\`) makes host 127.0.0.1:<p> reachable there at 127.0.0.1:<p>, with ports
-  from \`sim ports ios\`.
-- A device or Maestro misbehaving (driver deaths, a stuck emulator): \`sim doctor\` says why. Then
-  \`sim maestro android --fresh ...\` resets Maestro's driver; \`sim android restart N\` restarts the emulator cold
-  (the app is gone: \`sim build\` again).
-- Without a harness session (a script, CI), \`sim lease <android|web|ios>\` holds a slot for this worktree (8 h by
-  default, \`--ttl\`) and \`sim release <platform>\` frees it.
-- iOS: \`sim ios prepare\` copies this worktree to the Mac and prints its path there; build and run it with the
-  sim-ios tools (workspace under that path's ios/ directory), then \`sim metro start ios\`. After a JS-only
-  change, \`sim ios sync\` is enough.
-- \`sim metro start\` hands Metro every \`EXPO_PUBLIC_*\` variable you have set, plus \`--env K=V\` for others, and
-  returns once Metro answers.
+- iOS: `sim ios prepare` copies this worktree to the Mac and prints its path there; build and run it with the
+  sim-ios tools (workspace under that path's ios/ directory), then `sim metro start ios`. After a JS-only change,
+  `sim ios sync` is enough.
+- Metro: `sim metro start <platform> --env K=V` hands Metro every `EXPO_PUBLIC_*` variable you have set, the names
+  in .sim/config's metro_env, and each `--env K=V`; it returns once Metro answers.
+- Host services from iOS: the app and its flows run on the Mac, out of reach of a server on this host.
+  `sim tunnel ios <p,p> --background` (until `sim tunnel ios --stop`) makes host 127.0.0.1:<p> reachable on the Mac
+  at 127.0.0.1:<p>, for ports from `sim ports ios`; `sim maestro ios --forward <p,p> ...` does it for one run.
+- Maestro: `sim maestro android test <flows>` or `sim maestro ios test <flows>` runs flows on your device (on iOS
+  with the app already installed through the sim-ios tools). Flows and `--output` paths must lie inside this
+  worktree. Each run gets a directory on this host (cmd.txt, debug/, output/, on Android logcat.txt), printed at
+  the end, and a `latest` link to the newest run.
+- Trouble: `sim doctor` says why a device or Maestro misbehaves. `sim maestro <platform> --fresh ...` resets
+  Maestro's driver before the run, `--cold` restarts the device (Android: the app is gone, `sim build` again).
+- Exit code 3 from `sim` or a tool call means the device or the Mac is unavailable: retry later.
+<!-- /sim-contract -->
 EOF
+}
+
+# enable_check <root> <platform...>: whether the repo matches what sim enable writes now. rc 0 when the MCP files
+# hold the platforms' entries, AGENTS.md has a section equal to agents_section and .sim/config parses; otherwise one
+# line per problem (with a unified diff where one helps) and rc 1. It writes nothing in the repo: the writers render
+# into copies of the files in a temp dir.
+enable_check() {
+  local root=$1 tmp rc=0 f name have want ver err; shift
+  tmp=$(mktemp -d)
+  for f in .mcp.json:sim_write_mcp_json opencode.json:sim_write_opencode_json .codex/config.toml:sim_write_codex_toml; do
+    name=${f%%:*}
+    if [ ! -f "$root/$name" ]; then echo "$name: missing (sim enable writes it)"; rc=1; continue; fi
+    mkdir -p "$(dirname "$tmp/$name")"; cp "$root/$name" "$tmp/$name"
+    if ! "${f#*:}" "$tmp/$name" "$@" 2>/dev/null; then echo "$name: not valid JSON"; rc=1; continue; fi
+    case $name in   # JSON compared by content, so a repo's own formatting is no difference
+      *.json) have=$(jq -S . "$root/$name") want=$(jq -S . "$tmp/$name") ;;
+      *) have=$(cat "$root/$name") want=$(cat "$tmp/$name") ;;
+    esac
+    [ "$have" != "$want" ] || continue
+    echo "$name: not the entries sim enable writes (sim enable):"
+    diff -u --label "$name" --label "$name (sim enable)" <(printf '%s\n' "$have") <(printf '%s\n' "$want") || true
+    rc=1
+  done
+  rm -rf "$tmp"
+  want=$(agents_section)
+  have=$(awk '/^<!-- sim-contract: [0-9]+ -->$/ { on = 1 } on { print } on && /^<!-- \/sim-contract -->$/ { exit }' \
+    "$root/AGENTS.md" 2>/dev/null) || true
+  ver=$(sed -n '1s/^<!-- sim-contract: \([0-9]*\) -->$/\1/p' <<<"$have")
+  if [ ! -f "$root/AGENTS.md" ]; then
+    echo "AGENTS.md: missing; add the section sim enable --print-agents prints"; rc=1
+  elif [ -z "$have" ]; then
+    # Sections pasted before the markers existed are contract 1.
+    if grep -q '^## Simulators' "$root/AGENTS.md"; then
+      echo "AGENTS.md: a ## Simulators section without sim-contract markers is contract 1, current $SIM_CONTRACT_VERSION: replace it with what sim enable --print-agents prints"
+    else echo "AGENTS.md: no sim-contract section; add the section sim enable --print-agents prints"; fi
+    rc=1
+  elif [ "$ver" != "$SIM_CONTRACT_VERSION" ]; then
+    echo "AGENTS.md: the sim section is contract $ver, current $SIM_CONTRACT_VERSION: replace it with what sim enable --print-agents prints"; rc=1
+  elif [ "$have" != "$want" ]; then
+    echo "AGENTS.md: the sim section differs from sim enable --print-agents:"
+    diff -u --label AGENTS.md --label 'sim enable --print-agents' <(printf '%s\n' "$have") <(printf '%s\n' "$want") || true
+    rc=1
+  fi
+  if [ ! -e "$root/.sim/config" ]; then echo ".sim/config: missing (sim enable writes it)"; rc=1
+  elif ! err=$(sim_repo_config "$root" 2>&1); then printf '%s\n' "$err"; rc=1
+  elif [ -n "$err" ]; then printf '%s\n' "$err" >&2; fi
+  [ "$rc" = 1 ] || echo "up to date in $root: MCP entries, AGENTS.md section (contract $SIM_CONTRACT_VERSION), .sim/config"
+  return "$rc"
+}
+
+# sim version [--json]: the contract and the pinned versions (lib/sim.sh).
+cmd_version() {
+  case $# in 0) ;; 1) [ "$1" = --json ] || usage ;; *) usage ;; esac
+  if [ $# = 1 ]; then
+    jq -n --argjson c "$SIM_CONTRACT_VERSION" --arg m "$SIM_MAESTRO_VERSION" --arg mm "$SIM_MOBILE_MCP_VERSION" \
+      --arg x "$SIM_XCODEBUILDMCP_VERSION" --arg pw "$SIM_PLAYWRIGHT_MCP_VERSION" \
+      '{contract: $c, maestro: $m, "mobile-mcp": $mm, xcodebuildmcp: $x, "playwright-mcp": $pw}'
+  else
+    printf 'sim contract %s; maestro %s; mobile-mcp %s; xcodebuildmcp %s; playwright-mcp %s\n' "$SIM_CONTRACT_VERSION" \
+      "$SIM_MAESTRO_VERSION" "$SIM_MOBILE_MCP_VERSION" "$SIM_XCODEBUILDMCP_VERSION" "$SIM_PLAYWRIGHT_MCP_VERSION"
+  fi
 }
 
 cmd_wait() {
@@ -223,15 +326,15 @@ cmd_run() {
   exec "$@"
 }
 
-# sim ports <P> [k|--check]: the slot's port block (lib/sim.sh, sim_port_base). Arguments are checked before the
-# lease, so a usage error is rc 2 either way. With `ports = k` in .sim/config, the exports say k ports and list them
-# (SIM_PORTS), and --check looks at those k.
+# sim ports <P> [k|--check|--json]: the slot's port block (lib/sim.sh, sim_port_base). Arguments are checked before
+# the lease, so a usage error is rc 2 either way. With `ports = k` in .sim/config, the exports say k ports and list them
+# (SIM_PORTS), and --check and --json ({base, count}) look at those k.
 cmd_ports() {
   local p=${1:-} arg=${2:-} n base count
   case " $SIM_PLATFORMS " in *" $p "*) [ -n "$p" ] ;; *) false ;; esac || usage
   [ $# -le 2 ] || usage
   case $arg in
-    ''|--check) ;;
+    ''|--check|--json) ;;
     *) [[ $arg =~ ^[0-9]{1,3}$ ]] && [ "$((10#$arg))" -ge 1 ] && [ "$((10#$arg))" -le "$SIM_PORT_BLOCK" ] \
          || die "sim ports $p $arg: a count from 1 to $SIM_PORT_BLOCK" 2 ;;
   esac
@@ -242,6 +345,7 @@ cmd_ports() {
   case $arg in
     '') sim_port_env "$p" "$n" ${SIM_CFG_PORTS:+"$SIM_CFG_PORTS"} ;;
     --check) ports_check "$base" "$count" ;;
+    --json) jq -n --argjson b "$base" --argjson c "$count" '{base: $b, count: $c}' ;;
     *) seq -s ' ' "$base" $((base + 10#$arg - 1)) ;;
   esac
 }
@@ -913,10 +1017,15 @@ android_restart() {
 # is active, since adb would start a server of its own on the slot's port. Each check waits at most
 # SIM_DOCTOR_TIMEOUT seconds (10; the Mac's batch of checks three times that), so a hung adb or ssh cannot hang it.
 # Every line goes through doctor_line, the one place that prints one (sim doctor --json hooks in there).
-DOC_FAIL=0
+# With --json (DOC_JSON=1) each line becomes an object {level, platform, slot, check, detail} in DOC_ROWS, printed as
+# one array at the end; a host line has platform "host" and slot null.
+DOC_FAIL=0 DOC_JSON=0 DOC_ROWS=()
 doctor_line() { # doctor_line <ok|warn|fail> <platform|host> <N|-> <check> <detail>
   [ "$1" != fail ] || DOC_FAIL=1
-  printf '%-4s  %-7s %s  %-14s %s\n' "$1" "$2" "$3" "$4" "$5"
+  if [ "$DOC_JSON" = 1 ]; then
+    DOC_ROWS+=("$(jq -nc --arg l "$1" --arg p "$2" --arg n "$3" --arg c "$4" --arg d "$5" \
+      '{level: $l, platform: $p, slot: ($n | tonumber? // null), check: $c, detail: $d}')")
+  else printf '%-4s  %-7s %s  %-14s %s\n' "$1" "$2" "$3" "$4" "$5"; fi
 }
 
 doc_dur() { # doc_dur <secs>: 2d3h, 3h12m, 12m or 45s
@@ -1099,9 +1208,12 @@ doctor_ios() {
   fi
 }
 
-# sim doctor [P] [N|all]: no arguments, this worktree's leased slots on every platform; P alone, its slot on P;
-# all, every slot. rc 1 when any line is fail.
+# sim doctor [P] [N|all] [--json]: no arguments, this worktree's leased slots on every platform; P alone, its slot on
+# P; all, every slot. rc 1 when any line is fail.
 cmd_doctor() {
+  local args=() a
+  for a; do if [ "$a" = --json ]; then DOC_JSON=1; else args+=("$a"); fi; done
+  set -- "${args[@]}"
   local p=${1:-} which=${2:-} plats n list=() pn
   [ $# -le 2 ] || usage
   case $p in
@@ -1121,6 +1233,7 @@ cmd_doctor() {
   [ ${#list[@]} -gt 0 ] || die "no slot is leased for $(sim_root) (sim doctor all checks every slot)"
   case " ${list[*]}" in *" android:"*|*" web:"*) doctor_host ;; esac
   for pn in "${list[@]}"; do "doctor_${pn%%:*}" "${pn#*:}"; done
+  [ "$DOC_JSON" = 0 ] || printf '%s\n' "${DOC_ROWS[@]}" | jq -s .
   [ "$DOC_FAIL" = 0 ]
 }
 
@@ -1194,6 +1307,15 @@ lease_state() { # lease_state <platform> <N>: the state column of sim status
   esac
 }
 
+lease_json() { # lease_json <platform> <N>: null when free, else {kind, pid, root, since, until} (until null for mcp)
+  sim_held "$1" "$2" || { echo null; return; }
+  jq -nc --arg kind "$(lease_kind "$1" "$2")" --arg pid "$(sim_owner_field "$1" "$2" pid)" \
+    --arg root "$(sim_owner_field "$1" "$2" root)" --arg since "$(sim_owner_field "$1" "$2" since)" \
+    --arg until "$(sim_owner_field "$1" "$2" until)" \
+    '{kind: $kind, pid: ($pid | tonumber? // null), root: $root, since: (if $since == "" then null else $since end),
+      until: ($until | tonumber? // null)}'
+}
+
 reap_leases() { # end every CLI lease whose time is up
   local p n count until pid
   for p in $SIM_PLATFORMS; do
@@ -1208,12 +1330,21 @@ reap_leases() { # end every CLI lease whose time is up
   return 0
 }
 
+# lease_report <platform> <N> <root> <until|''> <json> <text>: the text, or with json=1 {platform, slot, root, until}
+lease_report() {
+  if [ "$5" = 1 ]; then
+    jq -n --arg p "$1" --argjson n "$2" --arg root "$3" --arg until "$4" \
+      '{platform: $p, slot: $n, root: $root, until: ($until | tonumber? // null)}'
+  else echo "$6"; fi
+}
+
 cmd_lease() {
-  local p=${1:-} ttl=8h dir=. root n secs until out
+  local p=${1:-} ttl=8h dir=. root n secs until out json=0
   case $p in android|web|ios) shift ;; *) usage ;; esac
   while [ $# -gt 0 ]; do
     case $1 in
       --ttl) [ $# -ge 2 ] || usage; ttl=$2; shift 2 ;;
+      --json) json=1; shift ;;
       -*) usage ;;
       *) dir=$1; shift ;;
     esac
@@ -1225,13 +1356,15 @@ cmd_lease() {
   [ -d "$dir" ] || die "no directory $dir" 2
   root=$(sim_root "$dir")
   if n=$(sim_my_slot "$p" "$root"); then
-    echo "$p slot $n already leased for $root ($(lease_state "$p" "$n" | cut -d' ' -f2-4))"; return 0
+    lease_report "$p" "$n" "$root" "$(sim_owner_field "$p" "$n" until)" "$json" \
+      "$p slot $n already leased for $root ($(lease_state "$p" "$n" | cut -d' ' -f2-4))"
+    return 0
   fi
   until=$(($(date +%s) + secs))
   # The holder reports on the pipe (the slot, or why it got none), then closes it and sleeps: the $(...) returns then.
   out=$(cd "$root" && setsid -f "$REPO/bin/sim" _hold "$p" "$root" "$until" </dev/null 2>&1) || true
   [[ $out =~ ^[1-9]$ ]] || { printf '%s\n' "$out" >&2; exit 3; }
-  echo "$p slot $out leased for $root until $(at_time "$until") (sim release $p)"
+  lease_report "$p" "$out" "$root" "$until" "$json" "$p slot $out leased for $root until $(at_time "$until") (sim release $p)"
 }
 
 cmd_hold() { # _hold <platform> <root> <until>: the CLI lease holder, started by cmd_lease
@@ -1310,7 +1443,8 @@ cmd_mac() {
 
 sub=${1:-}; [ $# -gt 0 ] && shift
 case $sub in
-  status) cmd_status ;;
+  status) cmd_status "$@" ;;
+  version) cmd_version "$@" ;;
   reap) cmd_reap ;;
   enable) cmd_enable "$@" ;;
   wait) cmd_wait "$@" ;;

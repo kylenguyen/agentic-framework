@@ -184,8 +184,12 @@ Maestro on iOS, 15 Oct 2026, Maestro 2.11.0 (help output and bytecode, then live
 |---|---|
 | `sim-mcp <android\|web\|ios>` | stdio MCP server for one slot; the lease banner (stderr) names slot and worktree; exits 1 when the pool is full |
 | `sim status` | one line per slot: device, unit state (iOS: `booted`, `off`, `unreachable` when the Mac does not answer a probe, `unconfigured`), minutes since last use, free or leased (pid, worktree) |
+| `--json` on `status`, `ports <P>`, `lease <P>`, `doctor`, `version` | built with `jq -n`, same exit codes. `status`: an array of `{platform, slot, device, state, idle_secs, lease: null\|{kind, pid, root, since, until}, tunnel: [ports]}` (web: `device` and `state` null; `until` null for an MCP lease). `ports`: `{base, count}`. `lease`: `{platform, slot, root, until}`. `doctor`: an array of `{level, platform, slot, check, detail}`, host lines with platform `host` and slot null |
+| `sim version [--json]` | `sim contract 2; maestro …; mobile-mcp …; xcodebuildmcp …; playwright-mcp …`: `SIM_CONTRACT_VERSION` and the pins in `lib/sim.sh` |
 | `sim reap` | stop what idle slots run (above, Uptime); run by `agent-sim-reap.timer` |
 | `sim enable [--only P,P] [dir]` | writes or merges the three harness files (only `sim-mcp <platform>`, no host or path), writes the `.sim/config` template when absent (`wrote`/`kept .sim/config`), prints the AGENTS.md section |
+| `sim enable --print-agents` | only the AGENTS.md section, between `<!-- sim-contract: N -->` and `<!-- /sim-contract -->`; N is `SIM_CONTRACT_VERSION`, bumped when a repo must re-paste |
+| `sim enable --check [--only P,P] [dir]` | writes nothing. rc 0 when the three files hold the entries `sim enable` would write (the writers render into a temp dir; JSON compared by content), `AGENTS.md` has a section equal to `--print-agents` and `.sim/config` parses; else rc 1 with a line per problem and a unified diff (an older or unmarked section: `contract 1, current 2`). rc 2 for usage |
 | `.sim/config` (per repo, committed) | `key = value` lines, read by `sim_repo_config` in `lib/sim.sh`, never sourced; an unknown key warns, a bad line or value is rc 2 naming `.sim/config:<line>`. Keys: `stack` (`expo` only), `app_dir` (the app's directory when sim runs at the root), `metro_env` (default for `SIM_METRO_ENV`), `forward_ios` (default ports for `sim tunnel ios` and `sim maestro ios`; `--forward none` turns it off), `ports` (1-100: `sim ports <P>` exports that count and lists them in `SIM_PORTS`), `keep_runs` (1-50). Precedence: flag, environment, `.sim/config`, `.env`, default. Stack-specific commands sit behind `sim_stack_*` in `lib/sim.sh` |
 | `sim wait [secs]` | starts this worktree's emulator if needed and waits for boot |
 | `sim env` / `sim run <cmd>` | the slot's `ANDROID_HOME`, `JAVA_HOME`, `ANDROID_ADB_SERVER_PORT`, `ANDROID_SERIAL` |
@@ -199,7 +203,7 @@ Maestro on iOS, 15 Oct 2026, Maestro 2.11.0 (help output and bytecode, then live
 | `sim ios start\|stop <N\|all>` | boot (and wait) or shut down `agent-ios-N` on the Mac |
 | `sim ios sync\|prepare\|bootstrap\|gc [days]` | the Mac side |
 
-Exit codes: 0 done, 1 failed (message on stderr), 2 usage.
+Exit codes: 0 done, 1 failed (message on stderr), 2 usage, 3 the device or the Mac is unavailable: retry later.
 
 ## 5. Test layers
 

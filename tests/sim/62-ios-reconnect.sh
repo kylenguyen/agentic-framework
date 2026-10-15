@@ -76,6 +76,8 @@ held() { ( lib; sim_held ios 1 ) && echo held || echo free; }
   wait_for 'grep -q "reconnected to bob@mini.tail.ts.net after" "$T/log/err"' \
     && ok "reconnect: logs reconnected to <host> after Xs" || bad "reconnect: logs reconnected to <host> after Xs" "$(cat "$T/log/err")"
   h="$h $(held)"
+  # The relay logs "reconnected" and then runs its --on-up hook, which finishes on its own time.
+  wait_for '[ "$(cut -d" " -f1 "$T/state/ios/mac.state" 2>/dev/null)" = up ]'
   check "reconnect: the Mac is cached as up again (sim _mac up)" up "$(cut -d' ' -f1 "$T/state/ios/mac.state" 2>/dev/null)"
   boots=$(grep -c 'simctl bootstatus agent-ios-1' "$T/log/ssh")
   rc_send "$(rc_call 9 screenshot)"

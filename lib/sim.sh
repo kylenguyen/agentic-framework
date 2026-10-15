@@ -30,6 +30,9 @@
 # consoles above 5585: an adb server also scans 5555-5585 when it starts and adopts every emulator it finds there.
 
 # shellcheck disable=SC2034   # the constants and SIM_SLOT/SIM_LOCK_FD are read by the scripts that source this file
+# The contract between sim and the repos that use it: the commands and flags the AGENTS.md section of `sim enable`
+# tells agents about. Bump it when that section changes in a way a repo must re-paste (`sim enable --check` says so).
+SIM_CONTRACT_VERSION=2
 # Pinned versions. The npm packages are installed into SIM_PREFIX by install-host.sh, so starting an MCP server
 # needs no network and never picks up a release nobody has tried.
 SIM_PLAYWRIGHT_MCP_VERSION=0.0.83
