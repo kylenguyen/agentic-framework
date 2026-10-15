@@ -23,8 +23,19 @@ for c in ssh rsync mise; do
   printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s/log/%s"\nexit 0\n' "$T" "$c" > "$T/shims/$c"
 done
 # ssh running the Mac's MCP launcher serves until stdin closes, as the real one does.
-# ssh running the Maestro launcher exits with the code in $T/ssh.rc.
-printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s/log/ssh"\ncase "$*" in *sim-xcodebuildmcp*) cat > /dev/null ;; *sim-maestro*) exit "$(cat "%s/ssh.rc" 2>/dev/null || echo 0)" ;; esac\n' "$T" "$T" > "$T/shims/ssh"
+# ssh running the Maestro launcher exits with the code in $T/ssh.rc. `simctl list devices` prints $T/simctl.list.
+# While $T/ssh.down exists every call is logged, then fails as one to an unreachable host does (255).
+cat > "$T/shims/ssh" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >> "$T/log/ssh"
+[ -e "$T/ssh.down" ] && exit 255
+case "\$*" in
+  *sim-xcodebuildmcp*) cat > /dev/null ;;
+  *sim-maestro*) exit "\$(cat "$T/ssh.rc" 2>/dev/null || echo 0)" ;;
+  *"simctl list devices"*) cat "$T/simctl.list" 2>/dev/null ;;
+esac
+exit 0
+EOF
 # systemctl: a unit is active while its name is a line of $T/active; start and stop edit that file.
 cat > "$T/shims/systemctl" <<EOF
 #!/bin/sh

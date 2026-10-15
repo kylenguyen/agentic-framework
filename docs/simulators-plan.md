@@ -176,7 +176,7 @@ Maestro on iOS, 15 Oct 2026, Maestro 2.11.0 (help output and bytecode, then live
 | Command | Does |
 |---|---|
 | `sim-mcp <android\|web\|ios>` | stdio MCP server for one slot; the lease banner (stderr) names slot and worktree; exits 1 when the pool is full |
-| `sim status` | one line per slot: device, unit state (iOS: `down` once `sim` shut it down), minutes since last use, free or leased (pid, worktree) |
+| `sim status` | one line per slot: device, unit state (iOS: `booted`, `off`, `unreachable` when the Mac does not answer a probe, `unconfigured`), minutes since last use, free or leased (pid, worktree) |
 | `sim reap` | stop what idle slots run (above, Uptime); run by `agent-sim-reap.timer` |
 | `sim enable [--only P,P] [dir]` | writes or merges the three harness files (only `sim-mcp <platform>`, no host or path), prints the AGENTS.md section |
 | `sim wait [secs]` | starts this worktree's emulator if needed and waits for boot |

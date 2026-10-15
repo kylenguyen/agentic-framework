@@ -70,7 +70,13 @@ libwoff1 libxml2-16 libxslt1.1 libx264-165 libavif16"
 SIM_PLATFORMS="android web ios"
 # Paths. Every one can be overridden, which is how tests/sim-test.sh runs without touching the host.
 : "${SIM_PREFIX:=$HOME/.local/share/agent-sim}"                         # npm prefix for the pinned MCP servers
-: "${SIM_STATE:=${XDG_RUNTIME_DIR:-/tmp/agent-sim-$(id -u)}/agent-sim}"   # locks, owners, Metro logs; gone at reboot
+sim_state_default() { # locks, owners, Metro logs, the Mac probe: in RAM, gone at reboot
+  local run; run=/run/user/$(id -u)
+  if [ -n "${XDG_RUNTIME_DIR:-}" ]; then echo "$XDG_RUNTIME_DIR/agent-sim"
+  elif [ -d "$run" ] && [ -w "$run" ]; then echo "$run/agent-sim"     # a shell without a systemd session (cron, su)
+  else echo "/tmp/agent-sim-$(id -u)"; fi
+}
+: "${SIM_STATE:=$(sim_state_default)}"
 : "${SIM_CACHE:=${XDG_CACHE_HOME:-$HOME/.cache}/agent-sim}"             # emulator scratch disks: on disk, not in RAM
 : "${ANDROID_HOME:=$HOME/Android/Sdk}"
 
@@ -321,14 +327,72 @@ sim_ios_shutdown() {
 }
 
 # sim_ios_ssh [-tt] <cmd...>: run on the Mac as the iOS runner account. BatchMode: an agent can never answer a
-# prompt. -tt gives the command a terminal, so Ctrl-C on the host reaches it.
-SIM_SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=30)
+# prompt. -tt gives the command a terminal, so Ctrl-C on the host reaches it. Short commands share one connection
+# (ControlMaster, kept 60 s after the last one ends); a dead link is noticed after 2 unanswered keepalives (60 s).
+# With SIM_SSH_TIMEOUT set, a command (never one with -tt) is killed after that many seconds.
+# ssh takes the first value it is given for an option, so extra options go before SIM_SSH_OPTS, never after.
+SIM_SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=30 -o ServerAliveCountMax=2
+  -o ControlMaster=auto -o "ControlPath=$SIM_STATE/ios/ssh-%C" -o ControlPersist=60)
+# Long sessions (the MCP server, tunnels) take a connection of their own, so a dropped master never takes them down.
+SIM_SSH_SOLO_OPTS=(-o ControlMaster=no -o ControlPath=none)
 sim_ios_ssh() {
-  local tty=()
+  local tty=() pre=()
   [ "${1:-}" = -tt ] && { tty=(-tt); shift; }
   [ -n "${AGENT_IOS_HOST:-}" ] && [ -n "${AGENT_IOS_USER:-}" ] \
     || { sim_fail "AGENT_IOS_HOST and AGENT_IOS_USER must be set in .env (docs/simulators-plan.md)"; return 1; }
-  ssh "${SIM_SSH_OPTS[@]}" "${tty[@]}" "$AGENT_IOS_USER@$AGENT_IOS_HOST" "$@"
+  mkdir -p "$SIM_STATE/ios" || return 1
+  [ -z "${SIM_SSH_TIMEOUT:-}" ] || [ ${#tty[@]} -gt 0 ] || pre=(timeout "$SIM_SSH_TIMEOUT")
+  "${pre[@]}" ssh "${SIM_SSH_OPTS[@]}" "${tty[@]}" "$AGENT_IOS_USER@$AGENT_IOS_HOST" "$@"
+}
+
+# --- Mac health ------------------------------------------------------------------------------------------------
+# One probe decides whether the Mac answers: a fresh connection (never the shared master, which a frozen Mac can
+# keep hanging for a minute) running `true` within SIM_MAC_PROBE_TIMEOUT seconds (5). The result is cached as
+# "up|down <epoch>" in $SIM_STATE/ios/mac.state for SIM_MAC_PROBE_TTL seconds (30), so a burst of commands asks once.
+
+sim_mac_configured() { [ -n "${AGENT_IOS_HOST:-}" ] && [ -n "${AGENT_IOS_USER:-}" ]; }
+
+sim_mac_record() { # sim_mac_record up|down: cache a result; down also drops the shared master, which may be stale
+  local s
+  mkdir -p "$SIM_STATE/ios" && echo "$1 $(date +%s)" > "$SIM_STATE/ios/mac.state"
+  [ "$1" = down ] || return 0
+  for s in "$SIM_STATE"/ios/ssh-*; do
+    [ -S "$s" ] || continue
+    timeout 5 ssh -o "ControlPath=$s" -O exit "$AGENT_IOS_USER@$AGENT_IOS_HOST" </dev/null >/dev/null 2>&1 || rm -f "$s"
+  done
+  return 0
+}
+
+# sim_mac_probe [--fresh]: 0 when the Mac answers, 1 when it does not, 2 when no Mac is configured. --fresh skips the
+# cache. Quiet.
+sim_mac_probe() {
+  local to=${SIM_MAC_PROBE_TIMEOUT:-5} st at now
+  sim_mac_configured || return 2
+  if [ "${1:-}" != --fresh ] && read -r st at 2>/dev/null < "$SIM_STATE/ios/mac.state"; then
+    now=$(date +%s)
+    if [[ $at =~ ^[0-9]+$ ]] && [ $((now - at)) -lt "${SIM_MAC_PROBE_TTL:-30}" ]; then
+      case $st in up) return 0 ;; down) return 1 ;; esac
+    fi
+  fi
+  mkdir -p "$SIM_STATE/ios" || return 1
+  # timeout as well as ConnectTimeout: a frozen Mac whose kernel still accepts the connection never sends its banner.
+  if timeout $((to + 1)) ssh "${SIM_SSH_SOLO_OPTS[@]}" -o "ConnectTimeout=$to" "${SIM_SSH_OPTS[@]}" \
+       "$AGENT_IOS_USER@$AGENT_IOS_HOST" true </dev/null >/dev/null 2>&1; then
+    sim_mac_record up; return 0
+  fi
+  sim_mac_record down; return 1
+}
+
+# sim_mac_require: return when the Mac answers; otherwise print why and exit, 3 (unavailable, retry later) when it
+# does not answer, 1 when none is configured. For commands that cannot do anything without the Mac.
+sim_mac_require() {
+  local rc=0
+  sim_mac_probe || rc=$?
+  case $rc in
+    0) return 0 ;;
+    2) sim_fail "AGENT_IOS_HOST and AGENT_IOS_USER must be set in .env (docs/simulators-plan.md)" || exit 1 ;;
+    *) sim_fail "mac unreachable: $AGENT_IOS_USER@$AGENT_IOS_HOST did not answer within ${SIM_MAC_PROBE_TIMEOUT:-5} s (sim status)" || exit 3 ;;
+  esac
 }
 
 # What rsync leaves out when a worktree goes to the Mac: VCS data, dependencies and build output (rebuilt there),

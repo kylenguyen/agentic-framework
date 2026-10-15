@@ -45,8 +45,14 @@ case $platform in
     ;;
   ios)
     # -T: no terminal, the channel carries JSON-RPC only. The launcher on the Mac is written by install-ios-runner.sh.
-    sim_ios_ssh true </dev/null >/dev/null 2>&1 {SIM_LOCK_FD}>&- || { say "cannot reach $AGENT_IOS_USER@$AGENT_IOS_HOST over ssh"; exit 1; }
-    server=(ssh "${SIM_SSH_OPTS[@]}" -T "$AGENT_IOS_USER@$AGENT_IOS_HOST" ".local/bin/sim-xcodebuildmcp $n")
+    # The server's ssh is a connection of its own (SIM_SSH_SOLO_OPTS): a dropped shared master must not end it.
+    rc=0; sim_mac_probe --fresh {SIM_LOCK_FD}>&- || rc=$?
+    case $rc in
+      0) ;;
+      2) say "AGENT_IOS_HOST and AGENT_IOS_USER must be set in .env (docs/simulators-plan.md)"; exit 1 ;;
+      *) say "mac unreachable: $AGENT_IOS_USER@$AGENT_IOS_HOST did not answer within ${SIM_MAC_PROBE_TIMEOUT:-5} s (sim status)"; exit 1 ;;
+    esac
+    server=(ssh "${SIM_SSH_SOLO_OPTS[@]}" "${SIM_SSH_OPTS[@]}" -T "$AGENT_IOS_USER@$AGENT_IOS_HOST" ".local/bin/sim-xcodebuildmcp $n")
     ;;
 esac
 

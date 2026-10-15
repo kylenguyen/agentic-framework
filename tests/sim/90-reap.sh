@@ -24,7 +24,7 @@ echo "# reap"
   [ -e "$T/log/ssh" ] && bad "reap: the Mac is asked once per idle spell" || ok "reap: the Mac is asked once per idle spell"
   st=$("$REPO/bin/sim" status)
   has "status: minutes since use" "used 40m ago" "$(echo "$st" | grep '^android  1')"
-  has "status: iOS down" "down" "$(echo "$st" | grep '^ios      1')"
+  has "status: iOS off" "off" "$(echo "$st" | grep '^ios      1')"
   touch -d '2 hours ago' "$T/state/android/2.active"
   out=$(AGENT_SIM_IDLE_MINUTES=0 "$REPO/bin/sim" reap)
   check "reap: idle minutes 0 never stops" "agent-sim-android@2.service" "$(cat "$T/active")"

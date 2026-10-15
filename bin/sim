@@ -22,11 +22,13 @@
 #   sim lease <P> [--ttl DUR] [dir]     hold a slot for this worktree without an MCP server: DUR <n>m|h|d, 8h, at most 7d
 #   sim release <P> [dir]               free the slot that sim lease took
 # "This worktree's slot" is the slot leased by an MCP server started from the same git top level, or by sim lease.
+# Exit codes: 0 done, 1 failed, 2 usage, 3 the device or the Mac is unavailable (unreachable): retry later.
 # Devices start on first use and stop when unused (lib/sim.sh, Uptime); the commands that use one count as use.
 set -euo pipefail
 REPO=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)
 . "$REPO/lib/sim.sh"
 die() { printf 'sim: %s\n' "$*" >&2; exit "${2:-1}"; }
+unavailable() { printf 'sim: %s\n' "$*" >&2; exit 3; }   # the device or the Mac cannot be reached now: retry later
 usage() { sed -n '/^#   sim/s/^# *//p' "${BASH_SOURCE[0]}" >&2; exit 2; }
 sim_load_params
 
@@ -34,8 +36,30 @@ my_slot() { # my_slot <platform>: this worktree's slot, or a message that says h
   sim_my_slot "$1" || die "no $1 slot is leased for $(sim_root): start a harness session in this worktree after \`sim enable\`, so its sim-$1 MCP server holds one, or sim lease $1"
 }
 
+# ios_states: fill IOS_STATE[N] for every ios slot: booted, off (shut down, by `sim reap` or by hand), unreachable
+# or unconfigured. A fresh probe, then one `simctl list` for all slots.
+declare -A IOS_STATE=()
+ios_states() {
+  local count n st list='' rc=0
+  count=$(sim_slots ios)
+  [ "$count" -gt 0 ] || return 0
+  sim_mac_probe --fresh || rc=$?
+  if [ "$rc" = 0 ]; then
+    list=$(SIM_SSH_TIMEOUT=20 sim_ios_ssh 'xcrun simctl list devices' </dev/null 2>/dev/null) || { sim_mac_record down; rc=1; }
+  fi
+  for ((n = 1; n <= count; n++)); do
+    case $rc in
+      0) st=off; grep -F "$(sim_ios_name "$n") (" <<<"$list" | grep -q '(Booted)' && st=booted ;;
+      2) st=unconfigured ;;
+      *) st=unreachable ;;
+    esac
+    IOS_STATE[$n]=$st
+  done
+}
+
 cmd_status() {
   local p n count state idle run
+  ios_states
   for p in $SIM_PLATFORMS; do
     count=$(sim_slots "$p")
     for ((n = 1; n <= count; n++)); do
@@ -45,11 +69,25 @@ cmd_status() {
         android) run=$(systemctl --user is-active "$(sim_android_unit "$n")" 2>/dev/null || true)
                  printf '%-8s %s  %-14s %-8s %-15s %s\n' "$p" "$n" "$(sim_android_serial "$n")" "$run" "$idle" "$state" ;;
         web)     printf '%-8s %s  %-14s %-8s %-15s %s\n' "$p" "$n" "port $(sim_metro_port web "$n")" - "$idle" "$state" ;;
-        ios)     [ -e "$SIM_STATE/ios/$n.down" ] && run=down || run=-
+        ios)     run=${IOS_STATE[$n]:--}
                  printf '%-8s %s  %-14s %-8s %-15s %s\n' "$p" "$n" "$(sim_ios_name "$n")" "$run" "$idle" "$state" ;;
       esac
     done
   done
+}
+
+# reap_ios_reachable: whether this round may reach the Mac; probed once, when the first idle simulator needs it.
+reap_ios=''
+reap_ios_reachable() {
+  if [ -z "$reap_ios" ]; then
+    local rc=0; sim_mac_probe || rc=$?
+    case $rc in
+      0) reap_ios=up ;;
+      2) reap_ios=none ;;
+      *) reap_ios=down; echo "ios: $AGENT_IOS_HOST unreachable, next round tries again" >&2 ;;
+    esac
+  fi
+  [ "$reap_ios" = up ]
 }
 
 # Stops what an idle slot runs (lib/sim.sh, Uptime). A slot never used since boot starts its clock now, so an
@@ -70,7 +108,8 @@ cmd_reap() {
             systemctl --user stop "$unit" && echo "android $n: emulator stopped, unused for $((idle / 60)) min"
           fi ;;
         ios)
-          [ -n "${AGENT_IOS_HOST:-}" ] && [ ! -e "$SIM_STATE/ios/$n.down" ] || continue
+          [ ! -e "$SIM_STATE/ios/$n.down" ] || continue
+          reap_ios_reachable || continue
           if sim_ios_shutdown "$n"; then touch "$SIM_STATE/ios/$n.down"; echo "ios $n: $(sim_ios_name "$n") shut down, unused for $((idle / 60)) min"
           else echo "ios $n: $AGENT_IOS_HOST did not answer, next round tries again" >&2; fi ;;
       esac
@@ -251,6 +290,7 @@ maestro_android() {
 # debug output (logs, a screenshot of a failed step) comes back to $SIM_CACHE/ios/maestro-N.
 maestro_ios() {
   [ $# -gt 0 ] || usage
+  sim_mac_require
   local n root app lock out a k args=() envs=() v tty=() rc
   n=$(my_slot ios) || exit 1
   root=$(sim_root); app=$(sim_app_rel "$PWD" "$root")
@@ -298,6 +338,7 @@ cmd_maestro() {
 cmd_metro() {
   local action=${1:-} p=${2:-} n port root log pid
   case $p in android|web|ios) ;; *) usage ;; esac
+  [ "$p" != ios ] || sim_mac_require
   n=$(my_slot "$p"); port=$(sim_metro_port "$p" "$n"); root=$(sim_root)
   [ "$action" != start ] || sim_touch "$p" "$n"
   log=$SIM_STATE/$p/$n.metro.log
@@ -368,6 +409,7 @@ cmd_android() {
 
 cmd_ios() {
   local action=${1:-} root tree app
+  case $action in start|stop|sync|prepare|bootstrap|gc) sim_mac_require ;; *) usage ;; esac
   root=$(sim_root); app=$(sim_app_rel "$PWD" "$root")
   tree=$(sim_mac_dir "$root")    # sims/<tree>: quoted for the remote shell, the app's directory with sim_mac_dir
   case $action in
@@ -380,7 +422,7 @@ cmd_ios() {
           sim_ios_boot "$n" || die "could not boot $(sim_ios_name "$n") on $AGENT_IOS_HOST"
           rm -f "$SIM_STATE/ios/$n.down"; echo "$(sim_ios_name "$n") booted"
         else
-          sim_ios_shutdown "$n" || die "$AGENT_IOS_HOST did not answer"
+          sim_ios_shutdown "$n" || unavailable "$AGENT_IOS_HOST did not answer"
           mkdir -p "$SIM_STATE/ios"; touch "$SIM_STATE/ios/$n.down"; echo "$(sim_ios_name "$n") shut down"
         fi
       done ;;

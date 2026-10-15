@@ -134,7 +134,7 @@ mac_ssh_ok && ok "host reaches runner@mac by key, BatchMode" || { bad "host reac
 check "the Mac's login shell is zsh" /usr/bin/zsh "$(hx ssh mac 'echo $SHELL')"
 check "ssh commands find the shims through ~/.zshenv" /home/runner/.local/bin/xcrun "$(hx ssh mac 'command -v xcrun')"
 has "exec maestro --device" "$(mx cat .local/bin/sim-maestro)" "the real sim-maestro launcher is installed"
-check "sim status lists both ios slots free" "ios 1 agent-ios-1 - unused free|ios 2 agent-ios-2 - unused free" \
+check "sim status lists both ios slots free and off" "ios 1 agent-ios-1 off unused free|ios 2 agent-ios-2 off unused free" \
   "$(hx sim status | awk '$1 == "ios"' | tr -s ' ' | paste -sd'|')"
 
 say "shims"
@@ -203,13 +203,13 @@ run hx env AGENT_SIM_IDLE_MINUTES=1 sim reap
 has "ios 1: agent-ios-1 shut down, unused for 2 min" "$OUT" "reap: says it shut agent-ios-1 down"
 check "reap: xcrun simctl shutdown ran on the Mac" "simctl shutdown agent-ios-1" "$(mx grep shutdown xcrun.log | tail -1)"
 check "reap: agent-ios-1 is Shutdown" Shutdown "$(mx cat simstate/agent-ios-1)"
-has " down " "$(status_of ios 1)" "reap: sim status shows ios 1 down"
+has " off " "$(status_of ios 1)" "reap: sim status shows ios 1 off"
 run hx env AGENT_SIM_IDLE_MINUTES=1 sim reap
 lacks "ios 1" "$OUT" "reap: a second round leaves the down simulator alone"
 mcp_call s1 3 screenshot
 mcp_wait s1 '"id": 3,' && ok "reap: the next tool call is answered" || bad "reap: the next tool call is answered" "$(mcp_err s1)"
 check "reap: ...after booting agent-ios-1 again" Booted "$(mx cat simstate/agent-ios-1)"
-lacks " down " "$(status_of ios 1)" "reap: and sim status no longer says down"
+has " booted " "$(status_of ios 1)" "reap: and sim status shows it booted"
 
 say "the Mac drops off during sim-mcp ios (today's behaviour; T8 flips this)"
 mac_drop && ok "drop: mac disconnected from $NET" || bad "drop: mac disconnected from $NET"
@@ -256,6 +256,30 @@ run hx sim ios gc 7
 mx test -d "sims/$TREE2" && bad "gc 7: removes it once its stamp is 10 days old" "$OUT" || ok "gc 7: removes it once its stamp is 10 days old"
 has "sims/$TREE2" "$OUT" "gc 7: says which tree it removed"
 mx test -d "sims/$TREE" && ok "gc 7: leaves the other worktree's tree" || bad "gc 7: leaves the other worktree's tree"
+
+say "a frozen Mac: probe, status and exit 3"
+# docker pause: the Mac's kernel still accepts connections, nothing answers on them. The shared ssh master from the
+# commands above (ControlPersist) is still open and would hang a command for a minute; the probe never uses it.
+masters() { hx bash -c 'n=0; for s in "$1"/ios/ssh-*; do [ -S "$s" ] && n=$((n + 1)); done; echo $n' _ "$STATE"; }
+hx sim ios sync >/dev/null 2>&1
+check "frozen: a shared ssh master is open before the freeze" 1 "$(masters)"
+mac_pause
+SECONDS_AT=$SECONDS; st=$(status_of ios 1); took=$((SECONDS - SECONDS_AT))
+has " unreachable " "$st" "frozen: sim status shows ios unreachable"
+[ "$took" -le 8 ] && ok "frozen: ...within 8 s (${took}s)" || bad "frozen: ...within 8 s" "took ${took}s"
+check "frozen: the stale master is dropped" 0 "$(masters)"
+SECONDS_AT=$SECONDS; run hx sim maestro ios test flows/; took=$((SECONDS - SECONDS_AT))
+check "frozen: sim maestro ios exits 3" 3 "$RC"
+has "mac unreachable" "$OUT" "frozen: ...saying the Mac is unreachable"
+[ "$took" -le 10 ] && ok "frozen: ...within 10 s (${took}s)" || bad "frozen: ...within 10 s" "took ${took}s"
+run hx sim ios sync
+check "frozen: sim ios sync exits 3 too" 3 "$RC"
+mac_unpause
+st=$(status_of ios 1)
+case $st in *" booted "*|*" off "*) ok "thawed: sim status shows ios booted or off again" ;;
+  *) bad "thawed: sim status shows ios booted or off again" "$st" ;; esac
+run hx sim ios sync
+check "thawed: sim ios sync works again" 0 "$RC"
 
 pass=$(grep -c '^ok$' "$T/results"); fail=$(grep -c '^FAIL$' "$T/results")
 printf '\n%d passed, %d failed (%ds)\n' "$pass" "$fail" "$SECONDS"

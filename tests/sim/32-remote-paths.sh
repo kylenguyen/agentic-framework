@@ -28,7 +28,7 @@ mkdir -p "$T/ws/my app/o'k app" && git -C "$T/ws/my app" init -q
 ( cd "$T/ws/my app/o'k app" || exit 1; rm -f "$T/log/"*
   tree=sims/my_app-$(printf %s "$T/ws/my app" | sha256sum | cut -c1-6)
   "$REPO/bin/sim" ios sync >/dev/null 2>&1
-  has "sync: makes the tree and touches its stamp first" "mkdir -p $tree && touch $tree/.agent-sim-synced" "$(head -1 "$T/log/ssh")"
+  has "sync: makes the tree and touches its stamp first" "mkdir -p $tree && touch $tree/.agent-sim-synced" "$(grep -v " true$" "$T/log/ssh" | head -1)"   # after the Mac probe
   r=$(cat "$T/log/rsync")
   has "sync: the stamp survives --delete" "--filter=P .agent-sim-synced" "$r"
   has "sync: from the root with its space, to the hashed tree" "$T/ws/my app/ bob@mini.tail.ts.net:$tree/" "$r"
