@@ -192,6 +192,7 @@ Maestro on iOS, 15 Oct 2026, Maestro 2.11.0 (help output and bytecode, then live
 | `sim maestro android <args>` | starts the slot's emulator if needed, then `maestro --device <slot's serial> <args>` in a container (above, Maestro); exits with Maestro's code |
 | `sim maestro ios <args>` | syncs, boots `agent-ios-N` if needed, runs Maestro on it on the Mac, copies the run's directory back to `~/.cache/agent-sim/ios/maestro-N/runs/<id>` and the caller's output paths to the worktree (above, Maestro on iOS); exits with Maestro's code |
 | `sim metro start\|stop\|log <P>` | Metro for the slot, from the current (app) directory |
+| `sim metro start <P> [--env K=V]...` | Metro gets every `EXPO_PUBLIC_*` of the caller, each name in `SIM_METRO_ENV` (comma list) and each `--env`, and prints their names; returns once `/status` says `packager-status:running` (on iOS polled on the Mac), else rc 1 with the end of Metro's log after `SIM_METRO_READY_TIMEOUT` s (90) |
 | `sim android start\|stop\|logs <N\|all>` | the emulator units |
 | `sim ios start\|stop <N\|all>` | boot (and wait) or shut down `agent-ios-N` on the Mac |
 | `sim ios sync\|prepare\|bootstrap\|gc [days]` | the Mac side |

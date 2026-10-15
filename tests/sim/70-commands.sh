@@ -15,7 +15,7 @@ echo "# sim commands"
   has "status: leased android slot" "leased mcp pid" "$(echo "$st" | grep '^android  1')"
   has "status: free web slot" free "$(echo "$st" | grep '^web      1')"
   check "status: one line per slot" 5 "$(echo "$st" | wc -l)"
-  ( cd client && rm -f "$T/log/npx" && SIM_METRO_SETTLE=0 "$REPO/bin/sim" build --variant debug >/dev/null 2>&1 )
+  ( cd client && rm -f "$T/log/npx" && "$REPO/bin/sim" build --variant debug >/dev/null 2>&1 )
   has "build: starts the slot's Metro first" "expo start --port 8101" "$(head -1 "$T/log/npx" 2>/dev/null)"
   has "build: expo run:android for the slot's Metro port" "expo run:android --port 8101 --variant debug" "$(tail -1 "$T/log/npx" 2>/dev/null)"
   "$REPO/bin/sim" metro stop android 2>/dev/null

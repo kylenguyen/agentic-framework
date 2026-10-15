@@ -27,6 +27,7 @@ for c in ssh rsync mise; do
 done
 # ssh running the Mac's MCP launcher serves until stdin closes, as the real one does.
 # ssh running the Maestro launcher exits with the code in $T/ssh.rc; `sim-maestro --version` prints $T/sim-maestro.version (2). `simctl list devices` prints $T/simctl.list.
+# The Metro readiness loop (its last argument) is run by sh here.
 # While $T/ssh.down exists every call is logged, then fails as one to an unreachable host does (255).
 cat > "$T/shims/ssh" <<EOF
 #!/bin/sh
@@ -37,6 +38,7 @@ case "\$*" in
   *"sim-maestro --version"*) cat "$T/sim-maestro.version" 2>/dev/null || echo 2 ;;
   *sim-maestro*) exit "\$(cat "$T/ssh.rc" 2>/dev/null || echo 0)" ;;
   *"simctl list devices"*) cat "$T/simctl.list" 2>/dev/null ;;
+  *packager-status*) for a; do :; done; exec sh -c "\$a" ;;   # the Metro readiness loop runs here, against the curl shim
 esac
 exit 0
 EOF
@@ -65,6 +67,9 @@ esac
 EOF
 printf '#!/bin/sh\nprintf "%%s\\n" "$*" > "%s/log/emulator"\necho "$ANDROID_TMP" > "%s/log/emulator.tmp"\n' "$T" "$T" > "$T/shims/emulator"
 printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s/log/npx"\n' "$T" > "$T/shims/npx"
+# curl: logs its arguments and prints $T/metro.status as Metro's /status body; without that file Metro is up
+# (packager-status:running), so a test that starts Metro in passing does not wait out the readiness timeout.
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s/log/curl"\ncat "%s/metro.status" 2>/dev/null || echo packager-status:running\n' "$T" "$T" > "$T/shims/curl"
 # docker: logs every call. The image exists unless $T/docker.noimage does; `ps` prints $T/docker.ps; a run of the
 # Maestro container exits with the code in $T/docker.rc.
 cat > "$T/shims/docker" <<EOF

@@ -12,6 +12,7 @@
 #   sim build [args]                    from the app's directory: Metro if not running, then expo run:android for the slot
 #   sim maestro android|ios <args...>   Maestro on this worktree's emulator or simulator, a directory per run: sim maestro ios test .maestro/
 #   sim metro start|stop|log <P>        Metro for this worktree's slot: android (adb reverse), web, ios (on the Mac)
+#   sim metro start <P> [--env K=V]...  with EXPO_PUBLIC_*, the names in SIM_METRO_ENV and each K=V; returns once it answers
 #   sim android start|stop|logs <N|all> the emulator units
 #   sim ios start|stop <N|all>          boot or shut down simulators agent-ios-N on the Mac
 #   sim reap                            stop the devices and Metro of slots unused for AGENT_SIM_IDLE_MINUTES (timer)
@@ -160,6 +161,8 @@ a boot (up to a minute). An Android emulator starts clean, so after an idle stop
 - iOS: \`sim ios prepare\` copies this worktree to the Mac and prints its path there; build and run it with the
   sim-ios tools (workspace under that path's ios/ directory), then \`sim metro start ios\`. After a JS-only
   change, \`sim ios sync\` is enough.
+- \`sim metro start\` hands Metro every \`EXPO_PUBLIC_*\` variable you have set, plus \`--env K=V\` for others, and
+  returns once Metro answers.
 EOF
 }
 
@@ -227,6 +230,47 @@ metro_stop_slot() { # metro_stop_slot <android|web> <N>: stop the slot's Metro o
   kill -- "-$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
 }
 
+# metro_env [K=V...]: the variables Metro gets, into METRO_ENV (K=V words, for `env`) and METRO_ENV_NAMES: every
+# EXPO_PUBLIC_* of the caller's environment, every set name of SIM_METRO_ENV (a comma list), then each K=V given (from
+# --env), a later one replacing an earlier one of the same name. A name that is not a variable name is rc 2.
+METRO_ENV=(); METRO_ENV_NAMES=()
+metro_env() {
+  local -A val=()
+  local kv k pairs=()
+  for k in $(compgen -e | grep '^EXPO_PUBLIC_' || true); do pairs+=("$k=${!k}"); done
+  local list=${SIM_METRO_ENV:-}
+  for k in ${list//,/ }; do
+    [[ $k =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || die "SIM_METRO_ENV: $k is not a variable name" 2
+    [ -z "${!k+x}" ] || pairs+=("$k=${!k}")
+  done
+  for kv; do
+    [[ $kv =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || die "--env $kv: K=V, K a variable name ([A-Za-z_][A-Za-z0-9_]*)" 2
+    pairs+=("$kv")
+  done
+  METRO_ENV=(); METRO_ENV_NAMES=()
+  for kv in "${pairs[@]}"; do k=${kv%%=*}; [ -n "${val[$k]+x}" ] || METRO_ENV_NAMES+=("$k"); val[$k]=${kv#*=}; done
+  for k in "${METRO_ENV_NAMES[@]}"; do METRO_ENV+=("$k=${val[$k]}"); done
+}
+
+# metro_cmd <platform> <port>: the command that starts Metro for the slot, into METRO_CMD.
+metro_cmd() {
+  METRO_CMD=(npx expo start --port "$2")
+  [ "$1" != web ] || METRO_CMD+=(--web)
+}
+
+# metro_ready_script <port> <log>: a POSIX sh loop (run by bash on the host, by the runner's zsh on the Mac) that asks
+# Metro's /status once a second until it says packager-status:running, for SIM_METRO_READY_TIMEOUT seconds (90);
+# then it prints the last 20 lines of <log> (a path already quoted for the shell) to stderr and exits 1. It goes by
+# the clock, so it ends at most one curl (2 s) after the timeout.
+metro_ready_script() {
+  local t=${SIM_METRO_READY_TIMEOUT:-90}
+  [[ $t =~ ^[0-9]+$ ]] || die "SIM_METRO_READY_TIMEOUT=$t: a number of seconds" 2
+  printf '%s\n' "end=\$((\$(date +%s) + $t)); while :; do
+  [ \"\$(curl -fs --max-time 2 http://127.0.0.1:$1/status 2>/dev/null)\" = packager-status:running ] && exit 0
+  [ \"\$(date +%s)\" -lt \"\$end\" ] || break; sleep 1; done
+echo \"sim: Metro on port $1 did not answer within $t s; the end of its log:\" >&2; tail -n 20 $2 >&2; exit 1"
+}
+
 # Builds, installs and opens the dev build on this worktree's emulator, served by the slot's Metro. --port bakes the
 # slot's Metro port into the build and finds Metro already running there, so Expo starts no Metro of its own. Without
 # it, Expo falls back to 8081: a Metro shared by every agent, or none. (--port and --no-bundler cannot go together.)
@@ -234,9 +278,13 @@ cmd_build() {
   local n port pid; n=$(my_slot android) || exit 1
   port=$(sim_metro_port android "$n")
   sim_touch android "$n"
+  systemctl --user start "$(sim_android_unit "$n")"
+  sim_android_wait "$n" "${SIM_BOOT_TIMEOUT:-180}" || die "$(sim_android_serial "$n") did not boot (sim android logs $n)"
   pid=$(cat "$(metro_pidfile android "$n")" 2>/dev/null || true)
-  if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then cmd_metro start android; sleep "${SIM_METRO_SETTLE:-5}"; fi
+  if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then cmd_metro start android; fi
   eval "$(sim_android_env "$n")"
+  # Always, not only with a new Metro: an emulator that was restarted since has lost the reverse.
+  adb reverse tcp:8081 "tcp:$port" >/dev/null || die "adb reverse tcp:8081 tcp:$port failed on $(sim_android_serial "$n")"
   exec npx expo run:android --port "$port" "$@" </dev/null
 }
 
@@ -446,28 +494,50 @@ cmd_maestro() {
   esac
 }
 
+# sim metro start <P> [--env K=V]...: Metro for the slot, with the variables metro_env collects; returns once Metro
+# answers on /status (metro_ready_script), rc 1 with the end of its log when it does not.
 cmd_metro() {
-  local action=${1:-} p=${2:-} n port root log pid
-  case $p in android|web|ios) ;; *) usage ;; esac
+  local action=${1:-} p=${2:-} n port root log app envs=() ready
+  case $p in android|web|ios) shift 2 ;; *) usage ;; esac
+  while [ $# -gt 0 ]; do
+    case $action:$1 in
+      start:--env) [ $# -ge 2 ] || usage; envs+=("$2"); shift 2 ;;
+      start:--env=*) envs+=("${1#--env=}"); shift ;;
+      *) usage ;;
+    esac
+  done
+  [ "$action" != start ] || metro_env "${envs[@]}"
   [ "$p" != ios ] || sim_mac_require
   n=$(my_slot "$p"); port=$(sim_metro_port "$p" "$n"); root=$(sim_root)
   [ "$action" != start ] || sim_touch "$p" "$n"
   log=$SIM_STATE/$p/$n.metro.log
-  local app; app=$(sim_app_rel "$PWD" "$root")
+  app=$(sim_app_rel "$PWD" "$root")
   case $action in
     start)
+      metro_cmd "$p" "$port"
+      local names; printf -v names '%s, ' "${METRO_ENV_NAMES[@]}"
+      [ ${#METRO_ENV_NAMES[@]} = 0 ] || echo "env: ${names%, }"
       if [ "$p" = ios ]; then
-        sim_ios_ssh "cd $(sim_mac_dir "$root" "$app") && (pkill -f 'expo start.*--port $port' || true); nohup npx expo start --port $port > .metro.log 2>&1 < /dev/null & echo started" >/dev/null
+        local dir q=() w rc=0; dir=$(sim_mac_dir "$root" "$app")
+        for w in env "${METRO_ENV[@]}" "${METRO_CMD[@]}"; do q+=("$(printf %q "$w")"); done
+        sim_ios_ssh "cd $dir && (pkill -f 'expo start.*--port $port' || true); nohup ${q[*]} > .metro.log 2>&1 < /dev/null & echo started" >/dev/null \
+          || unavailable "could not start Metro on $AGENT_IOS_HOST"
         echo "Metro on the Mac in ~/$(sim_mac_path "$root" "$app"), port $port (log: sim metro log ios)"
         [ "$port" = 8081 ] || echo "a debug build finds it only when built with extraArgs [\"RCT_METRO_PORT=$port\"]"
+        # One ssh for the whole wait; timeout ends it should the Mac stop answering halfway.
+        ready=$(metro_ready_script "$port" "$dir/.metro.log")
+        SIM_SSH_TIMEOUT=$((${SIM_METRO_READY_TIMEOUT:-90} + 15)) sim_ios_ssh "$ready" </dev/null || rc=$?
+        case $rc in
+          0) echo "Metro ready on port $port" ;;
+          1) exit 1 ;;
+          *) unavailable "$AGENT_IOS_HOST stopped answering while Metro started (rc $rc)" ;;
+        esac
         return
       fi
       cmd_metro stop "$p" >/dev/null 2>&1 || true
-      local args=(--port "$port")
-      [ "$p" = web ] && args+=(--web)
       # Not CI=1: that turns off Metro's file watching, and an agent's edit would never reach the device. With stdin
       # from /dev/null Expo is non-interactive anyway.
-      (BROWSER=none setsid nohup npx expo start "${args[@]}" > "$log" 2>&1 < /dev/null & echo $! > "$(metro_pidfile "$p" "$n")")
+      (BROWSER=none setsid nohup env "${METRO_ENV[@]}" "${METRO_CMD[@]}" > "$log" 2>&1 < /dev/null & echo $! > "$(metro_pidfile "$p" "$n")")
       if [ "$p" = android ]; then
         eval "$(sim_android_env "$n")"
         # A default dev build asks for localhost:8081 on the device; send that to this slot's Metro on the host.
@@ -476,6 +546,8 @@ cmd_metro() {
       else
         echo "Expo web on http://localhost:$port (log: $log)"
       fi
+      bash -c "$(metro_ready_script "$port" "$(printf %q "$log")")" || exit 1
+      echo "Metro ready on port $port"
       ;;
     stop)
       if [ "$p" = ios ]; then sim_ios_ssh "pkill -f 'expo start.*--port $port' || true"; return; fi

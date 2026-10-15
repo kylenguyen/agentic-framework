@@ -2,9 +2,16 @@
 # e2e stand-in for npx on the fake Mac (tests/e2e/sim-mac.sh). `npx expo start --port P` serves Metro's status
 # endpoint on P (/status -> packager-status:running) until killed; the process keeps "expo start ... --port P" in
 # its command line, so `pkill -f 'expo start.*--port P'` finds it as it finds the real one. Anything else is only
-# logged to ~/npx.log.
+# logged to ~/npx.log. `expo start` writes the EXPO_PUBLIC_* and E2E_* variables it was given to ~/npx.env, one per
+# line, so sim-mac.sh sees what survived the host and the runner's zsh; with E2E_NPX_NOSERVE=1 it never serves.
 printf '%s\n' "$*" >> "$HOME/npx.log"
 [ "${1:-} ${2:-}" = "expo start" ] || exit 0
+env | grep -E '^(EXPO_PUBLIC_|E2E_)' | sort > "$HOME/npx.env"
+if [ "${E2E_NPX_NOSERVE:-}" = 1 ]; then
+  echo "metro stub: not serving"
+  exec python3 -c 'import time
+while True: time.sleep(60)' expo start --port "$*"
+fi
 port=8081
 for a; do
   case $prev in --port) port=$a ;; esac

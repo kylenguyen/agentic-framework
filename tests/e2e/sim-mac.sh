@@ -324,6 +324,26 @@ check "runs: cmd.txt records each rc" "rc: 1 rc: 0" \
 check "runs: the report is in the host worktree again" '<testsuites/>' "$(hx cat "$APP/e2e/report.xml" 2>/dev/null)"
 check "runs: the Mac keeps the last 3 runs" "3" "$(mx sh -c 'ls .cache/agent-sim/maestro-1/runs | wc -l' | tr -d ' ')"
 mx test -d ".cache/agent-sim/maestro-1/runs/$R2" && ok "runs: ...the newest among them" || bad "runs: ...the newest among them"
+
+say "sim metro start ios: environment and readiness (the lease above still held)"
+Q="a b'c\"d \$HOME \\x"
+run hx env EXPO_PUBLIC_API_URL=http://127.0.0.1:22000 sim metro start ios --env "E2E_Q=$Q"
+check "metro: exit 0" 0 "$RC"
+has "env: EXPO_PUBLIC_API_URL, E2E_Q" "$OUT" "metro: prints the names it passes"
+has "Metro ready on port" "$OUT" "metro: returns once Metro answers"
+check "metro: EXPO_PUBLIC_API_URL reached npx on the Mac" EXPO_PUBLIC_API_URL=http://127.0.0.1:22000 \
+  "$(mx grep '^EXPO_PUBLIC_API_URL=' npx.env)"
+check "metro: a value with a space, quotes, \$ and \\ survives env and zsh" "E2E_Q=$Q" "$(mx grep '^E2E_Q=' npx.env)"
+run hx sim metro start ios --env 1X=y
+check "metro: a bad --env name is rc 2" 2 "$RC"
+SECONDS_AT=$SECONDS
+run hx env SIM_METRO_READY_TIMEOUT=3 sim metro start ios --env E2E_NPX_NOSERVE=1
+took=$((SECONDS - SECONDS_AT))
+check "metro: no answer within SIM_METRO_READY_TIMEOUT is rc 1" 1 "$RC"
+has "did not answer within 3 s" "$OUT" "metro: ...saying so"
+has "metro stub: not serving" "$OUT" "metro: ...with the end of the Mac's Metro log"
+[ "$took" -le 12 ] && ok "metro: ...within the timeout and a few seconds (${took}s)" || bad "metro: ...within the timeout and a few seconds" "took ${took}s"
+run hx sim metro stop ios
 run hx sim release ios
 
 pass=$(grep -c '^ok$' "$T/results"); fail=$(grep -c '^FAIL$' "$T/results")
