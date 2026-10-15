@@ -261,7 +261,7 @@ Commands that need the Mac fail within about 5 s with exit 3. Short ssh commands
 - `docker unpause`, then `sim status` shows `booted` or `off`.
 
 **Verify.** `bash tests/sim-test.sh` gives 0 failed. `bash tests/e2e/sim-mac.sh` gives 0 failed. Read-only live
-check: `sim status` on as1 shows ios `booted`, `off` or `unreachable`, never `down`.
+check: `sim status` on the agent host shows ios `booted`, `off` or `unreachable`, never `down`.
 
 **Commit:** `Probe the Mac once and fail fast with exit 3 when it is gone`
 
@@ -445,7 +445,7 @@ Feedback #5 and #6, plus the orphan and two-sessions weak points.
 - `sim release` on an mcp lease → rc 1 and the message.
 - The owner file has no partial content: read it 100 times while leasing in a loop.
 
-**Verify.** `bash tests/sim-test.sh` → 0 failed. Read-only live: `sim status` still renders on as1.
+**Verify.** `bash tests/sim-test.sh` → 0 failed. Read-only live: `sim status` still renders on the agent host.
 
 **Commit:** `Add CLI leases and give a worktree its last slot back`
 
@@ -764,7 +764,7 @@ Feedback #9. Depends on T3 and T9.
 **E2e.** `sim doctor ios 1` against the fake Mac → ok lines for the probe, launcher and simulator. `docker pause`
 → fail.
 
-**Verify.** Unit and e2e → 0 failed. Read-only live: `sim doctor all` on as1 prints a full report and changes
+**Verify.** Unit and e2e → 0 failed. Read-only live: `sim doctor all` on the agent host prints a full report and changes
 nothing. Check this with `sim status` before and after.
 
 **Commit:** `Add sim doctor and driver and device recovery`
@@ -910,7 +910,7 @@ shellcheck -x -s bash lib/sim.sh
 node --check bin/sim-mcp-relay.mjs
 ```
 
-### B. Live, on as1 and the Mac
+### B. Live, on the agent host and the Mac
 
 The operator agrees on a time first, because these steps restart sim units and the Mac launcher.
 
