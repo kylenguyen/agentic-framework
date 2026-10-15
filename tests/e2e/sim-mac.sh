@@ -403,6 +403,15 @@ has "Directory listing" "$(mx cat maestro.curl.out 2>/dev/null)" "maestro --forw
 lacks "forward" "$(mx tail -1 maestro.log)" "maestro --forward: Maestro never sees --forward"
 for _ in $(seq 1 20); do [ -z "$(mac_listens "$P2")" ] && break; sleep 0.25; done
 check "maestro --forward: the tunnel is gone after the run" "" "$(mac_listens "$P2")"
+# forward_ios in the worktree's .sim/config: the same run without --forward.
+mx rm -f maestro.curl.rc maestro.curl.out
+hx bash -c 'mkdir -p "$1/.sim" && printf "forward_ios = %s\n" "$2" > "$1/.sim/config"' _ "$WT" "$P2"
+run hx sim maestro ios test flows/
+check "maestro, forward_ios from .sim/config: exit 0" 0 "$RC"
+has "tunnel up: Mac 127.0.0.1:$P2" "$OUT" "maestro, forward_ios from .sim/config: the tunnel is up"
+check "maestro, forward_ios from .sim/config: the flow's HTTP call reached the host" 0 "$(mx cat maestro.curl.rc 2>/dev/null)"
+hx rm -rf "$WT/.sim"
+for _ in $(seq 1 20); do [ -z "$(mac_listens "$P2")" ] && break; sleep 0.25; done
 mx rm -f maestro.curl maestro.curl.rc maestro.curl.out
 run hx sim tunnel ios --stop
 check "tunnel --stop: exit 0" 0 "$RC"

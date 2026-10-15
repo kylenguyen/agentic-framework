@@ -33,7 +33,7 @@ No script, template or config carries a host name, address or login. They come f
 | `AGENT_HOST_LAN_IP` | host address on the LAN, for `ssh <alias>-lan` | `src` of the default route | `.env`, optional |
 | `AGENT_IOS_HOST`, `AGENT_IOS_USER` | the Mac that runs the iOS simulators and its runner login (section 6) | `.env`, optional; empty means no iOS | not used |
 | `AGENT_SIM_ANDROID_SLOTS`, `AGENT_SIM_WEB_SLOTS`, `AGENT_SIM_IOS_SLOTS` | simulator slots per platform, 0 to 9 | `.env`, default 3, 3, 2 | not used |
-| `AGENT_SIM_KEEP_RUNS` | `sim maestro` run directories kept per slot on the host, 1 to 50 | `.env`, default 5 | not used |
+| `AGENT_SIM_KEEP_RUNS` | `sim maestro` run directories kept per slot on the host, 1 to 50 | `.env`, default 5; a repo's `.sim/config` `keep_runs` beats `.env`, the environment beats both | not used |
 
 `.env` values override the derived ones, except the login. The host script writes `.env` on its first run and
 prints the lines for the clients at the end. On a client, copy `.env.example` to `.env` and edit it, or let the
@@ -301,7 +301,8 @@ Mac (iOS, optional):
 3. Add the Mac to `.env` on the host: `AGENT_IOS_HOST=<mac-mini>` (MagicDNS name) and `AGENT_IOS_USER=<ios-user>`.
 4. `host$ sim ios bootstrap`. Re-run it after a version bump in `lib/sim.sh`. It refuses to run with under 15 GB free.
 
-A repo: `host$ cd ~/workspace/<repo> && sim enable`, commit the three files it writes, and paste the section it
+A repo: `host$ cd ~/workspace/<repo> && sim enable`, commit the three files it writes and `.sim/config` (the repo's
+needs, every key commented out with its default; written only when absent), and paste the section it
 prints into the repo's `AGENTS.md`. Codex asks to trust the repo on its first run there; say yes in the main
 checkout, and its worktrees follow.
 

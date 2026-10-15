@@ -85,6 +85,8 @@ sim_fail() { printf 'sim: %s\n' "$*" >&2; return 1; }
 
 # sim_load_params: the AGENT_IOS_* and AGENT_SIM_* parameters from .env (lib/params.sh), with defaults.
 sim_load_params() {
+  # Whether the environment set it, for the precedence over .sim/config (sim_repo_apply).
+  SIM_ENV_KEEP_RUNS=${AGENT_SIM_KEEP_RUNS:-}
   . "$REPO/lib/params.sh"
   params_load || return 1
   : "${AGENT_SIM_ANDROID_SLOTS:=3}" "${AGENT_SIM_WEB_SLOTS:=3}" "${AGENT_SIM_IOS_SLOTS:=2}" "${AGENT_SIM_IDLE_MINUTES:=30}" \
@@ -129,9 +131,12 @@ sim_port_block() { # sim_port_block <platform> <N>: "<base> <count>", for `read 
   local base; base=$(sim_port_base "$1" "$2") || return 1
   echo "$base $SIM_PORT_BLOCK"
 }
-sim_port_env() { # sim_port_env <platform> <N>: the exports SIM_PORT_BASE and SIM_PORT_COUNT
+# sim_port_env <platform> <N> [count]: the exports SIM_PORT_BASE and SIM_PORT_COUNT (the whole block); with a count
+# (.sim/config ports), SIM_PORT_COUNT is that and SIM_PORTS lists those ports.
+sim_port_env() {
   local base; base=$(sim_port_base "$1" "$2") || return 1
-  printf 'export SIM_PORT_BASE=%s\nexport SIM_PORT_COUNT=%s\n' "$base" "$SIM_PORT_BLOCK"
+  printf 'export SIM_PORT_BASE=%s\nexport SIM_PORT_COUNT=%s\n' "$base" "${3:-$SIM_PORT_BLOCK}"
+  [ -z "${3:-}" ] || printf "export SIM_PORTS='%s'\n" "$(seq -s ' ' "$base" $((base + $3 - 1)))"
 }
 
 # sim_root [dir]: the worktree a command or an MCP server belongs to: the git top level, else the directory itself.
@@ -401,17 +406,160 @@ sim_mac_require() {
 
 # What rsync leaves out when a worktree goes to the Mac: VCS data, dependencies and build output (rebuilt there),
 # and .env files, which may hold secrets that have no business on another machine. Excluded paths are also kept
-# safe from --delete on the Mac, so its node_modules and Pods survive every sync.
-SIM_RSYNC_EXCLUDES=(.git node_modules ios/Pods/ ios/build/ android/ .expo/ dist/ web-build/ '.env' '.env.*' '*.keystore' '*.jks' '*.p12' '*.mobileprovision')
+# safe from --delete on the Mac, so its node_modules and Pods survive every sync. The stack's own rules
+# (sim_stack_rsync_rules) come after these.
+SIM_RSYNC_EXCLUDES=(.git node_modules dist/ '.env' '.env.*' '*.keystore' '*.jks' '*.p12' '*.mobileprovision')
 
 sim_rsync_args() { # sim_rsync_args: the rsync options for a sync of a worktree
   local e
   printf '%s\n' -az --delete
   for e in "${SIM_RSYNC_EXCLUDES[@]}"; do printf '%s\n' "--exclude=$e"; done
-  # Expo generates ios/ on the Mac with prebuild; the host has none, and --delete must not take the Mac's away.
-  printf '%s\n' '--filter=P ios/'
+  sim_stack_rsync_rules || return
   # The sync stamp is the Mac's own (sim ios gc reads it), so --delete must leave it too.
   printf '%s\n' "--filter=P $SIM_SYNC_STAMP"
+}
+
+# --- per-repo needs (.sim/config) and the stack seam -----------------------------------------------------------
+# A repo states what it needs from sim in a committed .sim/config: `key = value` lines, `#` comment lines, blank
+# lines. It is read by sim_repo_config, never sourced, so a value is only ever data. Precedence for every key: a CLI
+# flag, then an environment variable, then .sim/config, then the host's .env, then the default.
+SIM_CFG_KEYS="stack app_dir metro_env forward_ios ports keep_runs"
+
+# sim_repo_config <root>: read <root>/.sim/config into SIM_CFG_STACK, SIM_CFG_APP_DIR, SIM_CFG_METRO_ENV,
+# SIM_CFG_FORWARD_IOS, SIM_CFG_PORTS and SIM_CFG_KEEP_RUNS (each unset when the file does not give it; no file is
+# rc 0). An unknown key warns on stderr. A malformed line or a bad value is rc 2, naming .sim/config:<line>. No other
+# side effects: sim enable --check calls it to see that the file parses.
+sim_repo_config() {
+  local file=$1/.sim/config line key val n=0 k
+  for k in $SIM_CFG_KEYS; do unset "SIM_CFG_${k^^}"; done
+  [ -e "$file" ] || return 0
+  [ -f "$file" ] && [ -r "$file" ] || { printf 'sim: .sim/config: not a readable file\n' >&2; return 2; }
+  while IFS= read -r line || [ -n "$line" ]; do
+    n=$((n + 1))
+    [[ $line =~ ^[[:space:]]*(#.*)?$ ]] && continue
+    if ! [[ $line =~ ^[[:space:]]*([a-z_]+)[[:space:]]*=[[:space:]]*(.*[^[:space:]])?[[:space:]]*$ ]]; then
+      printf 'sim: .sim/config:%s: expected key = value, got: %s\n' "$n" "$line" >&2; return 2
+    fi
+    key=${BASH_REMATCH[1]} val=${BASH_REMATCH[2]}
+    case $key in
+      stack)
+        [ "$val" = expo ] || { sim_cfg_bad "$n" "stack = $val: the only stack is expo"; return 2; } ;;
+      app_dir)   # a directory inside the worktree, relative to its top
+        val=${val%/}
+        if ! [[ $val =~ ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$ ]] || [[ /$val/ == */../* ]]; then
+          sim_cfg_bad "$n" "app_dir = $val: a relative path inside the worktree (letters, digits, . _ - and /, no ..)"; return 2
+        fi ;;
+      metro_env) # names, as SIM_METRO_ENV takes them
+        val=${val//[[:space:]]/}
+        [[ $val =~ ^([A-Za-z_][A-Za-z0-9_]*(,[A-Za-z_][A-Za-z0-9_]*)*)?$ ]] \
+          || { sim_cfg_bad "$n" "metro_env = $val: a comma list of variable names"; return 2; } ;;
+      forward_ios)
+        val=${val//[[:space:]]/}
+        sim_cfg_ports_ok "$val" || { sim_cfg_bad "$n" "forward_ios = $val: a comma list of ports from 1 to 65535"; return 2; } ;;
+      ports)
+        [[ $val =~ ^[0-9]{1,3}$ ]] && [ "$((10#$val))" -ge 1 ] && [ "$((10#$val))" -le "$SIM_PORT_BLOCK" ] \
+          || { sim_cfg_bad "$n" "ports = $val: from 1 to $SIM_PORT_BLOCK, the size of a slot's port block"; return 2; }
+        val=$((10#$val)) ;;
+      keep_runs)
+        [[ $val =~ ^[0-9]{1,2}$ ]] && [ "$((10#$val))" -ge 1 ] && [ "$((10#$val))" -le 50 ] \
+          || { sim_cfg_bad "$n" "keep_runs = $val: Maestro runs to keep per slot, 1 to 50"; return 2; }
+        val=$((10#$val)) ;;
+      *) printf 'sim: .sim/config:%s: unknown key %s, ignored (keys: %s)\n' "$n" "$key" "$SIM_CFG_KEYS" >&2; continue ;;
+    esac
+    printf -v "SIM_CFG_${key^^}" '%s' "$val"
+  done < "$file"
+  return 0
+}
+
+# sim_repo_apply <root>: sim_repo_config, then the keys that override a host parameter: keep_runs replaces
+# AGENT_SIM_KEEP_RUNS from .env or the default, never one set in the environment. rc 2 on a bad file.
+sim_repo_apply() {
+  sim_repo_config "$1" || return
+  [ -n "${SIM_ENV_KEEP_RUNS:-}" ] || [ -z "${SIM_CFG_KEEP_RUNS:-}" ] || AGENT_SIM_KEEP_RUNS=$SIM_CFG_KEEP_RUNS
+  return 0
+}
+
+sim_cfg_bad() { printf 'sim: .sim/config:%s: %s\n' "$1" "$2" >&2; }
+
+sim_cfg_ports_ok() { # sim_cfg_ports_ok <list>: empty, or comma-separated ports 1-65535
+  local p
+  [ -z "$1" ] && return 0
+  [[ $1 =~ ^[0-9]{1,5}(,[0-9]{1,5})*$ ]] || return 1
+  for p in ${1//,/ }; do [ "$((10#$p))" -ge 1 ] && [ "$((10#$p))" -le 65535 ] || return 1; done
+}
+
+# sim_repo_config_template: what sim enable writes to a repo without a .sim/config.
+sim_repo_config_template() {
+  cat <<EOF
+# .sim/config: what this repo needs from sim (the device simulation service). Commit it.
+# Lines are key = value, or a comment starting with #. Every key is optional: the values below are the defaults.
+# A command-line flag or an environment variable beats this file; this file beats the host's settings.
+
+# The app's toolchain. expo is the only one so far.
+# stack = expo
+
+# The app's directory, relative to the repo's top, for sim commands run at the top (a monorepo's client/).
+# Run from anywhere else, sim uses the directory it runs in.
+# app_dir = .
+
+# Variables sim metro start passes to Metro, besides EXPO_PUBLIC_* (comma list; SIM_METRO_ENV beats it).
+# metro_env =
+
+# Host ports that sim maestro ios makes reachable on the Mac when --forward is absent (--forward none: none), and
+# that sim tunnel ios forwards when given no ports. From sim ports ios.
+# forward_ios =
+
+# How many ports of the slot's block of $SIM_PORT_BLOCK the test stack uses: eval "\$(sim ports <platform>)" sets
+# SIM_PORT_COUNT to it and lists them in SIM_PORTS. 1 to $SIM_PORT_BLOCK.
+# ports = $SIM_PORT_BLOCK
+
+# Maestro run directories kept per slot (1 to 50; AGENT_SIM_KEEP_RUNS beats it; default: the host's, 5).
+# keep_runs = 5
+EOF
+}
+
+sim_stack() { echo "${SIM_CFG_STACK:-expo}"; }   # the stack of the repo whose .sim/config was read last
+
+sim_stack_unknown() { sim_fail "unknown stack $(sim_stack) (.sim/config)"; return 2; }
+
+# sim_stack_build_android <port> [args]: the command that builds, installs and opens the dev build on the slot's
+# emulator, served by the slot's Metro on <port>, into SIM_STACK_CMD. Expo: --port bakes the port into the build and
+# finds Metro already running there, so Expo starts no Metro of its own. Without it, Expo falls back to 8081: a Metro
+# shared by every agent, or none. (--port and --no-bundler cannot go together.)
+sim_stack_build_android() {
+  local port=$1; shift
+  case $(sim_stack) in
+    expo) SIM_STACK_CMD=(npx expo run:android --port "$port" "$@") ;;
+    *) sim_stack_unknown ;;
+  esac
+}
+
+# sim_stack_metro_cmd <port> [--web]: the command that starts the slot's bundler on <port>, into SIM_STACK_CMD.
+sim_stack_metro_cmd() {
+  case $(sim_stack) in
+    expo) SIM_STACK_CMD=(npx expo start --port "$1"); [ "${2:-}" != --web ] || SIM_STACK_CMD+=(--web) ;;
+    *) sim_stack_unknown ;;
+  esac
+}
+
+# sim_stack_ios_prepare_cmd: the shell command (for the runner's shell on the Mac, run in the app's directory there)
+# that installs the dependencies and generates the Xcode workspace.
+sim_stack_ios_prepare_cmd() {
+  case $(sim_stack) in
+    expo) echo 'npm ci --no-audit --no-fund && CI=1 npx expo prebuild -p ios --no-install && cd ios && pod install' ;;
+    *) sim_stack_unknown ;;
+  esac
+}
+
+# sim_stack_rsync_rules: the stack's rsync rules for a sync, one per line: its build output and generated projects.
+sim_stack_rsync_rules() {
+  case $(sim_stack) in
+    expo)
+      printf '%s\n' --exclude=ios/Pods/ --exclude=ios/build/ --exclude=android/ --exclude=.expo/ --exclude=web-build/
+      # Expo generates ios/ on the Mac with prebuild; the host has none, and --delete must not take the Mac's away.
+      printf '%s\n' '--filter=P ios/' ;;
+    *) sim_stack_unknown ;;
+  esac
 }
 
 # --- per-repo MCP registration (sim enable) -------------------------------------------------------------------

@@ -4,15 +4,15 @@
 # MCP does not: registering a repo, Metro, builds that need the slot's environment, the Mac side, and status.
 #
 #   sim status                          slots per platform, who holds them, what runs, minutes since last use
-#   sim enable [--only P,P] [dir]       register sim-android, sim-web, sim-ios with every harness for one repo
+#   sim enable [--only P,P] [dir]       register sim-android, sim-web, sim-ios with every harness for one repo; .sim/config if absent
 #   sim wait [secs]                     block until this worktree's emulator has booted (default 180 s)
 #   sim env                             exports for this worktree's emulator: eval "$(sim env)"
 #   sim run <cmd...>                    run a command in that environment, e.g. sim run ./gradlew test
 #   sim ports <P> [k|--check]           this worktree's 100 ports for test stacks: eval "$(sim ports web)"; k lists k, --check busy ones
 #   sim build [args]                    from the app's directory: Metro if not running, then expo run:android for the slot
 #   sim maestro android|ios <args...>   Maestro on this worktree's emulator or simulator, a directory per run: sim maestro ios test .maestro/
-#                                       ios --forward p[,p...]: host ports reachable from the Mac for the run (sim tunnel)
-#   sim tunnel ios <p[,p...]> [--background|--stop|--any-port]   host 127.0.0.1:<p> as 127.0.0.1:<p> on the Mac; ports from sim ports ios
+#                                       ios --forward p[,p...]|none: host ports reachable from the Mac for the run (sim tunnel)
+#   sim tunnel ios [p[,p...]] [--background|--stop|--any-port]   host 127.0.0.1:<p> as 127.0.0.1:<p> on the Mac; ports from sim ports ios
 #   sim maestro P --fresh|--cold ...    first stop Maestro's driver (--fresh), or restart the device (--cold; android: app gone)
 #   sim metro start|stop|log <P>        Metro for this worktree's slot: android (adb reverse), web, ios (on the Mac)
 #   sim metro start <P> [--env K=V]...  with EXPO_PUBLIC_*, the names in SIM_METRO_ENV and each K=V; returns once it answers
@@ -28,6 +28,8 @@
 #   sim lease <P> [--ttl DUR] [dir]     hold a slot for this worktree without an MCP server: DUR <n>m|h|d, 8h, at most 7d
 #   sim release <P> [dir]               free the slot that sim lease took
 # "This worktree's slot" is the slot leased by an MCP server started from the same git top level, or by sim lease.
+# A repo's committed .sim/config states its needs (stack, app_dir, metro_env, forward_ios, ports, keep_runs; lib/sim.sh,
+# sim_repo_config): flags and environment variables beat it, it beats the host's .env. A bad file is rc 2.
 # Exit codes: 0 done, 1 failed, 2 usage, 3 the device or the Mac is unavailable (unreachable): retry later.
 # Devices start on first use and stop when unused (lib/sim.sh, Uptime); the commands that use one count as use.
 set -euo pipefail
@@ -40,6 +42,26 @@ sim_load_params
 
 my_slot() { # my_slot <platform>: this worktree's slot, or a message that says how to get one
   sim_my_slot "$1" || die "no $1 slot is leased for $(sim_root): start a harness session in this worktree after \`sim enable\`, so its sim-$1 MCP server holds one, or sim lease $1"
+}
+
+# repo_cfg: read this worktree's .sim/config (lib/sim.sh, sim_repo_config) once, before anything uses its keys; a bad
+# file is rc 2. Commands call it in the main shell, never in $(...), so the SIM_CFG_* variables stay set.
+REPO_CFG_READ=
+repo_cfg() {
+  [ -z "$REPO_CFG_READ" ] || return 0
+  sim_repo_apply "$(sim_root)" || exit 2
+  REPO_CFG_READ=1
+}
+
+# app_rel <root>: the app's directory relative to the root: where sim runs, or app_dir from .sim/config when sim runs
+# at the root (call repo_cfg first). rc 2 when app_dir names no directory.
+app_rel() {
+  local a; a=$(sim_app_rel "$PWD" "$1")
+  if [ "$a" = . ] && [ -n "${SIM_CFG_APP_DIR:-}" ]; then
+    [ -d "$1/$SIM_CFG_APP_DIR" ] || die ".sim/config: app_dir = $SIM_CFG_APP_DIR: no such directory in $1" 2
+    a=$(realpath -m --relative-to="$1" "$1/$SIM_CFG_APP_DIR")
+  fi
+  echo "$a"
 }
 
 # ios_states: fill IOS_STATE[N] for every ios slot: booted, off (shut down, by `sim reap` or by hand), unreachable
@@ -142,11 +164,14 @@ cmd_enable() {
       && sim_write_codex_toml "$root/.codex/config.toml" $only; } || exit 1
   printf 'wrote .mcp.json (Claude Code, Oh My Pi), opencode.json (OpenCode), .codex/config.toml (Codex) in %s\n' "$root"
   printf 'servers: %s\n' "$(for p in $only; do printf 'sim-%s ' "$p"; done)"
+  # The repo's needs, committed with the rest; never overwritten, so its edits stay.
+  if [ -e "$root/.sim/config" ]; then echo "kept .sim/config"
+  else mkdir -p "$root/.sim" && sim_repo_config_template > "$root/.sim/config" || exit 1; echo "wrote .sim/config"; fi
   cat <<EOF
 
 Codex reads .codex/config.toml only in a trusted project: answer yes when Codex asks on its first run in the main
 checkout ($(git -C "$root" worktree list --porcelain 2>/dev/null | sed -n '1s/^worktree //p')); its worktrees inherit it.
-Commit the three files, and add this to the repo's AGENTS.md so every harness knows how to use them:
+Commit the three files and .sim/config, and add this to the repo's AGENTS.md so every harness knows how to use them:
 
 ## Simulators
 
@@ -157,7 +182,7 @@ a boot (up to a minute). An Android emulator starts clean, so after an idle stop
 - Web: \`sim metro start web\` serves the app; open the URL it prints with the sim-web tools.
 - Android: \`sim wait\`, then \`sim build\` from the app's directory: it starts Metro for your emulator and builds,
   installs and opens the dev build. Drive it with the sim-android tools; JS edits reach the app without a rebuild.
-  Never \`npx expo run:android\` directly: it would build for port 8081, which is not yours.
+  Never run \`expo run:android\` yourself: it would build for port 8081, which is not yours.
 - Maestro flows: \`sim maestro android test <flows>\` runs them on your emulator, \`sim maestro ios test <flows>\`
   on your iOS simulator, with the app already installed there through the sim-ios tools. Flows and \`--output\`
   paths must lie inside this worktree; reports land at those paths. Each run ends by printing its directory on
@@ -199,7 +224,8 @@ cmd_run() {
 }
 
 # sim ports <P> [k|--check]: the slot's port block (lib/sim.sh, sim_port_base). Arguments are checked before the
-# lease, so a usage error is rc 2 either way.
+# lease, so a usage error is rc 2 either way. With `ports = k` in .sim/config, the exports say k ports and list them
+# (SIM_PORTS), and --check looks at those k.
 cmd_ports() {
   local p=${1:-} arg=${2:-} n base count
   case " $SIM_PLATFORMS " in *" $p "*) [ -n "$p" ] ;; *) false ;; esac || usage
@@ -209,10 +235,12 @@ cmd_ports() {
     *) [[ $arg =~ ^[0-9]{1,3}$ ]] && [ "$((10#$arg))" -ge 1 ] && [ "$((10#$arg))" -le "$SIM_PORT_BLOCK" ] \
          || die "sim ports $p $arg: a count from 1 to $SIM_PORT_BLOCK" 2 ;;
   esac
+  repo_cfg
   n=$(my_slot "$p") || exit 1
   read -r base count < <(sim_port_block "$p" "$n")
+  count=${SIM_CFG_PORTS:-$count}
   case $arg in
-    '') sim_port_env "$p" "$n" ;;
+    '') sim_port_env "$p" "$n" ${SIM_CFG_PORTS:+"$SIM_CFG_PORTS"} ;;
     --check) ports_check "$base" "$count" ;;
     *) seq -s ' ' "$base" $((base + 10#$arg - 1)) ;;
   esac
@@ -366,6 +394,8 @@ cmd_tunnel() {
     else echo "no tunnel on ios slot $n: nothing to stop"; fi
     return 0
   fi
+  repo_cfg
+  spec=${spec:-${SIM_CFG_FORWARD_IOS:-}}   # no ports: forward_ios from .sim/config
   [ -n "$spec" ] || usage
   list=$(tunnel_parse "$spec") || exit 2
   mapfile -t ports <<<"$list"
@@ -434,14 +464,15 @@ metro_stop_slot() { # metro_stop_slot <android|web> <N>: stop the slot's Metro o
 }
 
 # metro_env [K=V...]: the variables Metro gets, into METRO_ENV (K=V words, for `env`) and METRO_ENV_NAMES: every
-# EXPO_PUBLIC_* of the caller's environment, every set name of SIM_METRO_ENV (a comma list), then each K=V given (from
+# EXPO_PUBLIC_* of the caller's environment, every set name of SIM_METRO_ENV (a comma list; when it is not set, the
+# metro_env of .sim/config), then each K=V given (from
 # --env), a later one replacing an earlier one of the same name. A name that is not a variable name is rc 2.
 METRO_ENV=(); METRO_ENV_NAMES=()
 metro_env() {
   local -A val=()
   local kv k pairs=()
   for k in $(compgen -e | grep '^EXPO_PUBLIC_' || true); do pairs+=("$k=${!k}"); done
-  local list=${SIM_METRO_ENV:-}
+  local list=${SIM_METRO_ENV-${SIM_CFG_METRO_ENV:-}}
   for k in ${list//,/ }; do
     [[ $k =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || die "SIM_METRO_ENV: $k is not a variable name" 2
     [ -z "${!k+x}" ] || pairs+=("$k=${!k}")
@@ -453,12 +484,6 @@ metro_env() {
   METRO_ENV=(); METRO_ENV_NAMES=()
   for kv in "${pairs[@]}"; do k=${kv%%=*}; [ -n "${val[$k]+x}" ] || METRO_ENV_NAMES+=("$k"); val[$k]=${kv#*=}; done
   for k in "${METRO_ENV_NAMES[@]}"; do METRO_ENV+=("$k=${val[$k]}"); done
-}
-
-# metro_cmd <platform> <port>: the command that starts Metro for the slot, into METRO_CMD.
-metro_cmd() {
-  METRO_CMD=(npx expo start --port "$2")
-  [ "$1" != web ] || METRO_CMD+=(--web)
 }
 
 # metro_ready_script <port> <log>: a POSIX sh loop (run by bash on the host, by the runner's zsh on the Mac) that asks
@@ -474,11 +499,13 @@ metro_ready_script() {
 echo \"sim: Metro on port $1 did not answer within $t s; the end of its log:\" >&2; tail -n 20 $2 >&2; exit 1"
 }
 
-# Builds, installs and opens the dev build on this worktree's emulator, served by the slot's Metro. --port bakes the
-# slot's Metro port into the build and finds Metro already running there, so Expo starts no Metro of its own. Without
-# it, Expo falls back to 8081: a Metro shared by every agent, or none. (--port and --no-bundler cannot go together.)
+# Builds, installs and opens the dev build on this worktree's emulator, served by the slot's Metro, from the app's
+# directory (lib/sim.sh, sim_stack_build_android).
 cmd_build() {
-  local n port pid; n=$(my_slot android) || exit 1
+  local n port pid root app
+  repo_cfg
+  root=$(sim_root); app=$(app_rel "$root")
+  n=$(my_slot android) || exit 1
   port=$(sim_metro_port android "$n")
   sim_touch android "$n"
   systemctl --user start "$(sim_android_unit "$n")"
@@ -488,7 +515,9 @@ cmd_build() {
   eval "$(sim_android_env "$n")"
   # Always, not only with a new Metro: an emulator that was restarted since has lost the reverse.
   adb reverse tcp:8081 "tcp:$port" >/dev/null || die "adb reverse tcp:8081 tcp:$port failed on $(sim_android_serial "$n")"
-  exec npx expo run:android --port "$port" "$@" </dev/null
+  sim_stack_build_android "$port" "$@" || exit
+  cd "$root/$app"
+  exec "${SIM_STACK_CMD[@]}" </dev/null
 }
 
 # A Maestro run keeps its own directory on the host, $SIM_CACHE/<platform>/maestro-N/runs/<YYYYmmdd-HHMMSS>, with
@@ -501,15 +530,18 @@ cmd_build() {
 # --test-output-dir and --debug-output, as `--x P` or `--x=P`, must name a path inside the worktree (rc 2), which is
 # made absolute. Sets MA_ARGS (Maestro's arguments), and per argument MA_OUT (the absolute output path it carries,
 # else empty) and MA_KEY (`--x=` when the path is in the same argument); MA_GIVEN lists the output flags given.
-# sim's own: --forward p[,p…] (iOS) sets MA_FORWARD, --fresh MA_FRESH=1, --cold MA_COLD=1.
+# sim's own: --forward p[,p…] (iOS) sets MA_FORWARD, --forward none empties it; either sets MA_FORWARD_GIVEN=1.
+# --fresh sets MA_FRESH=1, --cold MA_COLD=1.
 maestro_args() {
   local root=$1 a p; shift
-  MA_ARGS=(); MA_OUT=(); MA_KEY=(); MA_GIVEN=' '; MA_FORWARD=(); MA_FRESH=0; MA_COLD=0
+  MA_ARGS=(); MA_OUT=(); MA_KEY=(); MA_GIVEN=' '; MA_FORWARD=(); MA_FORWARD_GIVEN=; MA_FRESH=0; MA_COLD=0
   while [ $# -gt 0 ]; do
     a=$1; shift
     case $a in
       --forward|--forward=*)   # sim tunnel's ports for the run (iOS): MA_FORWARD
         if [ "$a" = --forward ]; then [ $# -gt 0 ] || usage; p=$1; shift; else p=${a#*=}; fi
+        MA_FORWARD_GIVEN=1; MA_FORWARD=()
+        [ "$p" = none ] && continue
         p=$(tunnel_parse "$p") || exit 2
         mapfile -t MA_FORWARD <<<"$p" ;;
       --fresh) MA_FRESH=1 ;;   # reset Maestro's driver before the run (maestro_fresh_android, maestro_ios)
@@ -575,6 +607,7 @@ maestro_android() {
   command -v docker >/dev/null || die "sim maestro needs docker, usable without sudo"
   local n root image name run home ttyf=() envs=() v rc args keep logcat
   root=$(sim_root)
+  repo_cfg   # keep_runs
   maestro_args "$root" "$@"
   [ ${#MA_FORWARD[@]} = 0 ] || die "--forward is for iOS: on android, flows reach the host through the docker bridge" 2
   n=$(my_slot android) || exit 1
@@ -661,9 +694,15 @@ maestro_ios() {
   [ $# -gt 0 ] || usage
   sim_mac_require
   local n root app lock base mrun a i k words=() envs=() v tty=() rc err p rel src toucher
-  root=$(sim_root); app=$(sim_app_rel "$PWD" "$root")
+  root=$(sim_root); app=$(sim_app_rel "$PWD" "$root")   # where sim runs, never app_dir: flow paths are relative to it
+  repo_cfg
   maestro_args "$root" "$@"
   [ ${#MA_ARGS[@]} -gt 0 ] || usage
+  # forward_ios from .sim/config when --forward is absent. Checked here, before anything runs, as --forward is.
+  if [ -z "$MA_FORWARD_GIVEN" ] && [ -n "${SIM_CFG_FORWARD_IOS:-}" ]; then
+    a=$(tunnel_parse "$SIM_CFG_FORWARD_IOS") || exit 2
+    mapfile -t MA_FORWARD <<<"$a"
+  fi
   n=$(my_slot ios) || exit 1
   [ ${#MA_FORWARD[@]} = 0 ] || tunnel_in_block "$n" 0 "${MA_FORWARD[@]}" || exit 2
   base=$SIM_CACHE/ios/maestro-$n
@@ -761,20 +800,21 @@ cmd_metro() {
       *) usage ;;
     esac
   done
+  repo_cfg
   [ "$action" != start ] || metro_env "${envs[@]}"
   [ "$p" != ios ] || sim_mac_require
   n=$(my_slot "$p"); port=$(sim_metro_port "$p" "$n"); root=$(sim_root)
   [ "$action" != start ] || sim_touch "$p" "$n"
   log=$SIM_STATE/$p/$n.metro.log
-  app=$(sim_app_rel "$PWD" "$root")
+  app=$(app_rel "$root")
   case $action in
     start)
-      metro_cmd "$p" "$port"
+      if [ "$p" = web ]; then sim_stack_metro_cmd "$port" --web; else sim_stack_metro_cmd "$port"; fi || exit
       local names; printf -v names '%s, ' "${METRO_ENV_NAMES[@]}"
       [ ${#METRO_ENV_NAMES[@]} = 0 ] || echo "env: ${names%, }"
       if [ "$p" = ios ]; then
         local dir q=() w rc=0; dir=$(sim_mac_dir "$root" "$app")
-        for w in env "${METRO_ENV[@]}" "${METRO_CMD[@]}"; do q+=("$(printf %q "$w")"); done
+        for w in env "${METRO_ENV[@]}" "${SIM_STACK_CMD[@]}"; do q+=("$(printf %q "$w")"); done
         sim_ios_ssh "cd $dir && (pkill -f 'expo start.*--port $port' || true); nohup ${q[*]} > .metro.log 2>&1 < /dev/null & echo started" >/dev/null \
           || unavailable "could not start Metro on $AGENT_IOS_HOST"
         echo "Metro on the Mac in ~/$(sim_mac_path "$root" "$app"), port $port (log: sim metro log ios)"
@@ -792,7 +832,8 @@ cmd_metro() {
       cmd_metro stop "$p" >/dev/null 2>&1 || true
       # Not CI=1: that turns off Metro's file watching, and an agent's edit would never reach the device. With stdin
       # from /dev/null Expo is non-interactive anyway.
-      (BROWSER=none setsid nohup env "${METRO_ENV[@]}" "${METRO_CMD[@]}" > "$log" 2>&1 < /dev/null & echo $! > "$(metro_pidfile "$p" "$n")")
+      (cd "$root/$app" || exit 1
+       BROWSER=none setsid nohup env "${METRO_ENV[@]}" "${SIM_STACK_CMD[@]}" > "$log" 2>&1 < /dev/null & echo $! > "$(metro_pidfile "$p" "$n")") || exit 1
       if [ "$p" = android ]; then
         eval "$(sim_android_env "$n")"
         # A default dev build asks for localhost:8081 on the device; send that to this slot's Metro on the host.
@@ -1086,7 +1127,8 @@ cmd_doctor() {
 cmd_ios() {
   local action=${1:-} root tree app
   case $action in start|stop|sync|prepare|bootstrap|gc) sim_mac_require ;; *) usage ;; esac
-  root=$(sim_root); app=$(sim_app_rel "$PWD" "$root")
+  case $action in sync|prepare) repo_cfg ;; esac   # the stack's rsync rules and prepare command, app_dir
+  root=$(sim_root); app=$(app_rel "$root")
   tree=$(sim_mac_dir "$root")    # sims/<tree>: quoted for the remote shell, the app's directory with sim_mac_dir
   case $action in
     start|stop)
@@ -1115,7 +1157,7 @@ cmd_ios() {
     prepare)
       # Run from the app's directory (a monorepo's client/): the whole worktree goes over, the app is built there.
       cmd_ios sync
-      sim_ios_ssh "cd $(sim_mac_dir "$root" "$app") && npm ci --no-audit --no-fund && CI=1 npx expo prebuild -p ios --no-install && cd ios && pod install" \
+      sim_ios_ssh "cd $(sim_mac_dir "$root" "$app") && $(sim_stack_ios_prepare_cmd)" \
         || die "prepare failed on the Mac; the output above says where"
       echo "workspace: $(sim_ios_ssh "ls -d \$HOME/$(sim_mac_dir "$root" "$app")/ios/*.xcworkspace" | head -1)" ;;
     bootstrap)
