@@ -11,11 +11,14 @@ check() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "expected [$2] got [$3
 has()   { case "$3" in *"$2"*) ok "$1" ;; *) bad "$1" "no [$2] in [$3]" ;; esac; }   # has <name> <needle> <haystack>
 lacks() { case "$3" in *"$2"*) bad "$1" "unexpected [$2] in [$3]" ;; *) ok "$1" ;; esac; }
 
+# The relay runs on the real node; the node shim below stands in for the MCP servers.
+SIM_RELAY_NODE=$(command -v node) || { echo "sim-test: node is required (bin/sim-mcp-relay.mjs)" >&2; exit 1; }
+export SIM_RELAY_NODE
 # A repo copy with a test .env, and shims that log to $T/log.
 REPO=$T/repo
 mkdir -p "$REPO/bin" "$REPO/lib" "$REPO/config" "$T/shims" "$T/log"
 cp "$SRC/lib/params.sh" "$SRC/lib/sim.sh" "$REPO/lib/"
-cp "$SRC/bin/sim" "$SRC/bin/sim-mcp" "$REPO/bin/"
+cp "$SRC/bin/sim" "$SRC/bin/sim-mcp" "$SRC/bin/sim-mcp-relay.mjs" "$REPO/bin/"
 cp "$SRC/install-ios-runner.sh" "$REPO/"
 mkdir -p "$REPO/config/sim"; cp "$SRC/config/sim/"* "$REPO/config/sim/"
 printf 'AGENT_HOST=box\nAGENT_IOS_HOST=mini.tail.ts.net\nAGENT_IOS_USER=bob\nAGENT_SIM_ANDROID_SLOTS=2\nAGENT_SIM_WEB_SLOTS=2\nAGENT_SIM_IOS_SLOTS=1\n' > "$REPO/.env"
@@ -36,7 +39,8 @@ case "\$*" in
 esac
 exit 0
 EOF
-# systemctl: a unit is active while its name is a line of $T/active; start and stop edit that file.
+# systemctl: a unit is active while its name is a line of $T/active; start and stop edit that file. A start fails while
+# $T/systemctl.fail exists, and first sleeps for the seconds in $T/wake.delay.
 cat > "$T/shims/systemctl" <<EOF
 #!/bin/sh
 printf '%s\n' "\$*" >> "$T/log/systemctl"
@@ -44,12 +48,20 @@ printf '%s\n' "\$*" >> "$T/log/systemctl"
 for u; do :; done
 case \$1 in
   is-active) grep -qx "\$u" "$T/active" 2>/dev/null && { [ "\$2" = -q ] || echo active; exit 0; }; [ "\$2" = -q ] || echo inactive; exit 3 ;;
-  start) echo "\$u" >> "$T/active" ;;
+  start) [ -e "$T/systemctl.fail" ] && exit 1; sleep "\$(cat "$T/wake.delay" 2>/dev/null || echo 0)"; echo "\$u" >> "$T/active" ;;
   stop) grep -vx "\$u" "$T/active" > "$T/active.new" 2>/dev/null; mv "$T/active.new" "$T/active" ;;
 esac
 exit 0
 EOF
-printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s/log/adb"\n' "$T" > "$T/shims/adb"
+# adb: sys.boot_completed is the content of $T/boot (default 1); wait-for-device waits for it to be 1.
+cat > "$T/shims/adb" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >> "$T/log/adb"
+case "\$*" in
+  *wait-for-device*) while [ "\$(cat "$T/boot" 2>/dev/null || echo 1)" != 1 ]; do sleep 0.1; done ;;
+  *"getprop sys.boot_completed"*) cat "$T/boot" 2>/dev/null || echo 1 ;;
+esac
+EOF
 printf '#!/bin/sh\nprintf "%%s\\n" "$*" > "%s/log/emulator"\necho "$ANDROID_TMP" > "%s/log/emulator.tmp"\n' "$T" "$T" > "$T/shims/emulator"
 printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s/log/npx"\n' "$T" > "$T/shims/npx"
 # docker: logs every call. The image exists unless $T/docker.noimage does; `ps` prints $T/docker.ps; a run of the

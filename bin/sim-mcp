@@ -5,9 +5,10 @@
 # lock: the server and every helper run with the descriptor closed, so nothing they leave behind (an adb daemon, a
 # mise helper) can keep the slot.
 # stdout belongs to the MCP protocol: every message goes to stderr.
-# The harness's messages reach the server through a relay that wakes the slot's device before each tool call: the
-# lease starts nothing, `sim reap` stops a device left idle (lib/sim.sh, Uptime), and the call that needs it again
-# waits for the boot (about 30 s for an emulator, a few seconds for an iOS simulator).
+# The harness's messages reach the server through a relay (bin/sim-mcp-relay.mjs, Node) that wakes the slot's device
+# before each tool call: the lease starts nothing, `sim reap` stops a device left idle (lib/sim.sh, Uptime), and the
+# call that needs it again waits for the boot (about 30 s for an emulator, a few seconds for an iOS simulator). A
+# device that does not come up turns the call into a tool error with the reason; other messages are not held up.
 #   android  mobile-mcp, seeing only its own emulator (the slot's adb server)
 #   web      Playwright MCP, headless, in-memory profile; SIM_WEB_BROWSER=webkit|firefox|chromium (default chromium)
 #   ios      XcodeBuildMCP on the Mac over ssh, its session defaults pinned to simulator agent-ios-N
@@ -52,54 +53,19 @@ case $platform in
       2) say "AGENT_IOS_HOST and AGENT_IOS_USER must be set in .env (docs/simulators-plan.md)"; exit 1 ;;
       *) say "mac unreachable: $AGENT_IOS_USER@$AGENT_IOS_HOST did not answer within ${SIM_MAC_PROBE_TIMEOUT:-5} s (sim status)"; exit 1 ;;
     esac
+    rm -f "$SIM_STATE/ios/$n.booted"     # a new session checks the simulator once, whatever the last one saw
     server=(ssh "${SIM_SSH_SOLO_OPTS[@]}" "${SIM_SSH_OPTS[@]}" -T "$AGENT_IOS_USER@$AGENT_IOS_HOST" ".local/bin/sim-xcodebuildmcp $n")
     ;;
 esac
 
-# wake: before a tool call, start the slot's device if it is down and wait for it. Runs in the relay, whose stdout
-# is the server's stdin: nothing may print there.
-booted=0
-wake() {
-  sim_touch "$platform" "$n"
-  case $platform in
-    android)
-      local unit; unit=$(sim_android_unit "$n")
-      if ! systemctl --user is-active -q "$unit"; then
-        say "starting $(sim_android_serial "$n"); this call waits for the boot"
-        # mobilecli's daemon holds a connection to the adb server the emulator unit took down with it.
-        "${after[@]}" </dev/null >/dev/null 2>&1 || true
-        systemctl --user start "$unit" || say "could not start $unit (sim android logs $n)"
-        booted=0
-      fi
-      if [ "$booted" = 0 ]; then
-        if sim_android_wait "$n" "${SIM_BOOT_TIMEOUT:-180}"; then booted=1
-        else say "$(sim_android_serial "$n") did not boot within ${SIM_BOOT_TIMEOUT:-180} s (sim android logs $n)"; fi
-      fi ;;
-    ios)
-      if [ "$booted" = 0 ] || [ -e "$SIM_STATE/ios/$n.down" ]; then
-        say "booting $(sim_ios_name "$n") on the Mac"
-        if sim_ios_boot "$n"; then booted=1; rm -f "$SIM_STATE/ios/$n.down"
-        else say "could not boot $(sim_ios_name "$n") on $AGENT_IOS_HOST"; fi
-      fi ;;
-  esac
-}
-# relay: the harness's messages to the server, one JSON-RPC message per line (MCP stdio), each tool call woken first.
-relay() {
-  local line
-  while IFS= read -r line || [ -n "$line" ]; do
-    case $line in *'"tools/call"'*) wake >&2 ;; esac
-    printf '%s\n' "$line"
-  done
-}
-
-# The harness ends the session by closing stdin (the relay ends, the server reads EOF and exits) or by signalling
-# this process: pass the signal on, so no server outlives its lease.
-fifo=$SIM_STATE/$platform/$n.in
-rm -f "$fifo"; mkfifo -m 600 "$fifo"
-"${server[@]}" {SIM_LOCK_FD}>&- <"$fifo" &
+# The relay (bin/sim-mcp-relay.mjs) owns the server and stdout: it runs `sim _wake` before each batch of tool calls
+# (start or boot the slot's device, wait for it) and answers a call whose device does not come up with a tool error.
+# The harness ends the session by closing stdin (the relay closes the server's stdin, then kills its process group)
+# or by signalling this process: pass the signal on, so no server outlives its lease.
+"${SIM_RELAY_NODE:-node}" "$REPO/bin/sim-mcp-relay.mjs" --platform "$platform" --slot "$n" \
+  --wake "$(printf '%q ' "$REPO/bin/sim" _wake "$platform" "$n")" --pgid-file "$SIM_STATE/$platform/$n.pgid" \
+  -- "${server[@]}" {SIM_LOCK_FD}>&- <&0 &      # <&0: an async command would get /dev/null
 child=$!
-relay {SIM_LOCK_FD}>&- <&0 >"$fifo" &      # <&0: an async command would get /dev/null
-relayer=$!
 trap 'kill -TERM "$child" 2>/dev/null' TERM INT HUP
 while :; do
   wait "$child" && { rc=0; break; }
@@ -107,7 +73,5 @@ while :; do
   kill -0 "$child" 2>/dev/null && continue     # wait was cut short by a trapped signal: wait again
   break
 done
-kill "$relayer" 2>/dev/null || true
-rm -f "$fifo"
 [ -z "${after:-}" ] || "${after[@]}" {SIM_LOCK_FD}>&- </dev/null >/dev/null 2>&1 || true
 exit "$rc"

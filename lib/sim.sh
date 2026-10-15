@@ -15,7 +15,8 @@
 # emulator, the iOS simulator and Metro of every slot whose <N>.active is older than AGENT_SIM_IDLE_MINUTES, leased
 # or not: a harness session (and its lease) can stay open for days in tmux. After a stop the next tool call starts
 # the device again. <N>.down marks an iOS simulator that sim shut down, so the reaper reaches the Mac once per idle
-# spell, and the next call knows to boot it.
+# spell, and the next call knows to boot it. <N>.booted is the other half: the relay's wake (`sim _wake`) has seen
+# agent-ios-N booted since sim last shut it down, so later calls skip the boot check.
 #
 # Ports, all derived from the slot number so nothing has to be allocated:
 #   android N  emulator console 5598+2N (serial emulator-5600, -5602, ...), its own adb server on 5037+N, Metro 8100+N

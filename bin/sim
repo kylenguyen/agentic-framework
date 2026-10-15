@@ -110,7 +110,7 @@ cmd_reap() {
         ios)
           [ ! -e "$SIM_STATE/ios/$n.down" ] || continue
           reap_ios_reachable || continue
-          if sim_ios_shutdown "$n"; then touch "$SIM_STATE/ios/$n.down"; echo "ios $n: $(sim_ios_name "$n") shut down, unused for $((idle / 60)) min"
+          if sim_ios_shutdown "$n"; then touch "$SIM_STATE/ios/$n.down"; rm -f "$SIM_STATE/ios/$n.booted"; echo "ios $n: $(sim_ios_name "$n") shut down, unused for $((idle / 60)) min"
           else echo "ios $n: $AGENT_IOS_HOST did not answer, next round tries again" >&2; fi ;;
       esac
       [ "$p" = ios ] || ! metro_stop_slot "$p" "$n" || echo "$p $n: Metro stopped"
@@ -423,7 +423,7 @@ cmd_ios() {
           rm -f "$SIM_STATE/ios/$n.down"; echo "$(sim_ios_name "$n") booted"
         else
           sim_ios_shutdown "$n" || unavailable "$AGENT_IOS_HOST did not answer"
-          mkdir -p "$SIM_STATE/ios"; touch "$SIM_STATE/ios/$n.down"; echo "$(sim_ios_name "$n") shut down"
+          mkdir -p "$SIM_STATE/ios"; touch "$SIM_STATE/ios/$n.down"; rm -f "$SIM_STATE/ios/$n.booted"; echo "$(sim_ios_name "$n") shut down"
         fi
       done ;;
     sync)
@@ -541,6 +541,43 @@ cmd_release() {
   echo "no $p lease for $root: nothing to release"
 }
 
+# sim _wake <platform> <N> (hidden, run by bin/sim-mcp-relay.mjs before tool calls): start or boot slot N's device
+# and wait until it can take a call. Exit 0 ready, 3 unavailable (Mac unreachable, device not up in time), 1 other
+# failure, with the reason as the last line on stderr: the relay hands it to the agent as the call's error.
+# <N>.booted says this host has seen agent-ios-N booted since the last time sim shut it down (reap, ios stop).
+cmd_wake() {
+  local p=${1:-} n=${2:-} unit rc=0
+  case $p in android|web|ios) ;; *) usage ;; esac
+  [[ $n =~ ^[1-9]$ ]] || usage
+  sim_touch "$p" "$n"
+  case $p in
+    android)
+      unit=$(sim_android_unit "$n")
+      if ! systemctl --user is-active -q "$unit"; then
+        echo "sim: starting $(sim_android_serial "$n"); this call waits for the boot" >&2
+        # mobilecli's daemon holds a connection to the adb server the emulator unit took down with it.
+        MOBILECLI_HOME=$SIM_STATE/android/$n.mobilecli "$SIM_PREFIX/node_modules/.bin/mobilecli" daemon stop </dev/null >/dev/null 2>&1 || true
+        systemctl --user start "$unit" >/dev/null 2>&1 || die "could not start $unit (sim android logs $n)"
+      fi
+      # Checked on every wake: an emulator restarted behind this session's back is up but not booted yet.
+      [ "$( (eval "$(sim_android_env "$n")"; timeout 10 adb shell getprop sys.boot_completed) 2>/dev/null | tr -d '\r')" = 1 ] \
+        || sim_android_wait "$n" "${SIM_BOOT_TIMEOUT:-180}" \
+        || unavailable "$(sim_android_serial "$n") did not boot within ${SIM_BOOT_TIMEOUT:-180} s (sim android logs $n)" ;;
+    ios)
+      sim_mac_probe || rc=$?
+      case $rc in
+        0) ;;
+        2) die "AGENT_IOS_HOST and AGENT_IOS_USER must be set in .env (docs/simulators-plan.md)" ;;
+        *) unavailable "mac unreachable: $AGENT_IOS_USER@$AGENT_IOS_HOST did not answer within ${SIM_MAC_PROBE_TIMEOUT:-5} s; try again later (sim status)" ;;
+      esac
+      if [ -e "$SIM_STATE/ios/$n.down" ] || [ ! -e "$SIM_STATE/ios/$n.booted" ]; then
+        echo "sim: booting $(sim_ios_name "$n") on the Mac" >&2
+        sim_ios_boot "$n" || die "could not boot $(sim_ios_name "$n") on $AGENT_IOS_HOST (sim ios start $n shows why)"
+        touch "$SIM_STATE/ios/$n.booted"; rm -f "$SIM_STATE/ios/$n.down"
+      fi ;;
+  esac
+}
+
 sub=${1:-}; [ $# -gt 0 ] && shift
 case $sub in
   status) cmd_status ;;
@@ -558,5 +595,6 @@ case $sub in
   lease) cmd_lease "$@" ;;
   release) cmd_release "$@" ;;
   _hold) cmd_hold "$@" ;;
+  _wake) cmd_wake "$@" ;;
   *) usage ;;
 esac

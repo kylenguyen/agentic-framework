@@ -1,7 +1,7 @@
 #!/bin/sh
 # e2e stand-in for Xcode's xcrun on the fake Mac (tests/e2e/sim-mac.sh): only `simctl`, only what sim uses.
 # Simulators agent-ios-1 and agent-ios-2 exist; the state of each (Booted or Shutdown) is ~/simstate/<name>, absent
-# meaning Shutdown. Every call is logged to ~/xcrun.log.
+# meaning Shutdown. Every call is logged to ~/xcrun.log. bootstatus fails while ~/bootstatus.fail exists.
 st=$HOME/simstate
 mkdir -p "$st"
 printf '%s\n' "$*" >> "$HOME/xcrun.log"
@@ -19,6 +19,7 @@ case "${1:-} ${2:-}" in
     echo "iOS 26.0 (26.0 - 23A343) - com.apple.CoreSimulator.SimRuntime.iOS-26-0" ;;
   bootstatus*)
     known "$2"
+    [ ! -e "$HOME/bootstatus.fail" ] || { echo "Unable to boot device: $2 (bootstatus.fail)" >&2; exit 1; }
     echo Booted > "$st/$2"
     echo "Device already booted, nothing to do." ;;
   shutdown*)

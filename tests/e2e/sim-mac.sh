@@ -213,11 +213,12 @@ has " booted " "$(status_of ios 1)" "reap: and sim status shows it booted"
 
 say "the Mac drops off during sim-mcp ios (today's behaviour; T8 flips this)"
 mac_drop && ok "drop: mac disconnected from $NET" || bad "drop: mac disconnected from $NET"
+hx rm -f "$STATE/ios/mac.state"     # no cached "up" from the calls above: the wake probes the Mac (T3 TTL 30 s)
 mcp_call s1 4 screenshot
 rc=$(mcp_rc s1 40)
 [ "$rc" != timeout ] && [ "$rc" != 0 ] && ok "drop: sim-mcp ios ends with an error once the link is gone (rc $rc; T8 flips this)" \
   || bad "drop: sim-mcp ios ends with an error once the link is gone (T8 flips this)" "rc [$rc] $(mcp_err s1)"
-check "drop: the call got no answer" "" "$(mcp_reply s1 4)"
+has "mac unreachable" "$(mcp_reply s1 4)" "drop: the call gets a tool error saying the Mac is unreachable (T5 relay)"
 check "drop: the lease is freed (T8 flips this)" free "$(status_of ios 1 | awk '{print $NF}')"
 mcp_stop s1
 mac_restore && ok "drop: the link comes back" || bad "drop: the link comes back"
@@ -280,6 +281,23 @@ case $st in *" booted "*|*" off "*) ok "thawed: sim status shows ios booted or o
   *) bad "thawed: sim status shows ios booted or off again" "$st" ;; esac
 run hx sim ios sync
 check "thawed: sim ios sync works again" 0 "$RC"
+
+say "sim-mcp ios: a simulator that does not boot (relay)"
+mx sh -c 'echo Shutdown > simstate/agent-ios-1; touch bootstatus.fail'
+mcp_start s2 ios
+mcp_init s2 && ok "no boot: initialize answered" || bad "no boot: initialize answered" "$(mcp_err s2)"
+mcp_call s2 1 screenshot
+mcp_wait s2 '"id":1,' 40 || bad "no boot: the call is answered" "$(mcp_err s2)"
+r=$(mcp_reply s2 1)
+check "no boot: the call gets a tool error" true "$(printf '%s' "$r" | hxi jq -r .result.isError)"
+has "could not boot agent-ios-1" "$(printf '%s' "$r" | hxi jq -r '.result.content[0].text')" "no boot: its text says the simulator could not boot"
+lacks "call screenshot" "$(mx cat xcodebuildmcp.log | tail -1)" "no boot: the call never reached XcodeBuildMCP"
+mx rm -f bootstatus.fail
+mcp_call s2 2 screenshot
+mcp_wait s2 '"id": 2,' 40 && ok "no boot: the next call boots it and is answered" || bad "no boot: the next call boots it and is answered" "$(mcp_err s2)"
+check "no boot: agent-ios-1 is Booted again" Booted "$(mx cat simstate/agent-ios-1)"
+mcp_stop s2
+check "no boot: the session ends cleanly" 0 "$(mcp_rc s2 20)"
 
 pass=$(grep -c '^ok$' "$T/results"); fail=$(grep -c '^FAIL$' "$T/results")
 printf '\n%d passed, %d failed (%ds)\n' "$pass" "$fail" "$SECONDS"
