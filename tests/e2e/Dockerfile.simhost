@@ -1,0 +1,10 @@
+# sim-mac.sh "host": the agent host's side of the iOS sim path on Debian: bash 5, util-linux (flock), rsync, the ssh
+# client, jq, git, node (tests/mcp-probe.mjs) and python3. The login is `agent`; sim-mac.sh copies the repo in, writes
+# .env and the ssh config, and builds the test worktree /w/app.wt/feat. No sshd: nothing connects to this container.
+FROM debian:12-slim
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      bash util-linux procps rsync openssh-client jq git curl ca-certificates nodejs python3 \
+    && rm -rf /var/lib/apt/lists/*
+RUN useradd -m -s /bin/bash agent && install -d -o agent -g agent /w
+CMD ["sleep", "infinity"]

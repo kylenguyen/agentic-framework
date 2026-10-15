@@ -1,0 +1,26 @@
+#!/bin/sh
+# e2e stand-in for npx on the fake Mac (tests/e2e/sim-mac.sh). `npx expo start --port P` serves Metro's status
+# endpoint on P (/status -> packager-status:running) until killed; the process keeps "expo start ... --port P" in
+# its command line, so `pkill -f 'expo start.*--port P'` finds it as it finds the real one. Anything else is only
+# logged to ~/npx.log.
+printf '%s\n' "$*" >> "$HOME/npx.log"
+[ "${1:-} ${2:-}" = "expo start" ] || exit 0
+port=8081
+for a; do
+  case $prev in --port) port=$a ;; esac
+  case $a in --port=*) port=${a#*=} ;; esac
+  prev=$a
+done
+exec python3 -c '
+import http.server, sys
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = b"packager-status:running" if self.path == "/status" else b"metro stub"
+        self.send_response(200 if self.path == "/status" else 404)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+    def log_message(self, *a):
+        pass
+http.server.ThreadingHTTPServer(("0.0.0.0", int(sys.argv[-1])), H).serve_forever()
+' expo start --port "$port"

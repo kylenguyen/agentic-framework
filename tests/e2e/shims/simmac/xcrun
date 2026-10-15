@@ -1,0 +1,29 @@
+#!/bin/sh
+# e2e stand-in for Xcode's xcrun on the fake Mac (tests/e2e/sim-mac.sh): only `simctl`, only what sim uses.
+# Simulators agent-ios-1 and agent-ios-2 exist; the state of each (Booted or Shutdown) is ~/simstate/<name>, absent
+# meaning Shutdown. Every call is logged to ~/xcrun.log.
+st=$HOME/simstate
+mkdir -p "$st"
+printf '%s\n' "$*" >> "$HOME/xcrun.log"
+state() { cat "$st/$1" 2>/dev/null || echo Shutdown; }
+known() { case $1 in agent-ios-1|agent-ios-2) return 0 ;; esac; echo "Invalid device: $1" >&2; exit 164; }
+[ "${1:-}" = simctl ] || { echo "xcrun stub: only simctl is supported" >&2; exit 1; }
+shift
+case "${1:-} ${2:-}" in
+  "list devices"*)
+    echo "== Devices =="
+    echo "-- iOS 26.0 --"
+    for n in 1 2; do printf '    agent-ios-%s (0000000%s-AAAA-4BBB-8CCC-DDDDDDDDDDDD) (%s) \n' "$n" "$n" "$(state "agent-ios-$n")"; done ;;
+  "list runtimes"*)
+    echo "== Runtimes =="
+    echo "iOS 26.0 (26.0 - 23A343) - com.apple.CoreSimulator.SimRuntime.iOS-26-0" ;;
+  bootstatus*)
+    known "$2"
+    echo Booted > "$st/$2"
+    echo "Device already booted, nothing to do." ;;
+  shutdown*)
+    known "$2"
+    [ "$(state "$2")" = Booted ] || { echo "Unable to shutdown device in current state: Shutdown" >&2; exit 149; }
+    echo Shutdown > "$st/$2" ;;
+  *) echo "xcrun stub: unsupported: simctl $*" >&2; exit 1 ;;
+esac

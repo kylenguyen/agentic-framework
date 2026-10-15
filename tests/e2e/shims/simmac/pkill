@@ -1,0 +1,13 @@
+#!/bin/sh
+# e2e stand-in for macOS pkill on the fake Mac (tests/e2e/sim-mac.sh): BSD pkill leaves out its own ancestors, procps
+# pkill does not. sim runs `pkill -f 'expo start.*--port P'` inside an ssh command, so the remote shell's own command
+# line holds the pattern: procps pkill would kill that shell, the real Mac does not. Takes pgrep's arguments, sends
+# TERM, exits 0 when it signalled something.
+anc=" "; p=$$
+while [ "${p:-1}" -gt 1 ]; do anc="$anc$p "; p=$(ps -o ppid= -p "$p" | tr -d ' '); done
+rc=1
+for pid in $(/usr/bin/pgrep "$@"); do
+  case $anc in *" $pid "*) continue ;; esac
+  kill "$pid" 2>/dev/null && rc=0
+done
+exit $rc

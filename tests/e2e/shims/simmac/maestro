@@ -1,0 +1,19 @@
+#!/bin/sh
+# e2e stand-in for Maestro on the fake Mac (tests/e2e/sim-mac.sh). Logs its arguments to ~/maestro.log and its
+# working directory to ~/maestro.cwd, writes a log and a screenshot into every --debug-output and --test-output-dir
+# directory and a report at every --output path, then exits with the code in ~/maestro.rc (default 0).
+printf '%s\n' "$*" >> "$HOME/maestro.log"
+pwd > "$HOME/maestro.cwd"
+out() { # out <flag> <path>
+  case $1 in
+    --debug-output|--test-output-dir) mkdir -p "$2" && echo "maestro stub $1" > "$2/maestro.log" && echo png > "$2/screenshot-failed.png" ;;
+    --output) mkdir -p "$(dirname "$2")" && echo '<testsuites/>' > "$2" ;;
+  esac
+}
+prev=
+for a; do
+  case $a in --debug-output=*|--test-output-dir=*|--output=*) out "${a%%=*}" "${a#*=}" ;; esac
+  out "$prev" "$a"
+  prev=$a
+done
+exit "$(cat "$HOME/maestro.rc" 2>/dev/null || echo 0)"

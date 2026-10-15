@@ -1,0 +1,52 @@
+#!/usr/bin/python3
+# e2e stand-in for the launcher install-ios-runner.sh writes (tests/e2e/sim-mac.sh): sim-xcodebuildmcp <N>, a stdio
+# MCP server, one JSON-RPC message per line. Answers initialize, tools/list (screenshot, session_set_defaults) and
+# tools/call, whose text is JSON: the tool, its arguments, this process's call count, its pid and the slot. Logs
+# start, every call and exit to ~/xcodebuildmcp.log.
+import json, os, sys
+
+if len(sys.argv) < 2 or sys.argv[1] not in [str(n) for n in range(1, 10)]:
+    print("usage: sim-xcodebuildmcp <slot 1-9>", file=sys.stderr)
+    sys.exit(2)
+slot, pid, calls = sys.argv[1], os.getpid(), 0
+LOG = os.path.expanduser("~/xcodebuildmcp.log")
+
+def log(msg):
+    with open(LOG, "a") as f:
+        f.write(f"{msg} slot={slot} pid={pid}\n")
+
+TOOLS = [
+    {"name": "screenshot", "description": "stub", "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "session_set_defaults", "description": "stub", "inputSchema": {"type": "object", "properties": {}}},
+]
+log("start")
+while True:
+    line = sys.stdin.readline()
+    if not line:
+        break
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        msg = json.loads(line)
+    except ValueError:
+        continue
+    if "id" not in msg:
+        continue                      # a notification: no answer
+    method, params = msg.get("method"), msg.get("params") or {}
+    if method == "initialize":
+        result = {"protocolVersion": params.get("protocolVersion", "2025-06-18"), "capabilities": {"tools": {}},
+                  "serverInfo": {"name": "xcodebuildmcp-stub", "version": "0"}}
+    elif method == "tools/list":
+        result = {"tools": TOOLS}
+    elif method == "tools/call":
+        calls += 1
+        log(f"call {params.get('name')}")
+        text = json.dumps({"tool": params.get("name"), "arguments": params.get("arguments", {}), "calls": calls,
+                           "pid": pid, "slot": slot})
+        result = {"content": [{"type": "text", "text": text}]}
+    else:
+        print(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "error": {"code": -32601, "message": f"no {method}"}}), flush=True)
+        continue
+    print(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": result}), flush=True)
+log("exit")

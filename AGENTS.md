@@ -70,6 +70,7 @@ phase 5 or 6, update this table and section 8 of the plan doc.
 | `tests/params-test.sh` | unit tests for `lib/params.sh`, every rendered template checked with real tools, dry runs of `install-mac.sh` and `install-linux.sh --no-packages`, and the literal scan | anywhere; no sudo or network |
 | `tests/e2e/run.sh` | two Docker containers, a host (`box`, real sshd, login `alice`) and a Mac stand-in with two Mac users: both install scripts twice against each other, key login, idempotency, Cmd+V routing through the rendered WezTerm module under Lua 5.4 (`wezterm-paste.lua`, stub `wezterm` table), the spool, the `xclip` calls Claude Code makes, OSC 52, a second Mac, and the picker under `AGENT_PICK_FILTER` | docker without sudo; network for the image builds |
 | `tests/e2e/linux.sh` | `install-linux.sh` on Ubuntu, Debian, Fedora, Arch and openSUSE (`Dockerfile.linux`, `DISTROS=` for a subset) against the run.sh host image: packages through sudo with a password (`shims/linux/askpass`), key login, `clip-push` against a real X clipboard (Xvfb) and on Ubuntu a real Wayland one (headless sway), the Linux paste key through `wezterm-paste.lua`, a second run with no prompts, and the refusal on the host | docker without sudo; network during the run (distro mirrors) |
+| `tests/e2e/sim-mac.sh` | the iOS sim path over real ssh and rsync: a Debian "host" running `sim` and `sim-mcp` from the working tree, and a fake Mac (`Dockerfile.simmac`, sshd, zsh login `runner`, shims in `shims/simmac`, the real `sim-maestro` launcher): sync, `sim-mcp ios` through `mcp-probe.mjs`, leases, `sim maestro ios`, `sim reap`, a dropped link. `AF_SIM_PREFIX` names its containers, `KEEP=1` | docker without sudo; network for the image builds |
 | `tests/e2e/tui.sh` | the picker as a human meets it: keystrokes into a real `agent pick` over `ssh -tt`, every menu row and flow, two Macs on one session | same containers; about 12 min |
 | `tests/e2e/harness-paste.sh` | a pasted image path attached inside the real Claude Code, Oh My Pi and OpenCode (`Dockerfile.harness`, versions pinned to the live host). The indicator strings are version-specific; run it when a harness is upgraded | docker without sudo; network and a few hundred MB for the first build |
 
@@ -140,6 +141,7 @@ bash tests/agent-test.sh             # N passed, 0 failed
 bash tests/params-test.sh            # N passed, 0 failed
 bash tests/e2e/run.sh                # about 3 min; N passed, 0 failed
 bash tests/e2e/linux.sh              # about 10 min with five distros; N passed, 0 failed
+bash tests/e2e/sim-mac.sh            # under a minute after the image builds; N passed, 0 failed
 bash tests/e2e/tui.sh                # about 12 min; N passed, 0 failed
 bash tests/e2e/harness-paste.sh      # about 4 min plus the first image build; N passed, 0 failed
 shellcheck -x install-host.sh install-mac.sh install-linux.sh tests/e2e/linux.sh bin/agent bin/xclip bin/clip-put config/statusline-command.sh config/bashrc.d/*.sh tests/e2e/harness-paste.sh
@@ -156,7 +158,8 @@ S=$(mktemp); printf plain | CLIP_BRIDGE_SPOOL=$S bin/clip-put && CLIP_BRIDGE_SPO
 python3 -m json.tool config/claude-settings.json >/dev/null
 ```
 
-Which suite to run: `sim-test.sh` for `lib/sim.sh`, `bin/sim`, `bin/sim-mcp` or the unit, plus the live
+Which suite to run: `sim-test.sh` for `lib/sim.sh`, `bin/sim`, `bin/sim-mcp` or the unit, `e2e/sim-mac.sh` as well
+when the iOS path, ssh or the relay changes, plus the live
 checks in README section 6 when the emulator, an MCP version or the Mac side changes; `agent-test.sh` for `bin/agent` or the login fragment; `params-test.sh` for anything
 under `lib/`, a template, or a doc (the literal scan); `e2e/run.sh` for any install script, `lib/client.sh` or the
 clipboard bridge; `e2e/linux.sh` as well for `install-linux.sh`, `lib/client.sh`, the Linux `clip-push` or the
