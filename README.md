@@ -381,7 +381,7 @@ runner: `rm -rf ~/sims ~/.local/bin/sim-xcodebuildmcp ~/.local/bin/sim-maestro ~
   must prompt for nothing. Needs network during the run. Not covered: a real desktop session and WezTerm itself.
 - `tests/e2e/sim-mac.sh`: the iOS simulator path over real ssh and rsync, between a host container running `sim`
   and `sim-mcp` and a fake Mac (sshd, a zsh login, stubs for `xcrun`, Maestro and XcodeBuildMCP, the real
-  `sim-maestro` launcher): sync, an MCP session, `sim maestro ios`, `sim reap` and a dropped link. Containers are
+  `sim-maestro` launcher): sync, an MCP session, `sim maestro ios`, `sim reap` and a dropped link the session reconnects through. Containers are
   named after `AF_SIM_PREFIX` (default `af-sim`), so runs can go side by side. Not covered: macOS, Xcode, a device.
 - `tests/e2e/harness-paste.sh`: the pasted path into the real Claude Code, Oh My Pi and OpenCode in a third
   container image (`tests/e2e/Dockerfile.harness`, versions pinned), each harness having to show the image

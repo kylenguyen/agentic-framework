@@ -11,7 +11,8 @@
 # device that does not come up turns the call into a tool error with the reason; other messages are not held up.
 #   android  mobile-mcp, seeing only its own emulator (the slot's adb server)
 #   web      Playwright MCP, headless, in-memory profile; SIM_WEB_BROWSER=webkit|firefox|chromium (default chromium)
-#   ios      XcodeBuildMCP on the Mac over ssh, its session defaults pinned to simulator agent-ios-N
+#   ios      XcodeBuildMCP on the Mac over ssh, its session defaults pinned to simulator agent-ios-N. When the Mac drops
+#            off, the session and its lease stay: calls get a "reconnecting" tool error until the relay is back
 set -euo pipefail
 REPO=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)
 . "$REPO/lib/sim.sh"
@@ -21,6 +22,7 @@ platform=${1:-}
 case $platform in android|web|ios) ;; *) echo "usage: sim-mcp <android|web|ios>" >&2; exit 2 ;; esac
 sim_load_params
 root=$(sim_root)
+relay_opts=()
 sim_lease "$platform" "$root" || exit 1
 n=$SIM_SLOT
 say "$platform slot $n leased for $root (bin/sim status)"
@@ -55,6 +57,9 @@ case $platform in
     esac
     rm -f "$SIM_STATE/ios/$n.booted"     # a new session checks the simulator once, whatever the last one saw
     server=(ssh "${SIM_SSH_SOLO_OPTS[@]}" "${SIM_SSH_OPTS[@]}" -T "$AGENT_IOS_USER@$AGENT_IOS_HOST" ".local/bin/sim-xcodebuildmcp $n")
+    # A dropped link does not end the session: the relay keeps the lease and reconnects (bin/sim-mcp-relay.mjs).
+    relay_opts=(--reconnect --host "$AGENT_IOS_USER@$AGENT_IOS_HOST"
+      --on-drop "$(printf '%q ' "$REPO/bin/sim" _mac down "$n")" --on-up "$(printf '%q ' "$REPO/bin/sim" _mac up "$n")")
     ;;
 esac
 
@@ -64,7 +69,7 @@ esac
 # or by signalling this process: pass the signal on, so no server outlives its lease.
 "${SIM_RELAY_NODE:-node}" "$REPO/bin/sim-mcp-relay.mjs" --platform "$platform" --slot "$n" \
   --wake "$(printf '%q ' "$REPO/bin/sim" _wake "$platform" "$n")" --pgid-file "$SIM_STATE/$platform/$n.pgid" \
-  -- "${server[@]}" {SIM_LOCK_FD}>&- <&0 &      # <&0: an async command would get /dev/null
+  "${relay_opts[@]}" -- "${server[@]}" {SIM_LOCK_FD}>&- <&0 &      # <&0: an async command would get /dev/null
 child=$!
 trap 'kill -TERM "$child" 2>/dev/null' TERM INT HUP
 while :; do

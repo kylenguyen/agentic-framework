@@ -29,12 +29,13 @@ done
 # ssh running the Maestro launcher exits with the code in $T/ssh.rc; `sim-maestro --version` prints $T/sim-maestro.version (2). `simctl list devices` prints $T/simctl.list.
 # The Metro readiness loop (its last argument) is run by sh here.
 # While $T/ssh.down exists every call is logged, then fails as one to an unreachable host does (255).
+# With $T/mcp.fake present, the MCP launcher is that script run on the real node (tests/sim/62-ios-reconnect.sh).
 cat > "$T/shims/ssh" <<EOF
 #!/bin/sh
 printf '%s\n' "\$*" >> "$T/log/ssh"
 [ -e "$T/ssh.down" ] && exit 255
 case "\$*" in
-  *sim-xcodebuildmcp*) cat > /dev/null ;;
+  *sim-xcodebuildmcp*) [ -e "$T/mcp.fake" ] && exec "$SIM_RELAY_NODE" "$T/mcp.fake"; cat > /dev/null ;;
   *"sim-maestro --version"*) cat "$T/sim-maestro.version" 2>/dev/null || echo 2 ;;
   *sim-maestro*) exit "\$(cat "$T/ssh.rc" 2>/dev/null || echo 0)" ;;
   *"simctl list devices"*) cat "$T/simctl.list" 2>/dev/null ;;

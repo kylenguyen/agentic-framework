@@ -761,6 +761,19 @@ cmd_wake() {
   esac
 }
 
+# sim _mac down|up <N> (hidden, run by bin/sim-mcp-relay.mjs for sim-mcp ios): down when the session's link to the
+# Mac drops (the Mac cached as down, its shared ssh master dropped), up once the relay has reconnected (cached as up,
+# <N>.booted removed so the next wake checks the simulator again).
+cmd_mac() {
+  local s=${1:-} n=${2:-}
+  [[ $n =~ ^[1-9]$ ]] || usage
+  case $s in
+    down) sim_mac_record down ;;
+    up) sim_mac_record up; rm -f "$SIM_STATE/ios/$n.booted" ;;
+    *) usage ;;
+  esac
+}
+
 sub=${1:-}; [ $# -gt 0 ] && shift
 case $sub in
   status) cmd_status ;;
@@ -779,5 +792,6 @@ case $sub in
   release) cmd_release "$@" ;;
   _hold) cmd_hold "$@" ;;
   _wake) cmd_wake "$@" ;;
+  _mac) cmd_mac "$@" ;;
   *) usage ;;
 esac

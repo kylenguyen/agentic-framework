@@ -212,19 +212,42 @@ mcp_wait s1 '"id": 3,' && ok "reap: the next tool call is answered" || bad "reap
 check "reap: ...after booting agent-ios-1 again" Booted "$(mx cat simstate/agent-ios-1)"
 has " booted " "$(status_of ios 1)" "reap: and sim status shows it booted"
 
-say "the Mac drops off during sim-mcp ios (today's behaviour; T8 flips this)"
+say "the Mac drops off during sim-mcp ios: the session and its lease survive (T8)"
+# Default reconnect schedule (5, 10, 30, then every 60 s). The Mac is cached as up, so the next call passes the wake
+# and goes into the dead link: the write fails within seconds (tcp_retries2=3), ssh exits, the relay answers the call.
+holder=$(status_of ios 1 | grep -o 'pid [0-9]*')
 mac_drop && ok "drop: mac disconnected from $NET" || bad "drop: mac disconnected from $NET"
-hx rm -f "$STATE/ios/mac.state"     # no cached "up" from the calls above: the wake probes the Mac (T3 TTL 30 s)
+hx bash -c 'echo "up $(date +%s)" > "$1/ios/mac.state"' _ "$STATE"
 mcp_call s1 4 screenshot
-rc=$(mcp_rc s1 40)
-[ "$rc" != timeout ] && [ "$rc" != 0 ] && ok "drop: sim-mcp ios ends with an error once the link is gone (rc $rc; T8 flips this)" \
-  || bad "drop: sim-mcp ios ends with an error once the link is gone (T8 flips this)" "rc [$rc] $(mcp_err s1)"
-has "mac unreachable" "$(mcp_reply s1 4)" "drop: the call gets a tool error saying the Mac is unreachable (T5 relay)"
-check "drop: the lease is freed (T8 flips this)" free "$(status_of ios 1 | awk '{print $NF}')"
-mcp_stop s1
+mcp_wait s1 '"id": ?4,' 60 || bad "drop: the call in flight is answered" "$(mcp_err s1)"
+has "reconnecting" "$(mcp_reply s1 4)" "drop: the call in flight gets a tool error saying it is reconnecting"
+check "drop: ...as isError" true "$(mcp_reply s1 4 | hxi jq -r .result.isError)"
+mcp_call s1 5 screenshot
+mcp_wait s1 '"id": ?5,' 10
+has "mac unreachable (runner@mac), reconnecting, attempt" "$(mcp_reply s1 5)" "drop: a call during the outage gets the reconnecting error"
+st=$(status_of ios 1)
+has "leased" "$st" "drop: sim status still shows ios 1 leased"
+check "drop: ...by the same sim-mcp" "$holder" "$(printf '%s' "$st" | grep -o 'pid [0-9]*')"
+has "down" "$(hx cat "$STATE/ios/mac.state")" "drop: the Mac is cached as down"
 mac_restore && ok "drop: the link comes back" || bad "drop: the link comes back"
-run hx node "$AF/tests/mcp-probe.mjs" --call screenshot '{}' -- sim-mcp ios
-check "drop: a new session works after the link is back" 0 "$RC"
+SECONDS_AT=$SECONDS
+hx timeout 70 bash -c 'until grep -q "reconnected to runner@mac after" /tmp/mcp-s1/err; do sleep 0.5; done' \
+  && ok "drop: reconnected within 70 s of the link coming back ($((SECONDS - SECONDS_AT))s)" \
+  || bad "drop: reconnected within 70 s of the link coming back" "$(mcp_err s1)"
+mcp_call s1 6 screenshot
+mcp_wait s1 '"id": ?6,' 40 || bad "drop: a call after the reconnect is answered" "$(mcp_err s1)"
+r6=$(mcp_reply s1 6 | hxi jq -r '.result.content[0].text | fromjson | "\(.calls) \(.inits) \(.pid)"')
+check "drop: the new server had initialize and session_set_defaults replayed (calls 2, inits 1)" "2 1" "${r6% *}"
+[ -n "${r6##* }" ] && [ "${r6##* }" != "${r1#* }" ] && ok "drop: ...and is a new process (pid ${r1#* } -> ${r6##* })" \
+  || bad "drop: ...and is a new process" "[$r6] vs [$r1]"
+check "drop: the Mac's log shows initialize, the replay, then the call on the new server" \
+  "initialize|call session_set_defaults|call screenshot" \
+  "$(mx grep "pid=${r6##* }$" xcodebuildmcp.log | grep -v start | sed 's/ slot=.*//' | paste -sd'|')"
+lacks "sim-replay" "$(mcp_out s1)" "drop: the harness never sees a sim-replay id"
+check "drop: sim status still shows the same holder" "$holder" "$(status_of ios 1 | grep -o 'pid [0-9]*')"
+mcp_stop s1
+check "drop: the session ends cleanly" 0 "$(mcp_rc s1 20)"
+check "drop: the lease is freed when it ends" free "$(status_of ios 1 | awk '{print $NF}')"
 
 say "remote paths: a worktree with a space and a ' in its paths"
 # /w/my app.wt/feat with its app in o'k app/: the tree name drops the space, the app directory keeps both.
