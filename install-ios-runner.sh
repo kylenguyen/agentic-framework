@@ -97,18 +97,27 @@ note "ok"
 say "Launcher ~/.local/bin/sim-maestro"
 cat > "$HOME/.local/bin/sim-maestro" <<'EOF'
 #!/bin/bash
-# Written by install-ios-runner.sh (agentic-framework). sim-maestro <N> <maestro args...>: Maestro on simulator
-# agent-ios-N, analytics off. Run over ssh by `sim maestro ios` on the agent host, from the synced worktree. A run's
-# debug output goes to ~/.cache/agent-sim/maestro-N, emptied first, which the host copies back afterwards.
-case "${1:-}" in [1-9]) ;; *) echo "usage: sim-maestro <slot 1-9> <maestro args...>" >&2; exit 2 ;; esac
-n=$1; shift
+# Written by install-ios-runner.sh (agentic-framework). sim-maestro <N> <run-id> <maestro args...>: Maestro on simulator
+# agent-ios-N, analytics off. Run over ssh by `sim maestro ios` on the agent host, from the synced worktree. The host
+# names the run and passes every output path itself, under ~/.cache/agent-sim/maestro-N/runs/<run-id>, which it copies
+# back afterwards; this keeps the last 3 runs there. `sim-maestro --version` prints the contract version the host checks.
+case "${1:-}" in
+  --version) echo 2; exit 0 ;;
+  [1-9]) ;;
+  *) echo "usage: sim-maestro <slot 1-9> <run-id> <maestro args...>" >&2; exit 2 ;;
+esac
+n=$1; id=${2:-}
+case $id in [0-9]*[0-9]) case $id in *[!0-9-]*) id= ;; esac ;; *) id= ;; esac
+[ -n "$id" ] || { echo "sim-maestro: expected a run id YYYYmmdd-HHMMSS, got: ${2:-nothing} (is the host's sim older than this launcher?)" >&2; exit 2; }
+shift 2
 export PATH="$HOME/.local/bin:$HOME/.local/share/mise/shims:$PATH"
 udid=$(xcrun simctl list devices | sed -n "s/^ *agent-ios-$n (\([0-9A-F-]*\)).*/\1/p" | head -1)
 [ -n "$udid" ] || { echo "sim-maestro: no simulator agent-ios-$n on this Mac (sim ios bootstrap)" >&2; exit 1; }
 export MAESTRO_CLI_NO_ANALYTICS=1 MAESTRO_CLI_ANALYSIS_NOTIFICATION_DISABLED=true
-out=$HOME/.cache/agent-sim/maestro-$n
-rm -rf "$out"; mkdir -p "$out"
-if [ "${1:-}" = test ]; then shift; set -- test --debug-output "$out/debug" --test-output-dir "$out/output" "$@"; fi
+runs=$HOME/.cache/agent-sim/maestro-$n/runs
+mkdir -p "$runs/$id"
+# Keep this run and the two before it. Run ids sort by time, and hold only digits and -.
+for old in $(ls -1 "$runs" | sort -r | tail -n +4); do rm -rf "$runs/$old"; done
 exec maestro --device "$udid" "$@"
 EOF
 chmod 755 "$HOME/.local/bin/sim-maestro"

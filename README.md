@@ -33,6 +33,7 @@ No script, template or config carries a host name, address or login. They come f
 | `AGENT_HOST_LAN_IP` | host address on the LAN, for `ssh <alias>-lan` | `src` of the default route | `.env`, optional |
 | `AGENT_IOS_HOST`, `AGENT_IOS_USER` | the Mac that runs the iOS simulators and its runner login (section 6) | `.env`, optional; empty means no iOS | not used |
 | `AGENT_SIM_ANDROID_SLOTS`, `AGENT_SIM_WEB_SLOTS`, `AGENT_SIM_IOS_SLOTS` | simulator slots per platform, 0 to 9 | `.env`, default 3, 3, 2 | not used |
+| `AGENT_SIM_KEEP_RUNS` | `sim maestro` run directories kept per slot on the host, 1 to 50 | `.env`, default 5 | not used |
 
 `.env` values override the derived ones, except the login. The host script writes `.env` on its first run and
 prints the lines for the clients at the end. On a client, copy `.env.example` to `.env` and edit it, or let the
@@ -311,7 +312,7 @@ host$ cd ~/workspace/agentic-framework && node tests/mcp-probe.mjs --call browse
 host$ sim android start 1 && sleep 90 && ANDROID_ADB_SERVER_PORT=5038 ~/Android/Sdk/platform-tools/adb devices   # emulator-5600  device
 host$ node tests/mcp-probe.mjs --call mobile_list_available_devices '{}' -- sim-mcp android 2>/dev/null | tail -1   # one device (named after the AVD)
 host$ cd ~/workspace/<repo> && sim maestro android test .maestro/   # with a sim-android session open in that worktree; the first run builds the image
-host$ cd ~/workspace/<repo>/<app> && sim maestro ios test .maestro/   # with a sim-ios session and the app installed on its simulator; ends with "debug output: <path>"
+host$ cd ~/workspace/<repo>/<app> && sim maestro ios test .maestro/   # with a sim-ios session and the app installed on its simulator; ends with "maestro run <id>: <dir>" and "latest: <dir>"
 host$ sim android stop all
 host$ cd ~/workspace/<repo> && sim lease web --ttl 1h && sim status && sim release web   # a slot without a harness session; status shows "leased cli until"
 host$ systemctl --user list-timers agent-sim-reap.timer   # next run within 5 minutes

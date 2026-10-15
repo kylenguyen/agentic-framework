@@ -26,7 +26,7 @@ for c in ssh rsync mise; do
   printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s/log/%s"\nexit 0\n' "$T" "$c" > "$T/shims/$c"
 done
 # ssh running the Mac's MCP launcher serves until stdin closes, as the real one does.
-# ssh running the Maestro launcher exits with the code in $T/ssh.rc. `simctl list devices` prints $T/simctl.list.
+# ssh running the Maestro launcher exits with the code in $T/ssh.rc; `sim-maestro --version` prints $T/sim-maestro.version (2). `simctl list devices` prints $T/simctl.list.
 # While $T/ssh.down exists every call is logged, then fails as one to an unreachable host does (255).
 cat > "$T/shims/ssh" <<EOF
 #!/bin/sh
@@ -34,6 +34,7 @@ printf '%s\n' "\$*" >> "$T/log/ssh"
 [ -e "$T/ssh.down" ] && exit 255
 case "\$*" in
   *sim-xcodebuildmcp*) cat > /dev/null ;;
+  *"sim-maestro --version"*) cat "$T/sim-maestro.version" 2>/dev/null || echo 2 ;;
   *sim-maestro*) exit "\$(cat "$T/ssh.rc" 2>/dev/null || echo 0)" ;;
   *"simctl list devices"*) cat "$T/simctl.list" 2>/dev/null ;;
 esac
@@ -82,7 +83,7 @@ chmod +x "$T/shims/"* "$T/prefix/node_modules/.bin/mobilecli"
 export PATH="$T/shims:$PATH" SIM_STATE=$T/state SIM_PREFIX=$T/prefix SIM_NODE=$T/shims/node HOME=$T/home
 mkdir -p "$HOME"
 unset AGENT_HOST AGENT_HOST_ADDRESS AGENT_HOST_USER AGENT_HOST_LAN_IP AGENT_IOS_HOST AGENT_IOS_USER \
-  AGENT_SIM_ANDROID_SLOTS AGENT_SIM_WEB_SLOTS AGENT_SIM_IOS_SLOTS AGENT_SIM_IDLE_MINUTES ANDROID_SERIAL ANDROID_ADB_SERVER_PORT \
+  AGENT_SIM_ANDROID_SLOTS AGENT_SIM_WEB_SLOTS AGENT_SIM_IOS_SLOTS AGENT_SIM_IDLE_MINUTES AGENT_SIM_KEEP_RUNS ANDROID_SERIAL ANDROID_ADB_SERVER_PORT \
   XDG_CACHE_HOME SIM_CACHE ANDROID_TMP
 lib() { . "$REPO/lib/sim.sh" && sim_load_params; }
 # a git worktree layout for the tests that need a root: $T/ws/app (checkout) and $T/ws/app.wt/feat (worktree)

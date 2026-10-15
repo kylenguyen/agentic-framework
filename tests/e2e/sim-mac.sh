@@ -185,13 +185,14 @@ say "sim maestro ios (session s1 holds the lease)"
 mx sh -c 'echo 1 > maestro.rc'
 run hx sim maestro ios test flows/
 check "maestro: the flow's exit code comes back (1)" 1 "$RC"
-has "debug output: $CACHE/ios/maestro-1" "$OUT" "maestro: says where the debug output landed"
+RUN1=$(hx readlink "$CACHE/ios/maestro-1/latest"); RUN1=${RUN1#runs/}
+has "maestro run $RUN1: $CACHE/ios/maestro-1/runs/$RUN1" "$OUT" "maestro: says where the run's directory is"
 check "maestro: ran in the synced app directory" "/home/runner/sims/$TREE/client" "$(mx cat maestro.cwd)"
-check "maestro: the launcher pinned the device and the output dirs" \
-  "--device 00000001-AAAA-4BBB-8CCC-DDDDDDDDDDDD test --debug-output /home/runner/.cache/agent-sim/maestro-1/debug --test-output-dir /home/runner/.cache/agent-sim/maestro-1/output flows/" \
+check "maestro: the device from the launcher, the output dirs from the host" \
+  "--device 00000001-AAAA-4BBB-8CCC-DDDDDDDDDDDD test --debug-output /home/runner/.cache/agent-sim/maestro-1/runs/$RUN1/debug --test-output-dir /home/runner/.cache/agent-sim/maestro-1/runs/$RUN1/output flows/" \
   "$(mx tail -1 maestro.log)"
 check "maestro: debug files arrived on the host" "debug/maestro.log debug/screenshot-failed.png output/maestro.log output/screenshot-failed.png" \
-  "$(hx sh -c "cd $CACHE/ios/maestro-1 && find . -type f | sed 's|^\./||' | sort" | paste -sd' ')"
+  "$(hx sh -c "cd $CACHE/ios/maestro-1/latest/ && find debug output -type f | sort" | paste -sd' ')"
 mx sh -c 'echo 0 > maestro.rc'
 run hx sim maestro ios test "$APP/flows/login.yaml"
 check "maestro: a passing run exits 0" 0 "$RC"
@@ -298,6 +299,32 @@ mcp_wait s2 '"id": 2,' 40 && ok "no boot: the next call boots it and is answered
 check "no boot: agent-ios-1 is Booted again" Booted "$(mx cat simstate/agent-ios-1)"
 mcp_stop s2
 check "no boot: the session ends cleanly" 0 "$(mcp_rc s2 20)"
+
+say "sim maestro ios: run directories and reports brought home"
+run hx sim lease ios
+has "leased for $WT" "$OUT" "runs: sim lease ios for the worktree"
+hx rm -rf "$APP/e2e"
+mx sh -c 'echo 1 > maestro.rc'
+run hx sim maestro ios test flows/ --output e2e/report.xml
+check "runs: the first run's rc is Maestro's (1)" 1 "$RC"
+R1=$(hx readlink "$CACHE/ios/maestro-1/latest"); R1=${R1#runs/}
+check "runs: the report arrives in the host worktree" '<testsuites/>' "$(hx cat "$APP/e2e/report.xml" 2>/dev/null)"
+has "--output /home/runner/.cache/agent-sim/maestro-1/runs/$R1/artifacts/client/e2e/report.xml" "$(mx tail -1 maestro.log)" \
+  "runs: Maestro wrote it into the run's artifacts on the Mac"
+mx sh -c 'echo 0 > maestro.rc'
+hx rm -f "$APP/e2e/report.xml"
+run hx sim maestro ios test flows/ --output e2e/report.xml
+check "runs: the second run exits 0" 0 "$RC"
+R2=$(hx readlink "$CACHE/ios/maestro-1/latest"); R2=${R2#runs/}
+[ -n "$R1" ] && [ -n "$R2" ] && [ "$R1" != "$R2" ] && ok "runs: latest moved to the second run" || bad "runs: latest moved to the second run" "$R1 $R2"
+hx test -d "$CACHE/ios/maestro-1/runs/$R1/debug" && hx test -d "$CACHE/ios/maestro-1/runs/$R2/debug" \
+  && ok "runs: both run directories are on the host, with their debug output" || bad "runs: both run directories are on the host, with their debug output"
+check "runs: cmd.txt records each rc" "rc: 1 rc: 0" \
+  "$(hx sh -c "tail -qn1 $CACHE/ios/maestro-1/runs/$R1/cmd.txt $CACHE/ios/maestro-1/runs/$R2/cmd.txt" | paste -sd' ')"
+check "runs: the report is in the host worktree again" '<testsuites/>' "$(hx cat "$APP/e2e/report.xml" 2>/dev/null)"
+check "runs: the Mac keeps the last 3 runs" "3" "$(mx sh -c 'ls .cache/agent-sim/maestro-1/runs | wc -l' | tr -d ' ')"
+mx test -d ".cache/agent-sim/maestro-1/runs/$R2" && ok "runs: ...the newest among them" || bad "runs: ...the newest among them"
+run hx sim release ios
 
 pass=$(grep -c '^ok$' "$T/results"); fail=$(grep -c '^FAIL$' "$T/results")
 printf '\n%d passed, %d failed (%ds)\n' "$pass" "$fail" "$SECONDS"

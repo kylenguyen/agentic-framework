@@ -10,7 +10,7 @@
 #   sim run <cmd...>                    run a command in that environment, e.g. sim run ./gradlew test
 #   sim ports <P> [k|--check]           this worktree's 100 ports for test stacks: eval "$(sim ports web)"; k lists k, --check busy ones
 #   sim build [args]                    from the app's directory: Metro if not running, then expo run:android for the slot
-#   sim maestro android|ios <args...>   Maestro on this worktree's emulator or simulator: sim maestro ios test .maestro/
+#   sim maestro android|ios <args...>   Maestro on this worktree's emulator or simulator, a directory per run: sim maestro ios test .maestro/
 #   sim metro start|stop|log <P>        Metro for this worktree's slot: android (adb reverse), web, ios (on the Mac)
 #   sim android start|stop|logs <N|all> the emulator units
 #   sim ios start|stop <N|all>          boot or shut down simulators agent-ios-N on the Mac
@@ -151,9 +151,10 @@ a boot (up to a minute). An Android emulator starts clean, so after an idle stop
   installs and opens the dev build. Drive it with the sim-android tools; JS edits reach the app without a rebuild.
   Never \`npx expo run:android\` directly: it would build for port 8081, which is not yours.
 - Maestro flows: \`sim maestro android test <flows>\` runs them on your emulator, \`sim maestro ios test <flows>\`
-  on your iOS simulator, with the app already installed there through the sim-ios tools. Flows must lie inside
-  this worktree. On iOS the run prints where its debug output (logs, screenshots of a failed step) lands on this
-  host. Never run \`maestro\` directly: it cannot see your device and hangs.
+  on your iOS simulator, with the app already installed there through the sim-ios tools. Flows and \`--output\`
+  paths must lie inside this worktree; reports land at those paths. Each run ends by printing its directory on
+  this host (logs, screenshots of a failed step, on Android logcat.txt) and a \`latest\` link to it. Never run
+  \`maestro\` directly: it cannot see your device and hangs.
 - Without a harness session (a script, CI), \`sim lease <android|web|ios>\` holds a slot for this worktree (8 h by
   default, \`--ttl\`) and \`sim release <platform>\` frees it.
 - iOS: \`sim ios prepare\` copies this worktree to the Mac and prints its path there; build and run it with the
@@ -239,19 +240,86 @@ cmd_build() {
   exec npx expo run:android --port "$port" "$@" </dev/null
 }
 
+# A Maestro run keeps its own directory on the host, $SIM_CACHE/<platform>/maestro-N/runs/<YYYYmmdd-HHMMSS>, with
+# debug/ and output/ (where a `test` run's --debug-output and --test-output-dir go unless the caller gave them),
+# artifacts/ (iOS: the caller's own output paths, on their way home), cmd.txt (the command and its rc) and, on
+# android, logcat.txt. maestro-N/latest links to the newest; only the last AGENT_SIM_KEEP_RUNS are kept.
+
+# maestro_args <root> <args...>: one pass over the arguments of `sim maestro <platform>`. sim's own flags are taken
+# out here, before Maestro sees any (add them as cases above the output flags). Maestro's output flags --output,
+# --test-output-dir and --debug-output, as `--x P` or `--x=P`, must name a path inside the worktree (rc 2), which is
+# made absolute. Sets MA_ARGS (Maestro's arguments), and per argument MA_OUT (the absolute output path it carries,
+# else empty) and MA_KEY (`--x=` when the path is in the same argument); MA_GIVEN lists the output flags given.
+maestro_args() {
+  local root=$1 a p; shift
+  MA_ARGS=(); MA_OUT=(); MA_KEY=(); MA_GIVEN=' '
+  while [ $# -gt 0 ]; do
+    a=$1; shift
+    case $a in
+      --output|--test-output-dir|--debug-output)
+        [ $# -gt 0 ] || die "$a needs a path" 2
+        p=$(maestro_out_path "$root" "$1") || exit; shift
+        MA_ARGS+=("$a" "$p"); MA_OUT+=("" "$p"); MA_KEY+=("" ""); MA_GIVEN+="$a " ;;
+      --output=*|--test-output-dir=*|--debug-output=*)
+        p=$(maestro_out_path "$root" "${a#*=}") || exit
+        MA_ARGS+=("${a%%=*}=$p"); MA_OUT+=("$p"); MA_KEY+=("${a%%=*}="); MA_GIVEN+="${a%%=*} " ;;
+      *) MA_ARGS+=("$a"); MA_OUT+=(""); MA_KEY+=("") ;;
+    esac
+  done
+}
+
+maestro_out_path() { # maestro_out_path <root> <path>: the path made absolute; it must lie inside the worktree
+  local p; p=$(realpath -m -- "$2" 2>/dev/null) || p=
+  case $p in "$1"/?*) printf '%s\n' "$p" ;; *) die "output paths must lie inside the worktree $1: $2" 2 ;; esac
+}
+
+# maestro_defaults <debug> <output>: MA_PRE, the flags sim adds right after `test` for the output flags not given.
+maestro_defaults() {
+  MA_PRE=()
+  [ "${MA_ARGS[0]:-}" = test ] || return 0
+  [[ $MA_GIVEN == *" --debug-output "* ]] || MA_PRE+=(--debug-output "$1")
+  [[ $MA_GIVEN == *" --test-output-dir "* ]] || MA_PRE+=(--test-output-dir "$2")
+}
+
+# maestro_new_run <base> <platform> <args...>: make the run directory under <base> (maestro-N), point latest at it,
+# prune to AGENT_SIM_KEEP_RUNS and write cmd.txt. Sets MR_ID and MR_DIR. Two runs in one second get -2, -3, ...
+maestro_new_run() {
+  local base=$1 p=$2 id i=1 old; shift 2
+  id=$(date +%Y%m%d-%H%M%S); MR_ID=$id
+  mkdir -p "$base/runs"
+  until mkdir "$base/runs/$MR_ID" 2>/dev/null; do
+    i=$((i + 1)); [ "$i" -le 99 ] || die "could not make a run directory in $base/runs"
+    MR_ID=$id-$i
+  done
+  MR_DIR=$base/runs/$MR_ID
+  mkdir -p "$MR_DIR/debug" "$MR_DIR/output" "$MR_DIR/artifacts"
+  ln -sfn "runs/$MR_ID" "$base/latest"
+  find "$base/runs" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort -V | head -n "-$AGENT_SIM_KEEP_RUNS" \
+    | while IFS= read -r old; do rm -rf -- "${base:?}/runs/$old"; done
+  { printf 'args:'; printf ' %q' sim maestro "$p" "$@"; echo; } > "$MR_DIR/cmd.txt"
+}
+
+maestro_end_run() { # maestro_end_run <base> <rc>: the rc into cmd.txt, and where the run is
+  echo "rc: $2" >> "$MR_DIR/cmd.txt"
+  echo "maestro run $MR_ID: $MR_DIR" >&2
+  echo "latest: $1/latest" >&2
+}
+
 # Maestro reaches devices only through adb servers on 5037 and 5038 and a direct scan of the emulator ports, where it
 # hangs on an emulator its slot's server already holds; ANDROID_ADB_SERVER_PORT means nothing to it. So it runs in a
 # container, a network namespace of its own, where both ports lead to this slot's adb server (maestro-entry.sh). The
 # host side of that is a relay container on the host network: the slot's adb server on 127.0.0.1:5037+N, offered as
 # a unix socket in a directory both containers mount. Paths Maestro is given must lie inside the worktree, which is
-# mounted at its own path, and so is its HOME, $SIM_CACHE/android/maestro-N, so the debug output path it prints
-# (.maestro/tests/<run>) is right on the host too.
+# mounted at its own path, and so is its HOME, $SIM_CACHE/android/maestro-N, which holds the run directories: Maestro
+# writes its output, and a caller's output paths, in place, and the paths it prints are right on the host too.
 maestro_android() {
   [ $# -gt 0 ] || usage
   command -v docker >/dev/null || die "sim maestro needs docker, usable without sudo"
-  local n root image name run home ttyf=() envs=() v rc
+  local n root image name run home ttyf=() envs=() v rc args keep logcat
+  root=$(sim_root)
+  maestro_args "$root" "$@"
   n=$(my_slot android) || exit 1
-  root=$(sim_root); image=$(sim_maestro_image); name=agent-sim-maestro-$n
+  image=$(sim_maestro_image); name=agent-sim-maestro-$n
   run=$SIM_STATE/android/$n.maestro; home=$SIM_CACHE/android/maestro-$n
   [ -z "$(docker ps -q --filter "name=^$name\$")" ] || die "a Maestro run is already going on android slot $n"
   sim_touch android "$n"
@@ -264,65 +332,108 @@ maestro_android() {
       || die "could not build $image"
   fi
   rm -rf -- "$run"; mkdir -p "$run" "$home"
+  maestro_new_run "$home" android "$@"
+  maestro_defaults "$MR_DIR/debug" "$MR_DIR/output"
+  args=("${MA_ARGS[@]:0:1}" "${MA_PRE[@]}" "${MA_ARGS[@]:1}")
   docker rm -f "$name-adb" >/dev/null 2>&1 || true
   docker run -d --rm --name "$name-adb" --network host --user "$(id -u):$(id -g)" -v "$run:/run/sim" \
     --entrypoint socat "$image" UNIX-LISTEN:/run/sim/adb.sock,fork,mode=600 "TCP:127.0.0.1:$(sim_adb_port "$n")" >/dev/null \
     || die "could not start the adb relay for slot $n"
   # A long suite is use: keep the reaper off the emulator while it runs.
   ( while sleep 60; do sim_touch android "$n"; done ) >/dev/null 2>&1 &
+  keep=$!
+  # The device log of this run only, for driver deaths that Maestro reports without a cause.
+  ( eval "$(sim_android_env "$n")"; adb logcat -c >/dev/null 2>&1 || true; exec adb logcat -v threadtime ) \
+    > "$MR_DIR/logcat.txt" 2>&1 &
+  logcat=$!
   # shellcheck disable=SC2064   # expanded now: the trap runs after this function's locals are gone
-  trap "kill $! 2>/dev/null; docker rm -f $name-adb >/dev/null 2>&1" EXIT
+  trap "kill $keep $logcat 2>/dev/null; docker rm -f $name-adb >/dev/null 2>&1" EXIT
   [ -t 0 ] && [ -t 1 ] && ttyf=(-t)
   # Maestro hands MAESTRO_* variables to the flows.
   for v in $(compgen -e | grep '^MAESTRO_' || true); do envs+=(-e "$v"); done
   rc=0
   docker run --rm -i "${ttyf[@]}" --name "$name" --user "$(id -u):$(id -g)" -e "HOME=$home" "${envs[@]}" \
     -v "$run:/run/sim" -v "$home:$home" -v "$root:$root" -w "$(pwd -P)" \
-    "$image" "$(sim_android_serial "$n")" "$@" || rc=$?
+    "$image" "$(sim_android_serial "$n")" "${args[@]}" || rc=$?
   sim_touch android "$n"
+  maestro_end_run "$home" "$rc"
   return "$rc"
+}
+
+# maestro_ios_launcher: the Mac's sim-maestro must speak contract 2, `sim-maestro <N> <run-id> <args...>`.
+maestro_ios_launcher() {
+  local v rc=0
+  v=$(sim_ios_ssh 'sim-maestro --version' </dev/null 2>/dev/null) || rc=$?
+  [ "$rc" != 255 ] || die "could not reach $AGENT_IOS_HOST" 3
+  [ "$v" = 2 ] || die "the Mac's sim-maestro is out of date: sim ios bootstrap"
 }
 
 # Maestro's iOS driver is an XCTest runner that xcodebuild installs on the simulator, so on iOS Maestro runs on the
 # Mac: the launcher sim-maestro (install-ios-runner.sh) runs it on agent-ios-N, in the synced copy of the worktree,
 # which every run syncs first. Paths into the worktree are rewritten to the same paths in that copy, so they must lie
-# inside the worktree. Maestro picks a free port for its driver on every run, so slots run side by side. The run's
-# debug output (logs, a screenshot of a failed step) comes back to $SIM_CACHE/ios/maestro-N.
+# inside the worktree; output paths go to artifacts/<path in the worktree> of the run's directory on the Mac
+# (~/.cache/agent-sim/maestro-N/runs/<id>), which comes back to the host's run directory, from where they are copied
+# to the paths the caller gave. Maestro picks a free port for its driver on every run, so slots run side by side.
 maestro_ios() {
   [ $# -gt 0 ] || usage
   sim_mac_require
-  local n root app lock out a k args=() envs=() v tty=() rc
-  n=$(my_slot ios) || exit 1
+  local n root app lock base mrun a i k words=() envs=() v tty=() rc err p rel src
   root=$(sim_root); app=$(sim_app_rel "$PWD" "$root")
-  out=$SIM_CACHE/ios/maestro-$n
+  maestro_args "$root" "$@"
+  n=$(my_slot ios) || exit 1
+  base=$SIM_CACHE/ios/maestro-$n
   mkdir -p "$SIM_STATE/ios"
   exec {lock}> "$SIM_STATE/ios/$n.maestro.lock"
   flock -n "$lock" || die "a Maestro run is already going on ios slot $n"
   sim_touch ios "$n"
+  maestro_ios_launcher
   cmd_ios sync >/dev/null || die "could not sync $root to $AGENT_IOS_HOST"
   sim_ios_boot "$n" || die "could not boot $(sim_ios_name "$n") on $AGENT_IOS_HOST"
   rm -f "$SIM_STATE/ios/$n.down"
+  maestro_new_run "$base" ios "$@"
+  mrun=.cache/agent-sim/maestro-$n/runs/$MR_ID   # the run's directory on the Mac, under the runner's home
   # A long suite is use: keep the reaper off the simulator while it runs.
   ( exec {lock}>&-; while sleep 60; do sim_touch ios "$n"; done ) >/dev/null 2>&1 &
   # shellcheck disable=SC2064   # expanded now: the trap runs after this function's locals are gone
   trap "kill $! 2>/dev/null" EXIT
-  for a in "$@"; do
+  # Words for the remote shell: output paths to the run's artifacts/, other worktree paths into the synced copy.
+  for i in "${!MA_ARGS[@]}"; do
+    a=${MA_ARGS[i]}
+    if [ -n "${MA_OUT[i]}" ]; then
+      k=${MA_KEY[i]}; [ -z "$k" ] || k=$(printf %q "$k")
+      words+=("$k\"\$HOME\"/$(printf %q "$mrun/artifacts/${MA_OUT[i]#"$root"/}")")
+      continue
+    fi
     k=; case $a in --*=*) k=${a%%=*}=; a=${a#*=} ;; esac
     case $a in "$root"/*) a=$(realpath -m -s --relative-to="$root/$app" "$a") ;; esac
-    args+=("$(printf %q "$k$a")")
+    words+=("$(printf %q "$k$a")")
   done
+  maestro_defaults "\"\$HOME\"/$mrun/debug" "\"\$HOME\"/$mrun/output"
+  words=("${words[@]:0:1}" "${MA_PRE[@]}" "${words[@]:1}")
   # Maestro hands MAESTRO_* variables to the flows.
   for v in $(compgen -e | grep '^MAESTRO_' || true); do envs+=("$(printf %q "$v=${!v}")"); done
   [ -t 0 ] && [ -t 1 ] && tty=(-tt)
   rc=0
-  sim_ios_ssh "${tty[@]}" "cd $(sim_mac_dir "$root" "$app") && env ${envs[*]} sim-maestro $n ${args[*]}" || rc=$?
+  sim_ios_ssh "${tty[@]}" "cd $(sim_mac_dir "$root" "$app") && env ${envs[*]} sim-maestro $n $MR_ID ${words[*]}" || rc=$?
   sim_touch ios "$n"
-  mkdir -p "$out"
-  if rsync -az --delete -e "ssh ${SIM_SSH_OPTS[*]}" "$AGENT_IOS_USER@$AGENT_IOS_HOST:.cache/agent-sim/maestro-$n/" "$out/" 2>/dev/null; then
-    echo "debug output: $out" >&2
+  # This run's directory only, and no --delete: the host keeps its own runs, the Mac only its last few.
+  if err=$(rsync -az -e "ssh ${SIM_SSH_OPTS[*]}" "$AGENT_IOS_USER@$AGENT_IOS_HOST:$mrun/" "$MR_DIR/" 2>&1 >/dev/null); then
+    for p in "${MA_OUT[@]}"; do
+      [ -n "$p" ] || continue
+      rel=${p#"$root"/}; src=$MR_DIR/artifacts/$rel
+      if [ -d "$src" ]; then
+        mkdir -p "$p" && cp -a "$src/." "$p/" || echo "sim maestro: could not copy $rel into the worktree" >&2
+      elif [ -e "$src" ]; then
+        mkdir -p "$(dirname "$p")" && cp -a "$src" "$p" || echo "sim maestro: could not copy $rel into the worktree" >&2
+      else
+        echo "sim maestro: Maestro wrote nothing to $rel" >&2
+      fi
+    done
   else
-    echo "sim maestro: could not fetch the debug output from $AGENT_IOS_HOST" >&2
+    echo "sim maestro: could not fetch run $MR_ID from $AGENT_IOS_HOST:" >&2
+    printf '%s\n' "$err" >&2
   fi
+  maestro_end_run "$base" "$rc"
   return "$rc"
 }
 

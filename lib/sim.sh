@@ -87,13 +87,16 @@ sim_fail() { printf 'sim: %s\n' "$*" >&2; return 1; }
 sim_load_params() {
   . "$REPO/lib/params.sh"
   params_load || return 1
-  : "${AGENT_SIM_ANDROID_SLOTS:=3}" "${AGENT_SIM_WEB_SLOTS:=3}" "${AGENT_SIM_IOS_SLOTS:=2}" "${AGENT_SIM_IDLE_MINUTES:=30}"
+  : "${AGENT_SIM_ANDROID_SLOTS:=3}" "${AGENT_SIM_WEB_SLOTS:=3}" "${AGENT_SIM_IOS_SLOTS:=2}" "${AGENT_SIM_IDLE_MINUTES:=30}" \
+    "${AGENT_SIM_KEEP_RUNS:=5}"
   local n
   for n in AGENT_SIM_ANDROID_SLOTS AGENT_SIM_WEB_SLOTS AGENT_SIM_IOS_SLOTS; do
     [[ ${!n} =~ ^[0-9]$ ]] || { sim_fail "$n=${!n}: a slot count from 0 to 9"; return 1; }
   done
   [[ $AGENT_SIM_IDLE_MINUTES =~ ^[0-9]{1,4}$ ]] \
     || { sim_fail "AGENT_SIM_IDLE_MINUTES=$AGENT_SIM_IDLE_MINUTES: minutes from 0 (never stop) to 9999"; return 1; }
+  [[ $AGENT_SIM_KEEP_RUNS =~ ^[1-9][0-9]?$ ]] && [ "$AGENT_SIM_KEEP_RUNS" -le 50 ] \
+    || { sim_fail "AGENT_SIM_KEEP_RUNS=$AGENT_SIM_KEEP_RUNS: Maestro runs to keep per slot, 1 to 50"; return 1; }
 }
 
 sim_slots() { # sim_slots <platform>: the configured slot count

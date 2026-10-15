@@ -125,13 +125,20 @@ client: Maestro hangs without a word. And 5038 is slot 1's server, whichever slo
 **Maestro on iOS** (added 15 Oct 2026). Maestro's iOS driver is an XCTest runner that `xcodebuild` installs on the
 simulator, so it runs on the Mac. `sim maestro ios <args>` needs none of the Android tricks:
 - It syncs the worktree (`sim ios sync`), boots `agent-ios-N` if it is down, and runs the launcher
-  `~/.local/bin/sim-maestro N <args>` over ssh in the synced app directory (`~/sims/<tree>/<app>`), with a terminal
+  `~/.local/bin/sim-maestro N <run-id> <args>` over ssh in the synced app directory (`~/sims/<tree>/<app>`), with a terminal
   when it has one, so Ctrl-C reaches Maestro. Flows are edited on the host, so every run syncs first.
-- The launcher (written by `install-ios-runner.sh`) resolves `agent-ios-N` to its UDID and runs
-  `maestro --device <UDID>`, analytics off. For `test` it adds `--test-output-dir ~/.cache/agent-sim/maestro-N/output`
-  (per flow: `commands.json`, logs, the hierarchy and a screenshot of a failed step) and `--debug-output
-  .../debug` (`maestro.log`), emptied at every run. Afterwards the host copies that directory back to
-  `~/.cache/agent-sim/ios/maestro-N` and prints the path.
+- The launcher (written by `install-ios-runner.sh`, contract 2: `sim-maestro --version` prints `2`, which the host
+  checks before every run) resolves `agent-ios-N` to its UDID, makes `~/.cache/agent-sim/maestro-N/runs/<run-id>`,
+  keeps the last 3 runs there and runs `maestro --device <UDID> <args>`, analytics off, adding nothing.
+- Run directories (15 Oct 2026, both platforms): every run gets `~/.cache/agent-sim/<platform>/maestro-N/runs/<id>`
+  on the host (`YYYYmmdd-HHMMSS`), with `debug/` and `output/`, `artifacts/`, `cmd.txt` (arguments and rc) and on
+  android `logcat.txt`; `maestro-N/latest` links to the newest, and only the last `AGENT_SIM_KEEP_RUNS` (5) stay.
+  For `test`, sim adds `--debug-output <run>/debug` (`maestro.log`) and `--test-output-dir <run>/output` (per flow:
+  `commands.json`, logs, the hierarchy and a screenshot of a failed step) unless the caller gave them. On iOS the
+  host copies the Mac's run directory back (that run only, no `--delete`) and prints where it is.
+- `--output`, `--test-output-dir` and `--debug-output` (`--x P` or `--x=P`) must lie inside the worktree (rc 2
+  otherwise). Android writes them in place (the worktree is mounted); on iOS they go to `<run>/artifacts/<path in
+  the worktree>` on the Mac and are copied to the same path in the host worktree after the run.
 - Arguments that are paths inside the worktree (also `--opt=<path>`) are rewritten to the same place in the synced
   copy; paths outside it do not exist on the Mac. `MAESTRO_*` variables are passed on with `env`.
 - Ports: Maestro picks a free host port for its driver on every run (`TestCommand.selectPort`; the hidden
@@ -183,7 +190,7 @@ Maestro on iOS, 15 Oct 2026, Maestro 2.11.0 (help output and bytecode, then live
 | `sim env` / `sim run <cmd>` | the slot's `ANDROID_HOME`, `JAVA_HOME`, `ANDROID_ADB_SERVER_PORT`, `ANDROID_SERIAL` |
 | `sim build [args]` | from the app's directory: starts the slot's Metro if needed, then `expo run:android --port <slot's Metro>` |
 | `sim maestro android <args>` | starts the slot's emulator if needed, then `maestro --device <slot's serial> <args>` in a container (above, Maestro); exits with Maestro's code |
-| `sim maestro ios <args>` | syncs, boots `agent-ios-N` if needed, runs Maestro on it on the Mac, copies the debug output back to `~/.cache/agent-sim/ios/maestro-N` (above, Maestro on iOS); exits with Maestro's code |
+| `sim maestro ios <args>` | syncs, boots `agent-ios-N` if needed, runs Maestro on it on the Mac, copies the run's directory back to `~/.cache/agent-sim/ios/maestro-N/runs/<id>` and the caller's output paths to the worktree (above, Maestro on iOS); exits with Maestro's code |
 | `sim metro start\|stop\|log <P>` | Metro for the slot, from the current (app) directory |
 | `sim android start\|stop\|logs <N\|all>` | the emulator units |
 | `sim ios start\|stop <N\|all>` | boot (and wait) or shut down `agent-ios-N` on the Mac |
