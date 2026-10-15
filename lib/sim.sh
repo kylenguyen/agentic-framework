@@ -7,6 +7,7 @@
 # takes the lock and execs the MCP server with the descriptor still open, so the lease lives exactly as long as the
 # MCP server, which lives as long as the harness session: a crash or exit frees it, nothing has to clean up.
 # Next to each lock, <N>.owner records the holder's pid and worktree; bin/sim finds "my slot" by matching the worktree.
+# `sim lease` holds a slot the same way from a detached `sim _hold` that sleeps until the lease ends (bin/sim).
 #
 # Uptime. Nothing runs until it is used, and nothing stays up unused. A lease starts no device: the first tool call
 # through sim-mcp does (an emulator unit, or booting agent-ios-N), and the call waits for the boot. Every tool call and
@@ -147,21 +148,31 @@ sim_tree_name() {
   esac
 }
 
-# sim_lease <platform> [root]: take the first free slot. Sets SIM_SLOT to its number and SIM_LOCK_FD to the open
-# lock, which the caller keeps open (an exec'd server inherits it) for as long as it wants the slot. Must run in the
-# caller's shell, never in $(...): a subshell would take the lock with it when it exits. Returns 1, having printed
-# who holds what, when every slot is taken.
+# sim_lease <platform> [root] [kind] [until]: take a slot, the one this worktree had last if it is free, else the
+# first free one. kind is mcp (bin/sim-mcp, the default) or cli (`sim lease`, which also passes the epoch its lease
+# ends at). Sets SIM_SLOT to its number and SIM_LOCK_FD to the open lock, which the caller keeps open (an exec'd
+# server inherits it) for as long as it wants the slot. Must run in the caller's shell, never in $(...): a subshell
+# would take the lock with it when it exits. Returns 1, having printed who holds what, when every slot is taken.
 sim_lease() {
-  local platform=$1 root=${2:-$(sim_root)} count n fd dir
+  local platform=$1 root=${2:-$(sim_root)} kind=${3:-mcp} until=${4:-} count n last order fd dir key me=$BASHPID
   count=$(sim_slots "$platform") || return 1
-  dir=$SIM_STATE/$platform
-  mkdir -p "$dir" || return 1
-  for ((n = 1; n <= count; n++)); do
+  dir=$SIM_STATE/$platform; key=$(sim_root_key "$root")
+  mkdir -p "$dir/last" || return 1
+  last=$(cat "$dir/last/$key" 2>/dev/null || true)
+  [[ $last =~ ^[1-9]$ ]] && [ "$last" -le "$count" ] || last=
+  order=$last
+  for ((n = 1; n <= count; n++)); do [ "$n" = "$last" ] || order+=" $n"; done
+  for n in $order; do
     exec {fd}>>"$dir/$n.lock"
     # -w 0.2, not -n: sim_held probes by taking the lock for an instant, and a lease must not skip a free slot
     # because `sim status` happened to look at it at the same moment.
     if flock -w 0.2 "$fd"; then
-      printf 'pid=%s\nroot=%s\nsince=%s\n' "$$" "$root" "$(date +%FT%T)" > "$dir/$n.owner"
+      # Written whole, then renamed: a reader (sim status, my_slot) never sees half an owner file.
+      # ppid: the harness that started bin/sim-mcp, which sim_my_slot looks for among its caller's ancestors.
+      { printf 'pid=%s\nppid=%s\nroot=%s\nsince=%s\nkind=%s\n' "$me" "$(sim_ppid "$me")" "$root" "$(date +%FT%T)" "$kind"
+        [ -z "$until" ] || printf 'until=%s\n' "$until"; } > "$dir/.$n.owner.$me" && mv -f "$dir/.$n.owner.$me" "$dir/$n.owner"
+      echo "$n" > "$dir/last/$key.$me" && mv -f "$dir/last/$key.$me" "$dir/last/$key"
+      sim_takeover "$platform" "$n" {fd}>&-
       SIM_SLOT=$n; SIM_LOCK_FD=$fd
       return 0
     fi
@@ -170,6 +181,32 @@ sim_lease() {
   sim_fail "all $count $platform slots are leased:"
   sim_holders "$platform" >&2
   return 1
+}
+
+sim_root_key() { printf %s "$1" | sha256sum | cut -c1-12; }   # sim_root_key <root>: its file name under last/
+
+sim_ppid() { sim_stat_field "$1" 4; }                            # sim_ppid <pid>: its parent's pid
+
+# sim_takeover <platform> <N>: stop the process group in <N>.pgid (the MCP server of the slot's previous holder,
+# written by bin/sim-mcp) if it outlived that holder, so a new lease never shares the device with it.
+sim_takeover() {
+  local f=$SIM_STATE/$1/$2.pgid pg own i me=$BASHPID
+  [ -e "$f" ] || return 0
+  pg=$(cat "$f" 2>/dev/null || true); rm -f "$f"
+  own=$(sim_stat_field "$me" 5)
+  # Never group 0 or 1 (kill would take every process) nor our own.
+  [[ $pg =~ ^[0-9]+$ ]] && [ "$pg" -gt 1 ] && [ "$pg" != "$own" ] && kill -0 -- "-$pg" 2>/dev/null || return 0
+  kill -TERM -- "-$pg" 2>/dev/null || true
+  for ((i = 0; i < 30; i++)); do kill -0 -- "-$pg" 2>/dev/null || break; sleep 0.1; done
+  ! kill -0 -- "-$pg" 2>/dev/null || kill -KILL -- "-$pg" 2>/dev/null || true
+  printf "sim: stopped a server left by the slot's previous holder (pgid %s)\n" "$pg" >&2
+}
+
+sim_stat_field() { # sim_stat_field <pid> <n>: field n (3 and up) of /proc/<pid>/stat; the name in 2 may hold spaces
+  local s fields
+  s=$(cat "/proc/$1/stat" 2>/dev/null) || return 1
+  read -r -a fields <<< "${s##*) }"
+  echo "${fields[$2 - 3]}"
 }
 
 sim_held() { # sim_held <platform> <N>: true while someone holds the slot (probes by taking the lock for an instant)
@@ -192,16 +229,25 @@ sim_holders() { # sim_holders <platform>: one line per leased slot
   return 0
 }
 
-# sim_my_slot <platform> [root]: the slot leased by an MCP server of this worktree, or 1 when there is none.
+# sim_my_slot <platform> [root]: the slot leased for this worktree (by an MCP server or `sim lease`); returns 1 when
+# there is none. When two harness sessions in one worktree each hold one, the caller's own session wins: the slot
+# whose holder's parent (the harness) is an ancestor of this process. Otherwise the lowest.
 sim_my_slot() {
-  local platform=$1 root=${2:-$(sim_root)} n count
+  local platform=$1 root=${2:-$(sim_root)} n count mine=() up p
   count=$(sim_slots "$platform") || return 1
   for ((n = 1; n <= count; n++)); do
-    if sim_held "$platform" "$n" && [ "$(sim_owner_field "$platform" "$n" root)" = "$root" ]; then
-      echo "$n"; return 0
-    fi
+    sim_held "$platform" "$n" && [ "$(sim_owner_field "$platform" "$n" root)" = "$root" ] && mine+=("$n")
   done
-  return 1
+  [ ${#mine[@]} -gt 0 ] || return 1
+  if [ ${#mine[@]} -gt 1 ]; then
+    up=' '; p=$BASHPID
+    while [[ $p =~ ^[0-9]+$ ]] && [ "$p" -gt 1 ]; do up+="$p "; p=$(sim_ppid "$p") || break; done
+    for n in "${mine[@]}"; do
+      p=$(sim_owner_field "$platform" "$n" ppid)
+      [ -n "$p" ] && [[ $up == *" $p "* ]] && { echo "$n"; return 0; }
+    done
+  fi
+  echo "${mine[0]}"
 }
 
 # sim_android_env <N>: the environment that points Android tools at slot N and nothing else.

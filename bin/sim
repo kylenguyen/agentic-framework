@@ -19,7 +19,9 @@
 #   sim ios prepare                     sync, then npm ci, expo prebuild and pod install on the Mac
 #   sim ios bootstrap                   install or update the runner on the Mac (install-ios-runner.sh)
 #   sim ios gc [days]                   remove synced trees and build output unused for N days (default 7)
-# "This worktree's slot" is the slot leased by an MCP server started from the same git top level.
+#   sim lease <P> [--ttl DUR] [dir]     hold a slot for this worktree without an MCP server: DUR <n>m|h|d, 8h, at most 7d
+#   sim release <P> [dir]               free the slot that sim lease took
+# "This worktree's slot" is the slot leased by an MCP server started from the same git top level, or by sim lease.
 # Devices start on first use and stop when unused (lib/sim.sh, Uptime); the commands that use one count as use.
 set -euo pipefail
 REPO=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)
@@ -29,7 +31,7 @@ usage() { sed -n '/^#   sim/s/^# *//p' "${BASH_SOURCE[0]}" >&2; exit 2; }
 sim_load_params
 
 my_slot() { # my_slot <platform>: this worktree's slot, or a message that says how to get one
-  sim_my_slot "$1" || die "no $1 slot is leased for $(sim_root): start a harness session in this worktree after \`sim enable\`, so its sim-$1 MCP server holds one"
+  sim_my_slot "$1" || die "no $1 slot is leased for $(sim_root): start a harness session in this worktree after \`sim enable\`, so its sim-$1 MCP server holds one, or sim lease $1"
 }
 
 cmd_status() {
@@ -37,8 +39,7 @@ cmd_status() {
   for p in $SIM_PLATFORMS; do
     count=$(sim_slots "$p")
     for ((n = 1; n <= count; n++)); do
-      if sim_held "$p" "$n"; then state="leased  pid $(sim_owner_field "$p" "$n" pid)  $(sim_owner_field "$p" "$n" root)"
-      else state=free; fi
+      state=$(lease_state "$p" "$n")
       idle=$(sim_idle_secs "$p" "$n") && idle="used $((idle / 60))m ago" || idle=unused
       case $p in
         android) run=$(systemctl --user is-active "$(sim_android_unit "$n")" 2>/dev/null || true)
@@ -55,6 +56,7 @@ cmd_status() {
 # emulator someone started by hand gets the full idle time too. Prints one line per thing stopped.
 cmd_reap() {
   local limit=$((10#$AGENT_SIM_IDLE_MINUTES * 60)) p n count idle unit
+  reap_leases
   [ "$limit" -gt 0 ] || return 0
   for p in $SIM_PLATFORMS; do
     count=$(sim_slots "$p")
@@ -113,6 +115,8 @@ a boot (up to a minute). An Android emulator starts clean, so after an idle stop
   on your iOS simulator, with the app already installed there through the sim-ios tools. Flows must lie inside
   this worktree. On iOS the run prints where its debug output (logs, screenshots of a failed step) lands on this
   host. Never run \`maestro\` directly: it cannot see your device and hangs.
+- Without a harness session (a script, CI), \`sim lease <android|web|ios>\` holds a slot for this worktree (8 h by
+  default, \`--ttl\`) and \`sim release <platform>\` frees it.
 - iOS: \`sim ios prepare\` copies this worktree to the Mac and prints its path there; build and run it with the
   sim-ios tools (workspace under that path's ios/ directory), then \`sim metro start ios\`. After a JS-only
   change, \`sim ios sync\` is enough.
@@ -403,6 +407,89 @@ cmd_ios() {
   esac
 }
 
+# --- CLI leases (sim lease, sim release) ------------------------------------------------------------------------
+# A CLI lease is held by a detached `sim _hold`, which takes the lock as sim-mcp does and then sleeps with it until
+# the lease ends: `sim release` kills it, `sim reap` kills it once its time is up, and it ends by itself then anyway.
+
+lease_kind() { local k; k=$(sim_owner_field "$1" "$2" kind); echo "${k:-mcp}"; }   # owner files before kind= are mcp
+
+at_time() { # at_time <epoch>: HH:MM today, else DD Mon HH:MM
+  if [ "$(date -d "@$1" +%F)" = "$(date +%F)" ]; then date -d "@$1" +%H:%M; else date -d "@$1" '+%d %b %H:%M'; fi
+}
+
+lease_state() { # lease_state <platform> <N>: the state column of sim status
+  sim_held "$1" "$2" || { echo free; return; }
+  case $(lease_kind "$1" "$2") in
+    cli) echo "leased cli until $(at_time "$(sim_owner_field "$1" "$2" until)") $(sim_owner_field "$1" "$2" root)" ;;
+    *)   echo "leased mcp pid $(sim_owner_field "$1" "$2" pid) $(sim_owner_field "$1" "$2" root)" ;;
+  esac
+}
+
+reap_leases() { # end every CLI lease whose time is up
+  local p n count until pid
+  for p in $SIM_PLATFORMS; do
+    count=$(sim_slots "$p")
+    for ((n = 1; n <= count; n++)); do
+      sim_held "$p" "$n" && [ "$(lease_kind "$p" "$n")" = cli ] || continue
+      until=$(sim_owner_field "$p" "$n" until); pid=$(sim_owner_field "$p" "$n" pid)
+      [[ $until =~ ^[0-9]+$ ]] && [ "$until" -le "$(date +%s)" ] && [[ $pid =~ ^[0-9]+$ ]] || continue
+      kill "$pid" 2>/dev/null && echo "$p $n: CLI lease expired"
+    done
+  done
+  return 0
+}
+
+cmd_lease() {
+  local p=${1:-} ttl=8h dir=. root n secs until out
+  case $p in android|web|ios) shift ;; *) usage ;; esac
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --ttl) [ $# -ge 2 ] || usage; ttl=$2; shift 2 ;;
+      -*) usage ;;
+      *) dir=$1; shift ;;
+    esac
+  done
+  [[ $ttl =~ ^([0-9]{1,5})([mhd])$ ]] || die "--ttl $ttl: <n>m, <n>h or <n>d" 2
+  case ${BASH_REMATCH[2]} in m) secs=60 ;; h) secs=3600 ;; d) secs=86400 ;; esac
+  secs=$((10#${BASH_REMATCH[1]} * secs))
+  [ "$secs" -gt 0 ] && [ "$secs" -le $((7 * 86400)) ] || die "--ttl $ttl: from 1m to 7d" 2
+  [ -d "$dir" ] || die "no directory $dir" 2
+  root=$(sim_root "$dir")
+  if n=$(sim_my_slot "$p" "$root"); then
+    echo "$p slot $n already leased for $root ($(lease_state "$p" "$n" | cut -d' ' -f2-4))"; return 0
+  fi
+  until=$(($(date +%s) + secs))
+  # The holder reports on the pipe (the slot, or why it got none), then closes it and sleeps: the $(...) returns then.
+  out=$(cd "$root" && setsid -f "$REPO/bin/sim" _hold "$p" "$root" "$until" </dev/null 2>&1) || true
+  [[ $out =~ ^[1-9]$ ]] || { printf '%s\n' "$out" >&2; exit 3; }
+  echo "$p slot $out leased for $root until $(at_time "$until") (sim release $p)"
+}
+
+cmd_hold() { # _hold <platform> <root> <until>: the CLI lease holder, started by cmd_lease
+  local p=$1 root=$2 until=$3
+  sim_lease "$p" "$root" cli "$until" || exit 1
+  echo "$SIM_SLOT"
+  exec sleep $((until - $(date +%s))) >/dev/null 2>&1
+}
+
+cmd_release() {
+  local p=${1:-} dir=${2:-.} root n count pid mcp=
+  case $p in android|web|ios) ;; *) usage ;; esac
+  [ -d "$dir" ] || die "no directory $dir" 2
+  root=$(sim_root "$dir"); count=$(sim_slots "$p")
+  for ((n = 1; n <= count; n++)); do
+    sim_held "$p" "$n" && [ "$(sim_owner_field "$p" "$n" root)" = "$root" ] || continue
+    pid=$(sim_owner_field "$p" "$n" pid)
+    if [ "$(lease_kind "$p" "$n")" != cli ]; then mcp=${mcp:-$pid}; continue; fi
+    kill "$pid" 2>/dev/null || true
+    local i; for ((i = 0; i < 50; i++)); do sim_held "$p" "$n" || break; sleep 0.1; done
+    sim_held "$p" "$n" && die "$p slot $n is still held by pid $pid"
+    echo "$p slot $n released"; return 0
+  done
+  [ -z "$mcp" ] || die "$p slot of $root is held by the sim-$p MCP server (pid $mcp); end that harness session to free it"
+  echo "no $p lease for $root: nothing to release"
+}
+
 sub=${1:-}; [ $# -gt 0 ] && shift
 case $sub in
   status) cmd_status ;;
@@ -417,5 +504,8 @@ case $sub in
   metro) cmd_metro "$@" ;;
   android) cmd_android "$@" ;;
   ios) cmd_ios "$@" ;;
+  lease) cmd_lease "$@" ;;
+  release) cmd_release "$@" ;;
+  _hold) cmd_hold "$@" ;;
   *) usage ;;
 esac

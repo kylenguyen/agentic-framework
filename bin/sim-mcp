@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # sim-mcp <android|web|ios>: stdio MCP server for one simulator slot, started by a harness from a repo that ran
-# `sim enable`. Leases the first free slot (lib/sim.sh) and runs the real server as its child for as long as the
-# harness keeps it, then exits, which frees the slot. Only this process holds the lock: the server and every helper
-# run with the descriptor closed, so nothing they leave behind (an adb daemon, a mise helper) can keep the slot.
+# `sim enable`. Leases a slot, the one this worktree had last if it is free (lib/sim.sh), and runs the real server
+# as its child for as long as the harness keeps it, then exits, which frees the slot. Only this process holds the
+# lock: the server and every helper run with the descriptor closed, so nothing they leave behind (an adb daemon, a
+# mise helper) can keep the slot.
 # stdout belongs to the MCP protocol: every message goes to stderr.
 # The harness's messages reach the server through a relay that wakes the slot's device before each tool call: the
 # lease starts nothing, `sim reap` stops a device left idle (lib/sim.sh, Uptime), and the call that needs it again

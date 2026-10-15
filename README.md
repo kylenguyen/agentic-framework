@@ -313,6 +313,7 @@ host$ node tests/mcp-probe.mjs --call mobile_list_available_devices '{}' -- sim-
 host$ cd ~/workspace/<repo> && sim maestro android test .maestro/   # with a sim-android session open in that worktree; the first run builds the image
 host$ cd ~/workspace/<repo>/<app> && sim maestro ios test .maestro/   # with a sim-ios session and the app installed on its simulator; ends with "debug output: <path>"
 host$ sim android stop all
+host$ cd ~/workspace/<repo> && sim lease web --ttl 1h && sim status && sim release web   # a slot without a harness session; status shows "leased cli until"
 host$ systemctl --user list-timers agent-sim-reap.timer   # next run within 5 minutes
 host$ node tests/mcp-probe.mjs --call session_show_defaults '{}' -- sim-mcp ios 2>/dev/null | tail -1   # simulatorId set
 host$ bash tests/sim-test.sh | tail -1                # N passed, 0 failed

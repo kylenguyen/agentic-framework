@@ -12,7 +12,7 @@ echo "# sim commands"
   has "env: adb server of my slot" "ANDROID_ADB_SERVER_PORT=5038" "$env"
   check "run: command sees the slot" emulator-5600 "$("$REPO/bin/sim" run sh -c 'echo $ANDROID_SERIAL')"
   st=$("$REPO/bin/sim" status)
-  has "status: leased android slot" "leased  pid" "$(echo "$st" | grep '^android  1')"
+  has "status: leased android slot" "leased mcp pid" "$(echo "$st" | grep '^android  1')"
   has "status: free web slot" free "$(echo "$st" | grep '^web      1')"
   check "status: one line per slot" 5 "$(echo "$st" | wc -l)"
   ( cd client && rm -f "$T/log/npx" && SIM_METRO_SETTLE=0 "$REPO/bin/sim" build --variant debug >/dev/null 2>&1 )
