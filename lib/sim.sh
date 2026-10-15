@@ -22,6 +22,7 @@
 #   ios N      Metro on the Mac 8081 + 10(N-1). Simulators share the Mac's localhost, and a React Native debug build
 #              asks Metro at the port it was built with (RCT_METRO_PORT, default 8081): slot 1 needs nothing, slot 2
 #              builds with RCT_METRO_PORT=8091.
+#   test stacks  a block of 100 per slot from 20000 + 1000*(android 0, web 1, ios 2) + 100(N-1): `sim ports`
 # Each emulator registers only with its slot's adb server, so the default adb server (5037) sees none of them and
 # an MCP server pointed at slot N's adb server cannot see, let alone drive, another agent's emulator. That needs the
 # consoles above 5585: an adb server also scans 5555-5585 when it starts and adopts every emulator it finds there.
@@ -103,6 +104,24 @@ sim_metro_port() { # sim_metro_port <platform> <N>
   case $1 in android) echo $((8100 + $2)) ;; web) echo $((8200 + $2)) ;; ios) echo $((8081 + 10 * ($2 - 1))) ;; esac
 }
 sim_ios_name() { echo "agent-ios-$1"; }
+
+# Port blocks for test stacks: slot N of a platform owns SIM_PORT_BLOCK ports from sim_port_base, which no other slot
+# and no sim service uses (android 20000-20899, web 21000-21899, ios 22000-22899 for slots 1-9; below the ephemeral
+# range 32768 and up). `sim ports` hands them out; sim_android_env exports them for android.
+SIM_PORT_BLOCK=100
+sim_port_base() { # sim_port_base <platform> <N>
+  local idx
+  case $1 in android) idx=0 ;; web) idx=1 ;; ios) idx=2 ;; *) sim_fail "unknown platform: $1 (one of: $SIM_PLATFORMS)"; return 1 ;; esac
+  echo $((20000 + 1000 * idx + SIM_PORT_BLOCK * ($2 - 1)))
+}
+sim_port_block() { # sim_port_block <platform> <N>: "<base> <count>", for `read -r base count`
+  local base; base=$(sim_port_base "$1" "$2") || return 1
+  echo "$base $SIM_PORT_BLOCK"
+}
+sim_port_env() { # sim_port_env <platform> <N>: the exports SIM_PORT_BASE and SIM_PORT_COUNT
+  local base; base=$(sim_port_base "$1" "$2") || return 1
+  printf 'export SIM_PORT_BASE=%s\nexport SIM_PORT_COUNT=%s\n' "$base" "$SIM_PORT_BLOCK"
+}
 
 # sim_root [dir]: the worktree a command or an MCP server belongs to: the git top level, else the directory itself.
 sim_root() {
@@ -194,6 +213,7 @@ sim_android_env() {
   [ -z "$java" ] || printf 'export JAVA_HOME=%q\n' "$java"
   printf 'export ANDROID_ADB_SERVER_PORT=%s\n' "$(sim_adb_port "$1")"
   printf 'export ANDROID_SERIAL=%s\n' "$(sim_android_serial "$1")"
+  sim_port_env android "$1"
   printf 'export PATH=%q:$PATH\n' "${java:+$java/bin:}$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator"
 }
 

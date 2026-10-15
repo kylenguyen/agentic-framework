@@ -8,6 +8,7 @@
 #   sim wait [secs]                     block until this worktree's emulator has booted (default 180 s)
 #   sim env                             exports for this worktree's emulator: eval "$(sim env)"
 #   sim run <cmd...>                    run a command in that environment, e.g. sim run ./gradlew test
+#   sim ports <P> [k|--check]           this worktree's 100 ports for test stacks: eval "$(sim ports web)"; k lists k, --check busy ones
 #   sim build [args]                    from the app's directory: Metro if not running, then expo run:android for the slot
 #   sim maestro android|ios <args...>   Maestro on this worktree's emulator or simulator: sim maestro ios test .maestro/
 #   sim metro start|stop|log <P>        Metro for this worktree's slot: android (adb reverse), web, ios (on the Mac)
@@ -135,6 +136,42 @@ cmd_run() {
   sim_touch android "$n"
   eval "$(sim_android_env "$n")"
   exec "$@"
+}
+
+# sim ports <P> [k|--check]: the slot's port block (lib/sim.sh, sim_port_base). Arguments are checked before the
+# lease, so a usage error is rc 2 either way.
+cmd_ports() {
+  local p=${1:-} arg=${2:-} n base count
+  case " $SIM_PLATFORMS " in *" $p "*) [ -n "$p" ] ;; *) false ;; esac || usage
+  [ $# -le 2 ] || usage
+  case $arg in
+    ''|--check) ;;
+    *) [[ $arg =~ ^[0-9]{1,3}$ ]] && [ "$((10#$arg))" -ge 1 ] && [ "$((10#$arg))" -le "$SIM_PORT_BLOCK" ] \
+         || die "sim ports $p $arg: a count from 1 to $SIM_PORT_BLOCK" 2 ;;
+  esac
+  n=$(my_slot "$p") || exit 1
+  read -r base count < <(sim_port_block "$p" "$n")
+  case $arg in
+    '') sim_port_env "$p" "$n" ;;
+    --check) ports_check "$base" "$count" ;;
+    *) seq -s ' ' "$base" $((base + 10#$arg - 1)) ;;
+  esac
+}
+
+# ports_check <base> <count>: one line per listening port of the block, with its process where ss can see it (only
+# for this user's processes); rc 1 when any is listening.
+ports_check() {
+  local base=$1 count=$2 out
+  command -v ss >/dev/null || die "ss (iproute2) is not installed, so the ports cannot be checked"
+  out=$(ss -Hltnp 2>/dev/null | awk -v lo="$base" -v hi=$((base + count - 1)) '
+    { port = $4; sub(/.*:/, "", port); port += 0
+      if (port < lo || port > hi) next
+      proc = ""; for (i = 6; i <= NF; i++) proc = proc (proc == "" ? "" : " ") $i
+      if (!(port in seen) || (seen[port] == "" && proc != "")) seen[port] = proc }
+    END { for (p in seen) printf "%s  %s\n", p, (seen[p] == "" ? "(process not visible)" : seen[p]) }' | sort -n)
+  if [ -z "$out" ]; then echo "ports $base-$((base + count - 1)): none listening"; return 0; fi
+  echo "$out"
+  return 1
 }
 
 metro_pidfile() { echo "$SIM_STATE/$1/$2.metro"; }
@@ -374,6 +411,7 @@ case $sub in
   wait) cmd_wait "$@" ;;
   env) cmd_env ;;
   run) cmd_run "$@" ;;
+  ports) cmd_ports "$@" ;;
   build) cmd_build "$@" ;;
   maestro) cmd_maestro "$@" ;;
   metro) cmd_metro "$@" ;;
