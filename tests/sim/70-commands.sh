@@ -24,7 +24,7 @@ echo "# sim commands"
 ( cd "$T/ws/app.wt/feat/client" || exit 1; rm -f "$T/log/"*
   "$REPO/bin/sim" ios sync >/dev/null 2>&1
   r=$(cat "$T/log/rsync")
-  has "ios sync: whole worktree" "$T/ws/app.wt/feat/ bob@mini.tail.ts.net:sims/app-feat/" "$r"
+  has "ios sync: whole worktree" "$T/ws/app.wt/feat/ bob@mini.tail.ts.net:sims/app-feat-$(printf %s "$T/ws/app.wt/feat" | sha256sum | cut -c1-6)/" "$r"
   has "ios sync: no .env files" "--exclude=.env.*" "$r"
   has "ios sync: no node_modules" "--exclude=node_modules" "$r"
   has "ios sync: keeps the Mac's generated ios/" "--filter=P ios/" "$r"

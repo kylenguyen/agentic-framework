@@ -37,6 +37,7 @@ PFX=${AF_SIM_PREFIX:-af-sim}
 NET=$PFX; HOSTC=$PFX-host; MACC=$PFX-mac
 U=agent; UH=/home/agent; AF=/home/agent/af
 WT=/w/app.wt/feat; APP=$WT/client
+TREE=app-feat-$(printf %s "$WT" | sha256sum | cut -c1-6)                # its directory on the Mac, sims/$TREE
 STATE=/tmp/sim-state; CACHE=/tmp/sim-cache
 T=$(mktemp -d); : > "$T/results"
 ok()    { echo ok >> "$T/results"; printf 'ok   %s\n' "$1"; }
@@ -148,13 +149,13 @@ check "xcrun: a simulator starts Shutdown" "    agent-ios-2 (00000002-AAAA-4BBB-
 say "sim ios sync"
 run hx sim ios sync
 check "sync: exit 0" 0 "$RC"
-has "synced to /home/runner/sims/app-feat/client on the Mac" "$OUT" "sync: prints the app's path on the Mac"
-check "sync: the tree is ~runner/sims/app-feat" "app.js flows" "$(mx ls sims/app-feat/client | paste -sd' ')"
-check "sync: no .env arrives, at the top or in the app" "" "$(mx find sims/app-feat -name '.env*')"
-check "sync: no .git arrives" "" "$(mx find sims/app-feat -maxdepth 1 -name .git)"
+has "synced to /home/runner/sims/$TREE/client on the Mac" "$OUT" "sync: prints the app's path on the Mac"
+check "sync: the tree is ~runner/sims/$TREE" "app.js flows" "$(mx ls "sims/$TREE/client" | paste -sd' ')"
+check "sync: no .env arrives, at the top or in the app" "" "$(mx find "sims/$TREE" -name '.env*')"
+check "sync: no .git arrives" "" "$(mx find "sims/$TREE" -maxdepth 1 -name .git)"
 hx sh -c 'echo "export default 2" > app.js'
 hx sim ios sync >/dev/null 2>&1
-check "sync: a second sync carries the edit" "export default 2" "$(mx cat sims/app-feat/client/app.js)"
+check "sync: a second sync carries the edit" "export default 2" "$(mx cat "sims/$TREE/client/app.js")"
 
 say "sim-mcp ios through tests/mcp-probe.mjs"
 run hx node "$AF/tests/mcp-probe.mjs" --call screenshot '{}' -- sim-mcp ios
@@ -185,7 +186,7 @@ mx sh -c 'echo 1 > maestro.rc'
 run hx sim maestro ios test flows/
 check "maestro: the flow's exit code comes back (1)" 1 "$RC"
 has "debug output: $CACHE/ios/maestro-1" "$OUT" "maestro: says where the debug output landed"
-check "maestro: ran in the synced app directory" /home/runner/sims/app-feat/client "$(mx cat maestro.cwd)"
+check "maestro: ran in the synced app directory" "/home/runner/sims/$TREE/client" "$(mx cat maestro.cwd)"
 check "maestro: the launcher pinned the device and the output dirs" \
   "--device 00000001-AAAA-4BBB-8CCC-DDDDDDDDDDDD test --debug-output /home/runner/.cache/agent-sim/maestro-1/debug --test-output-dir /home/runner/.cache/agent-sim/maestro-1/output flows/" \
   "$(mx tail -1 maestro.log)"
@@ -222,6 +223,39 @@ mcp_stop s1
 mac_restore && ok "drop: the link comes back" || bad "drop: the link comes back"
 run hx node "$AF/tests/mcp-probe.mjs" --call screenshot '{}' -- sim-mcp ios
 check "drop: a new session works after the link is back" 0 "$RC"
+
+say "remote paths: a worktree with a space and a ' in its paths"
+# /w/my app.wt/feat with its app in o'k app/: the tree name drops the space, the app directory keeps both.
+WT2="/w/my app.wt/feat"; APP2="$WT2/o'k app"; TREE2=my_app-feat-$(printf %s "$WT2" | sha256sum | cut -c1-6)
+hxh bash -c 'set -e; cd /w/app; git worktree add -q "$1" -b feat2; mkdir -p "$2/flows"
+  printf "appId: test\n---\n- launchApp\n" > "$2/flows/login.yaml"; touch -d "10 days ago" "$1"' _ "$WT2" "$APP2"
+h2() { docker exec -u "$U" "${HENV[@]}" -w "$APP2" "$HOSTC" "$@"; }
+run h2 sim ios sync
+check "paths: sync exits 0" 0 "$RC"
+has "synced to /home/runner/sims/$TREE2/o'k app on the Mac" "$OUT" "paths: sync prints the hashed tree and the app"
+check "paths: the app arrived" "flows" "$(mx ls "sims/$TREE2/o'k app")"
+mx test -e "sims/$TREE2/.agent-sim-synced" && ok "paths: sync left its stamp" || bad "paths: sync left its stamp"
+run h2 sim lease ios
+has "leased for $WT2" "$OUT" "paths: sim lease ios for the worktree"
+mx sh -c 'echo 0 > maestro.rc'
+run h2 sim maestro ios test flows/
+check "paths: maestro exits 0" 0 "$RC"
+check "paths: maestro ran in the app directory, through zsh" "/home/runner/sims/$TREE2/o'k app" "$(mx cat maestro.cwd)"
+run h2 sim maestro ios test "$APP2/flows/login.yaml"
+check "paths: an absolute path in it is rewritten" flows/login.yaml "$(mx tail -1 maestro.log | awk '{print $NF}')"
+run h2 sim release ios
+say "sim ios gc goes by the sync stamp"
+check "gc: the Mac's tree has the worktree's old mtime (rsync -a)" 1 "$(mx find sims -maxdepth 1 -name "$TREE2" -mtime +7 | wc -l)"
+run hx sim ios gc 0
+check "gc 0: exit 0" 0 "$RC"
+mx test -d "sims/$TREE2" && ok "gc 0: keeps a tree synced just now" || bad "gc 0: keeps a tree synced just now" "$OUT"
+run hx sim ios gc 7
+mx test -d "sims/$TREE2" && ok "gc 7: keeps it though its mtime is 10 days old" || bad "gc 7: keeps it though its mtime is 10 days old" "$OUT"
+mx touch -d '10 days ago' "sims/$TREE2/.agent-sim-synced"
+run hx sim ios gc 7
+mx test -d "sims/$TREE2" && bad "gc 7: removes it once its stamp is 10 days old" "$OUT" || ok "gc 7: removes it once its stamp is 10 days old"
+has "sims/$TREE2" "$OUT" "gc 7: says which tree it removed"
+mx test -d "sims/$TREE" && ok "gc 7: leaves the other worktree's tree" || bad "gc 7: leaves the other worktree's tree"
 
 pass=$(grep -c '^ok$' "$T/results"); fail=$(grep -c '^FAIL$' "$T/results")
 printf '\n%d passed, %d failed (%ds)\n' "$pass" "$fail" "$SECONDS"

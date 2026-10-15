@@ -53,10 +53,11 @@ echo "# sim maestro"
   MAESTRO_APP_ID="com.x y" "$REPO/bin/sim" maestro ios test flows/ "$T/ws/app.wt/feat/e2e/login.yaml" \
     "--config=$T/ws/app.wt/feat/client/config.yaml" >/dev/null 2>"$T/log/maestro.err"; rc=$?
   check "maestro ios: Maestro's exit code" 3 "$rc"
-  has "maestro ios: syncs the worktree first" "$T/ws/app.wt/feat/ bob@mini.tail.ts.net:sims/app-feat/" "$(head -1 "$T/log/rsync")"
+  tree=app-feat-$(printf %s "$T/ws/app.wt/feat" | sha256sum | cut -c1-6)
+  has "maestro ios: syncs the worktree first" "$T/ws/app.wt/feat/ bob@mini.tail.ts.net:sims/$tree/" "$(head -1 "$T/log/rsync")"
   has "maestro ios: boots the slot's simulator" "xcrun simctl bootstatus agent-ios-1 -b" "$(cat "$T/log/ssh")"
   run=$(grep sim-maestro "$T/log/ssh")
-  has "maestro ios: in the synced app dir" "cd sims/app-feat/client && " "$run"
+  has "maestro ios: in the synced app dir" "cd sims/$tree/client && " "$run"
   has "maestro ios: launcher for the slot" "sim-maestro 1 test flows/" "$run"
   has "maestro ios: worktree paths become paths in the synced copy" " ../e2e/login.yaml" "$run"
   has "maestro ios: and so do --opt=path arguments" " --config=config.yaml" "$run"

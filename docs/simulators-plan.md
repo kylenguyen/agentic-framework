@@ -69,10 +69,11 @@ unit restarts an emulator that fails, up to 3 times in 2 minutes.
 8200+N; iOS Metro on the Mac 8081 for slot 1 and 8091 for slot 2 (a React Native debug build asks the port it was
 built with, `RCT_METRO_PORT`; the simulators share the Mac's localhost).
 
-**iOS.** `sim ios prepare`, run from the app's directory, syncs the worktree to `~/sims/<repo>[-<slug>]/` on the
-Mac (no `.git`, `node_modules`, `.env*`, keystores or build output; the Mac's generated `ios/` survives `--delete`),
-then runs `npm ci`, `expo prebuild -p ios` and `pod install` there and prints the workspace path. The agent then
-sets XcodeBuildMCP's session defaults (workspace, scheme) and calls `build_run_sim`, `screenshot`, `tap` and so on.
+**iOS.** `sim ios prepare`, run from the app's directory, syncs the worktree to `~/sims/<repo>[-<slug>]-<h6>/` on the
+Mac (`<h6>` comes from a hash of the worktree's path, so no two worktrees share one). No `.git`, `node_modules`,
+`.env*`, keystores or build output go over, and the Mac's generated `ios/` survives `--delete`. It then runs
+`npm ci`, `expo prebuild -p ios` and `pod install` there and prints the workspace path. The agent then sets
+XcodeBuildMCP's session defaults (workspace, scheme) and calls `build_run_sim`, `screenshot`, `tap` and so on.
 `sim ios sync` alone is enough after a JS-only change.
 
 **Uptime** (added 14 Oct 2026). The simulators are used in bursts, during app development, and a harness session

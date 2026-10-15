@@ -18,7 +18,7 @@
 #   sim ios sync                        rsync this worktree to the Mac, print its path there
 #   sim ios prepare                     sync, then npm ci, expo prebuild and pod install on the Mac
 #   sim ios bootstrap                   install or update the runner on the Mac (install-ios-runner.sh)
-#   sim ios gc [days]                   remove synced trees and build output unused for N days (default 7)
+#   sim ios gc [days]                   remove trees not synced and build output unused for N days (default 7)
 #   sim lease <P> [--ttl DUR] [dir]     hold a slot for this worktree without an MCP server: DUR <n>m|h|d, 8h, at most 7d
 #   sim release <P> [dir]               free the slot that sim lease took
 # "This worktree's slot" is the slot leased by an MCP server started from the same git top level, or by sim lease.
@@ -251,9 +251,9 @@ maestro_android() {
 # debug output (logs, a screenshot of a failed step) comes back to $SIM_CACHE/ios/maestro-N.
 maestro_ios() {
   [ $# -gt 0 ] || usage
-  local n root dir app lock out a k args=() envs=() v tty=() rc
+  local n root app lock out a k args=() envs=() v tty=() rc
   n=$(my_slot ios) || exit 1
-  root=$(sim_root); dir=sims/$(sim_tree_name "$root"); app=$(sim_app_rel "$PWD" "$root")
+  root=$(sim_root); app=$(sim_app_rel "$PWD" "$root")
   out=$SIM_CACHE/ios/maestro-$n
   mkdir -p "$SIM_STATE/ios"
   exec {lock}> "$SIM_STATE/ios/$n.maestro.lock"
@@ -275,7 +275,7 @@ maestro_ios() {
   for v in $(compgen -e | grep '^MAESTRO_' || true); do envs+=("$(printf %q "$v=${!v}")"); done
   [ -t 0 ] && [ -t 1 ] && tty=(-tt)
   rc=0
-  sim_ios_ssh "${tty[@]}" "cd $dir/$app && env ${envs[*]} sim-maestro $n ${args[*]}" || rc=$?
+  sim_ios_ssh "${tty[@]}" "cd $(sim_mac_dir "$root" "$app") && env ${envs[*]} sim-maestro $n ${args[*]}" || rc=$?
   sim_touch ios "$n"
   mkdir -p "$out"
   if rsync -az --delete -e "ssh ${SIM_SSH_OPTS[*]}" "$AGENT_IOS_USER@$AGENT_IOS_HOST:.cache/agent-sim/maestro-$n/" "$out/" 2>/dev/null; then
@@ -305,9 +305,8 @@ cmd_metro() {
   case $action in
     start)
       if [ "$p" = ios ]; then
-        local dir; dir=sims/$(sim_tree_name "$root")/$app
-        sim_ios_ssh "cd $dir && (pkill -f 'expo start.*--port $port' || true); nohup npx expo start --port $port > .metro.log 2>&1 < /dev/null & echo started" >/dev/null
-        echo "Metro on the Mac in ~/$dir, port $port (log: sim metro log ios)"
+        sim_ios_ssh "cd $(sim_mac_dir "$root" "$app") && (pkill -f 'expo start.*--port $port' || true); nohup npx expo start --port $port > .metro.log 2>&1 < /dev/null & echo started" >/dev/null
+        echo "Metro on the Mac in ~/$(sim_mac_path "$root" "$app"), port $port (log: sim metro log ios)"
         [ "$port" = 8081 ] || echo "a debug build finds it only when built with extraArgs [\"RCT_METRO_PORT=$port\"]"
         return
       fi
@@ -331,7 +330,7 @@ cmd_metro() {
       metro_stop_slot "$p" "$n" || true
       ;;
     log)
-      if [ "$p" = ios ]; then sim_ios_ssh "tail -n 100 sims/$(sim_tree_name "$root")/$app/.metro.log"; else tail -n 100 "$log"; fi
+      if [ "$p" = ios ]; then sim_ios_ssh "tail -n 100 $(sim_mac_dir "$root" "$app")/.metro.log"; else tail -n 100 "$log"; fi
       ;;
     *) usage ;;
   esac
@@ -368,8 +367,9 @@ cmd_android() {
 }
 
 cmd_ios() {
-  local action=${1:-} root dir app
-  root=$(sim_root); dir=sims/$(sim_tree_name "$root"); app=$(sim_app_rel "$PWD" "$root")
+  local action=${1:-} root tree app
+  root=$(sim_root); app=$(sim_app_rel "$PWD" "$root")
+  tree=$(sim_mac_dir "$root")    # sims/<tree>: quoted for the remote shell, the app's directory with sim_mac_dir
   case $action in
     start|stop)
       local n slots; [ -n "${2:-}" ] || usage
@@ -385,24 +385,33 @@ cmd_ios() {
         fi
       done ;;
     sync)
-      sim_ios_ssh "mkdir -p $dir" || exit 1
+      # The stamp goes first: sim ios gc keeps a tree whose stamp is recent, so a sync that is still running is safe.
+      sim_ios_ssh "mkdir -p $tree && touch $tree/$SIM_SYNC_STAMP" || exit 1
       local args; mapfile -t args < <(sim_rsync_args)
-      rsync "${args[@]}" -e "ssh ${SIM_SSH_OPTS[*]}" "$root/" "$AGENT_IOS_USER@$AGENT_IOS_HOST:$dir/"
-      echo "synced to $(sim_ios_ssh 'echo $HOME')/$dir/$app on the Mac" ;;
+      # The destination is sims/<tree>, which has no character a remote shell splits or expands (sim_tree_name), so it
+      # needs neither -s/--protect-args (3.2.3 and older) nor the escaping 3.2.4+ does by default; a space in the root
+      # is only ever on the host side. That keeps the Mac's rsync free to be anything that speaks rsync's protocol:
+      # Apple's rsync 2.6.9, openrsync (macOS 15+) or Homebrew's 3.x.
+      rsync "${args[@]}" -e "ssh ${SIM_SSH_OPTS[*]}" "$root/" "$AGENT_IOS_USER@$AGENT_IOS_HOST:$tree/"
+      echo "synced to $(sim_ios_ssh 'echo $HOME')/$(sim_mac_path "$root" "$app") on the Mac" ;;
     prepare)
       # Run from the app's directory (a monorepo's client/): the whole worktree goes over, the app is built there.
       cmd_ios sync
-      sim_ios_ssh "cd $dir/$app && npm ci --no-audit --no-fund && CI=1 npx expo prebuild -p ios --no-install && cd ios && pod install" \
+      sim_ios_ssh "cd $(sim_mac_dir "$root" "$app") && npm ci --no-audit --no-fund && CI=1 npx expo prebuild -p ios --no-install && cd ios && pod install" \
         || die "prepare failed on the Mac; the output above says where"
-      echo "workspace: $(sim_ios_ssh "ls -d \$HOME/$dir/$app/ios/*.xcworkspace" | head -1)" ;;
+      echo "workspace: $(sim_ios_ssh "ls -d \$HOME/$(sim_mac_dir "$root" "$app")/ios/*.xcworkspace" | head -1)" ;;
     bootstrap)
       sim_ios_ssh "SIM_XCODEBUILDMCP_VERSION=$SIM_XCODEBUILDMCP_VERSION SIM_MAESTRO_VERSION=$SIM_MAESTRO_VERSION SIM_MAESTRO_SHA256=$SIM_MAESTRO_SHA256 SIM_IOS_SLOTS=$AGENT_SIM_IOS_SLOTS SIM_IOS_DEVICE_TYPE=$SIM_IOS_DEVICE_TYPE SIM_IOS_WORKFLOWS=$SIM_IOS_WORKFLOWS /bin/bash -s" \
         < "$REPO/install-ios-runner.sh" ;;
     gc)
       local days=${2:-7}
       [[ $days =~ ^[0-9]+$ ]] || usage
-      # Synced trees, Xcode's DerivedData, XcodeBuildMCP's own per-workspace DerivedData, Maestro's debug output.
-      sim_ios_ssh "for d in sims Library/Developer/Xcode/DerivedData Library/Developer/XcodeBuildMCP/workspaces .cache/agent-sim; do [ -d \$d ] && find \$d -mindepth 1 -maxdepth 1 -type d -mtime +$days -print -exec rm -rf {} + ; done; df -h \$HOME | tail -1" ;;
+      # A synced tree goes when its sync stamp is older than N days; one without a stamp (made before stamps, or by an
+      # older sim) by its own mtime. Then Xcode's DerivedData, XcodeBuildMCP's own per-workspace DerivedData and
+      # Maestro's debug output, by mtime. No globs: the runner's zsh fails a command on a glob that matches nothing.
+      local trees="[ -d sims ] && find sims -mindepth 1 -maxdepth 1 -type d | while IFS= read -r t; do s=\$t/$SIM_SYNC_STAMP
+        [ -e \"\$s\" ] || s=\$t; [ -n \"\$(find \"\$s\" -prune -mtime +$days)\" ] && echo \"\$t\" && rm -rf \"\$t\"; done"
+      sim_ios_ssh "$trees; for d in Library/Developer/Xcode/DerivedData Library/Developer/XcodeBuildMCP/workspaces .cache/agent-sim; do [ -d \$d ] && find \$d -mindepth 1 -maxdepth 1 -type d -mtime +$days -print -exec rm -rf {} + ; done; df -h \$HOME | tail -1" ;;
     *) usage ;;
   esac
 }

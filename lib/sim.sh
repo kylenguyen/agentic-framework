@@ -137,16 +137,40 @@ sim_app_rel() {
   realpath --relative-to="$root" "$d"
 }
 
-# sim_tree_name <root>: a stable directory name for a worktree on the Mac: <repo> for a checkout,
-# <repo>-<slug> for ~/workspace/<repo>.wt/<slug>, the agent session naming (bin/agent).
+# sim_tree_name <root>: a stable directory name for a worktree on the Mac, <base>-<h6>. <base> is the agent session
+# naming (bin/agent): <repo> for a checkout, <repo>-<slug> for ~/workspace/<repo>.wt/<slug>, with anything outside
+# [A-Za-z0-9._-] made `_`. <h6> is the start of sha256(root), so two roots never share a tree on the Mac: not two
+# checkouts with one basename, not foo.wt/bar and a repo called foo-bar.
 sim_tree_name() {
-  local root=$1 parent
+  local root=$1 parent base h
   parent=$(basename "$(dirname "$root")")
   case $parent in
-    *.wt) echo "${parent%.wt}-$(basename "$root")" ;;
-    *)    basename "$root" ;;
+    *.wt) base="${parent%.wt}-$(basename "$root")" ;;
+    *)    base=$(basename "$root") ;;
   esac
+  h=$(printf %s "$root" | sha256sum); h=${h:0:6}
+  printf '%s-%s\n' "${base//[^A-Za-z0-9._-]/_}" "$h"
 }
+
+# sim_mac_path <root> [app]: where a worktree (and its app, a path relative to the root as sim_app_rel gives it) sits
+# on the Mac, relative to the runner's home: sims/<tree>[/<app>]. For messages; remote commands use sim_mac_dir.
+sim_mac_path() {
+  local p; p=sims/$(sim_tree_name "$1")
+  case ${2:-.} in .) ;; *) p=$p/$2 ;; esac
+  printf '%s\n' "$p"
+}
+
+# sim_mac_dir <root> [app]: sim_mac_path quoted with printf %q, the form every remote command takes. The runner's login
+# shell (zsh on macOS) reads \-escapes and $'...' as bash writes them, so an app directory with a space or a ' survives.
+# The tree name itself never needs quoting, so sims/<tree> is also safe as an rsync destination (see cmd_ios sync).
+sim_mac_dir() {
+  local p; p=$(sim_mac_path "$@") || return 1
+  printf '%q\n' "$p"
+}
+
+# The stamp `sim ios sync` touches in a tree on the Mac before each rsync; `sim ios gc` goes by its age, because rsync -a
+# gives the tree the mtime of the worktree on the host, however old that is.
+SIM_SYNC_STAMP=.agent-sim-synced
 
 # sim_lease <platform> [root] [kind] [until]: take a slot, the one this worktree had last if it is free, else the
 # first free one. kind is mcp (bin/sim-mcp, the default) or cli (`sim lease`, which also passes the epoch its lease
@@ -318,6 +342,8 @@ sim_rsync_args() { # sim_rsync_args: the rsync options for a sync of a worktree
   for e in "${SIM_RSYNC_EXCLUDES[@]}"; do printf '%s\n' "--exclude=$e"; done
   # Expo generates ios/ on the Mac with prebuild; the host has none, and --delete must not take the Mac's away.
   printf '%s\n' '--filter=P ios/'
+  # The sync stamp is the Mac's own (sim ios gc reads it), so --delete must leave it too.
+  printf '%s\n' "--filter=P $SIM_SYNC_STAMP"
 }
 
 # --- per-repo MCP registration (sim enable) -------------------------------------------------------------------
