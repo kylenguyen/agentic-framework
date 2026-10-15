@@ -2,11 +2,13 @@
 # whose login shell is zsh as on macOS: ssh runs every command through `zsh -c`, which reads ~/.zshenv, where
 # install-ios-runner.sh puts ~/.local/bin on PATH (the same block is written here). ~/.local/bin holds the shims
 # from tests/e2e/shims/simmac (xcrun, maestro, npx, sim-xcodebuildmcp); sim-mac.sh adds the real sim-maestro
-# launcher, cut out of install-ios-runner.sh. Not covered: macOS itself, /bin/bash 3.2, BSD tools, Xcode.
+# launcher, cut out of install-ios-runner.sh. lsof is in /usr/bin here, /usr/sbin on macOS (sim tunnel looks there
+# first); sshd allows remote forwarding by default (AllowTcpForwarding yes), as on macOS. Not covered: macOS
+# itself, /bin/bash 3.2, BSD tools, Xcode.
 FROM debian:12-slim
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      openssh-server rsync bash zsh curl python3 procps ca-certificates \
+      openssh-server rsync bash zsh curl python3 procps lsof ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 RUN useradd -m -s /usr/bin/zsh runner && usermod -p '*' runner \
     && mkdir -p /run/sshd && ssh-keygen -A \

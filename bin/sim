@@ -11,6 +11,8 @@
 #   sim ports <P> [k|--check]           this worktree's 100 ports for test stacks: eval "$(sim ports web)"; k lists k, --check busy ones
 #   sim build [args]                    from the app's directory: Metro if not running, then expo run:android for the slot
 #   sim maestro android|ios <args...>   Maestro on this worktree's emulator or simulator, a directory per run: sim maestro ios test .maestro/
+#                                       ios --forward p[,p...]: host ports reachable from the Mac for the run (sim tunnel)
+#   sim tunnel ios <p[,p...]> [--background|--stop|--any-port]   host 127.0.0.1:<p> as 127.0.0.1:<p> on the Mac; ports from sim ports ios
 #   sim metro start|stop|log <P>        Metro for this worktree's slot: android (adb reverse), web, ios (on the Mac)
 #   sim metro start <P> [--env K=V]...  with EXPO_PUBLIC_*, the names in SIM_METRO_ENV and each K=V; returns once it answers
 #   sim android start|stop|logs <N|all> the emulator units
@@ -59,7 +61,7 @@ ios_states() {
 }
 
 cmd_status() {
-  local p n count state idle run
+  local p n count state idle run tunnel
   ios_states
   for p in $SIM_PLATFORMS; do
     count=$(sim_slots "$p")
@@ -71,6 +73,7 @@ cmd_status() {
                  printf '%-8s %s  %-14s %-8s %-15s %s\n' "$p" "$n" "$(sim_android_serial "$n")" "$run" "$idle" "$state" ;;
         web)     printf '%-8s %s  %-14s %-8s %-15s %s\n' "$p" "$n" "port $(sim_metro_port web "$n")" - "$idle" "$state" ;;
         ios)     run=${IOS_STATE[$n]:--}
+                 tunnel=$(tunnel_live "$n") && state+="  tunnel $tunnel"
                  printf '%-8s %s  %-14s %-8s %-15s %s\n' "$p" "$n" "$(sim_ios_name "$n")" "$run" "$idle" "$state" ;;
       esac
     done
@@ -96,6 +99,7 @@ reap_ios_reachable() {
 cmd_reap() {
   local limit=$((10#$AGENT_SIM_IDLE_MINUTES * 60)) p n count idle unit
   reap_leases
+  reap_tunnels
   [ "$limit" -gt 0 ] || return 0
   for p in $SIM_PLATFORMS; do
     count=$(sim_slots "$p")
@@ -156,6 +160,9 @@ a boot (up to a minute). An Android emulator starts clean, so after an idle stop
   paths must lie inside this worktree; reports land at those paths. Each run ends by printing its directory on
   this host (logs, screenshots of a failed step, on Android logcat.txt) and a \`latest\` link to it. Never run
   \`maestro\` directly: it cannot see your device and hangs.
+- iOS flows run on the Mac, so a test stack on this host is out of their reach: \`sim maestro ios --forward <p,p>\`
+  (or \`sim tunnel ios <p,p> --background\`) makes host 127.0.0.1:<p> reachable there at 127.0.0.1:<p>, with ports
+  from \`sim ports ios\`.
 - Without a harness session (a script, CI), \`sim lease <android|web|ios>\` holds a slot for this worktree (8 h by
   default, \`--ttl\`) and \`sim release <platform>\` frees it.
 - iOS: \`sim ios prepare\` copies this worktree to the Mac and prints its path there; build and run it with the
@@ -219,6 +226,196 @@ ports_check() {
   if [ -z "$out" ]; then echo "ports $base-$((base + count - 1)): none listening"; return 0; fi
   echo "$out"
   return 1
+}
+
+# --- tunnels (sim tunnel ios, sim maestro ios --forward) ---------------------------------------------------------
+# On iOS the app, Maestro and its HTTP calls run on the Mac, so a test stack on this host is out of their reach. A
+# tunnel is `ssh -N -R` on a connection of its own (a dropped shared master never takes it down): Mac 127.0.0.1:P
+# leads to host 127.0.0.1:P. 127.0.0.1 on both sides, never localhost, which tries ::1 first. Remote ports are shared
+# by every slot on the Mac, hence the slot's port block (sim ports) and a check for ports already bound there.
+# A background tunnel has the pidfile $SIM_STATE/ios/N.tunnel (pid=, ports=, root=, watcher=) and a watcher
+# (`sim _tunnel_watch`) that closes it within SIM_TUNNEL_WATCH seconds (10) of the worktree losing its ios lease.
+
+tunnel_file() { echo "$SIM_STATE/ios/$1.tunnel"; }
+
+# tunnel_parse <spec>: "p[,p…]" as ports one per line, each from 1 to 65535, no repeats; rc 2 with a message otherwise.
+tunnel_parse() {
+  local spec=$1 p seen=' '
+  [[ $spec =~ ^[0-9]+(,[0-9]+)*$ ]] || { sim_fail "ports $spec: a comma list of port numbers, e.g. 22000,22001"; return 2; }
+  for p in ${spec//,/ }; do
+    [ ${#p} -le 5 ] && [ "$((10#$p))" -ge 1 ] && [ "$((10#$p))" -le 65535 ] || { sim_fail "port $p: from 1 to 65535"; return 2; }
+    p=$((10#$p)); [[ $seen == *" $p "* ]] && continue
+    seen+="$p "; echo "$p"
+  done
+}
+
+# tunnel_in_block <N> <any> <port...>: every port must lie in ios slot N's block (rc 2 with the hint); with any=1 a
+# port outside it is forwarded after a warning.
+tunnel_in_block() {
+  local n=$1 any=$2 base count p rc=0; shift 2
+  read -r base count < <(sim_port_block ios "$n")
+  for p; do
+    [ "$p" -lt "$base" ] || [ "$p" -ge $((base + count)) ] || continue
+    if [ "$any" = 1 ]; then
+      echo "sim: warning: port $p is outside ios slot $n's block $base-$((base + count - 1)): another slot may use it too" >&2
+    else
+      sim_fail "port $p is outside ios slot $n's block $base-$((base + count - 1)) (sim ports ios); --any-port forwards it anyway, at the risk of colliding with another slot" || true
+      rc=2
+    fi
+  done
+  return "$rc"
+}
+
+# mac_listeners <port...>: "<port> <pid> <command>" for each of the ports something listens on at the Mac, "<port> - -"
+# where lsof cannot name it. One ssh call. A port is taken when a connection to 127.0.0.1:<port> succeeds
+# (/bin/bash's /dev/tcp, on macOS too): lsof as the runner sees neither other users' processes nor sshd's forward
+# listeners, so it only names the holder where it can. lsof at its macOS path first, so PATH on the Mac does not
+# matter. "=\$p" is quoted: zsh, the runner's shell, expands an unquoted =word to a command's path. rc 1 when the
+# Mac does not answer.
+mac_listeners() {
+  local out
+  out=$(SIM_SSH_TIMEOUT=15 sim_ios_ssh "L=/usr/sbin/lsof; [ -x \$L ] || L=lsof; for p in $*; do echo \"=\$p\"; /bin/bash -c 'exec 3<>/dev/tcp/127.0.0.1/'\$p 2>/dev/null && echo +; \$L -nP \"-iTCP:\$p\" -sTCP:LISTEN -Fpc 2>/dev/null; done; exit 0" </dev/null) \
+    || return 1
+  awk '/^=/ { port = substr($0, 2); order[++n] = port; pid = ""; next }
+       /^\+$/ { open[port] = 1; next }
+       /^p/ { pid = substr($0, 2); next }
+       /^c/ && pid != "" { if (!seen[port " " pid]++) print port, pid, substr($0, 2); named[port] = 1 }
+       END { for (i = 1; i <= n; i++) if (open[order[i]] && !named[order[i]]) print order[i], "-", "-" }' <<<"$out"
+}
+
+tunnel_field() { sed -n "s/^$2=//p" "$(tunnel_file "$1")" 2>/dev/null; }   # tunnel_field <N> <key>
+
+tunnel_live() { # tunnel_live <N>: the ports of slot N's background tunnel while its ssh runs; rc 1 when none does
+  local pid; pid=$(tunnel_field "$1" pid)
+  [[ $pid =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null || return 1
+  tunnel_field "$1" ports
+}
+
+# tunnel_start <N> <port...>: check that no port is bound on the Mac, start the forwards and wait until every port
+# takes connections on the Mac (SIM_TUNNEL_READY_TIMEOUT, 5 s). Sets TUNNEL_PID; exits 1 when a port is bound or the
+# tunnel does not come up, with ssh's stderr. With TUNNEL_DETACH=1 the ssh runs in a session of its own;
+# TUNNEL_CLOSE_FD names an fd it must not inherit (a caller's lock).
+tunnel_start() {
+  local n=$1 bound line p pid cmd mine fwd=() err up i
+  shift
+  bound=$(mac_listeners "$@") || unavailable "could not check the ports on $AGENT_IOS_HOST"
+  if [ -n "$bound" ]; then
+    mine=$(tunnel_live "$n" || true)
+    while read -r p pid cmd; do
+      if [[ ,$mine, == *",$p,"* ]]; then line="port $p already bound on the Mac by this slot's background tunnel (sim tunnel ios --stop)"
+      elif [ "$pid" = - ]; then line="port $p already bound on the Mac, by a process lsof does not show the runner (another user's, or an ssh tunnel)"
+      else line="port $p already bound on the Mac by $cmd (pid $pid)"; fi
+      echo "sim: $line" >&2
+    done <<<"$bound"
+    exit 1
+  fi
+  for p; do fwd+=(-R "127.0.0.1:$p:127.0.0.1:$p"); done
+  mkdir -p "$SIM_STATE/ios"; err=$SIM_STATE/ios/$n.tunnel.log
+  ( [ -z "${TUNNEL_CLOSE_FD:-}" ] || exec {TUNNEL_CLOSE_FD}>&-
+    pre=(); [ "${TUNNEL_DETACH:-}" != 1 ] || pre=(setsid)
+    exec "${pre[@]}" ssh "${SIM_SSH_SOLO_OPTS[@]}" -N -o ExitOnForwardFailure=yes "${fwd[@]}" "${SIM_SSH_OPTS[@]}" \
+      "$AGENT_IOS_USER@$AGENT_IOS_HOST" ) </dev/null >/dev/null 2>"$err" &
+  TUNNEL_PID=$!
+  for ((i = 0; i < ${SIM_TUNNEL_READY_TIMEOUT:-5} * 5; i++)); do
+    kill -0 "$TUNNEL_PID" 2>/dev/null || break
+    up=$(mac_listeners "$@" | awk '{ print $1 }' | sort -u | wc -l) || up=0
+    if [ "$up" -ge $# ]; then kill -0 "$TUNNEL_PID" 2>/dev/null && return 0; break; fi
+    sleep 0.2
+  done
+  kill "$TUNNEL_PID" 2>/dev/null || true; wait "$TUNNEL_PID" 2>/dev/null || true
+  die "the tunnel to $AGENT_IOS_HOST did not come up within ${SIM_TUNNEL_READY_TIMEOUT:-5} s: $(tr '\n' ' ' < "$err")"
+}
+
+tunnel_stop() { # tunnel_stop <N>: end slot N's background tunnel and its watcher, print its ports; rc 1 when none ran
+  local f pid w i ports
+  f=$(tunnel_file "$1"); [ -e "$f" ] || return 1
+  pid=$(tunnel_field "$1" pid); w=$(tunnel_field "$1" watcher); ports=$(tunnel_field "$1" ports)
+  [[ $w =~ ^[0-9]+$ ]] && kill "$w" 2>/dev/null || true
+  if [[ $pid =~ ^[0-9]+$ ]] && kill "$pid" 2>/dev/null; then
+    for ((i = 0; i < 30; i++)); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
+    rm -f "$f"; echo "$ports"; return 0
+  fi
+  rm -f "$f"; return 1
+}
+
+# sim tunnel ios <p[,p…]> [--background|--stop|--any-port]
+cmd_tunnel() {
+  local p=${1:-} spec='' mode=fore any=0 n ports=() list f
+  [ "$p" = ios ] || usage
+  shift
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --background) mode=back ;;
+      --stop) mode=stop ;;
+      --any-port) any=1 ;;
+      -*) usage ;;
+      *) [ -z "$spec" ] || usage; spec=$1 ;;
+    esac
+    shift
+  done
+  if [ "$mode" = stop ]; then
+    [ -z "$spec" ] || usage
+    n=$(my_slot ios) || exit 1
+    if list=$(tunnel_stop "$n"); then echo "tunnel of ios slot $n stopped (ports $list)"
+    else echo "no tunnel on ios slot $n: nothing to stop"; fi
+    return 0
+  fi
+  [ -n "$spec" ] || usage
+  list=$(tunnel_parse "$spec") || exit 2
+  mapfile -t ports <<<"$list"
+  sim_mac_require
+  n=$(my_slot ios) || exit 1
+  tunnel_in_block "$n" "$any" "${ports[@]}" || exit 2
+  # One background tunnel per slot. One that shares a port with it fails on the bound-port check, which says so.
+  if [ "$mode" = back ] && list=$(tunnel_live "$n"); then
+    for p in "${ports[@]}"; do [[ ,$list, == *",$p,"* ]] && list=''; done
+    [ -z "$list" ] || die "ios slot $n already has a background tunnel (ports $list): sim tunnel ios --stop, then open one with every port"
+  fi
+  if [ "$mode" = back ]; then
+    TUNNEL_DETACH=1 tunnel_start "$n" "${ports[@]}"
+    f=$(tunnel_file "$n")
+    printf 'pid=%s\nports=%s\nroot=%s\n' "$TUNNEL_PID" "$(IFS=,; echo "${ports[*]}")" "$(sim_root)" > "$f.$$"
+    # Detached, stdio closed: the caller (a harness tool call) returns at once.
+    setsid "$REPO/bin/sim" _tunnel_watch "$n" "$TUNNEL_PID" "$(sim_root)" </dev/null >/dev/null 2>&1 &
+    printf 'watcher=%s\n' "$!" >> "$f.$$"; mv -f "$f.$$" "$f"
+    for p in "${ports[@]}"; do echo "tunnel up: Mac 127.0.0.1:$p -> host 127.0.0.1:$p"; done
+    echo "in the background until sim tunnel ios --stop, or until this worktree's ios lease ends"
+    return 0
+  fi
+  tunnel_start "$n" "${ports[@]}"
+  # shellcheck disable=SC2064   # expanded now
+  trap "kill $TUNNEL_PID 2>/dev/null" EXIT
+  trap 'exit 0' INT TERM HUP
+  for p in "${ports[@]}"; do echo "tunnel up: Mac 127.0.0.1:$p -> host 127.0.0.1:$p"; done
+  echo "until Ctrl-C (--background keeps it without a terminal)"
+  wait "$TUNNEL_PID" 2>/dev/null || true
+  unavailable "the tunnel to $AGENT_IOS_HOST ended: $(tr '\n' ' ' < "$SIM_STATE/ios/$n.tunnel.log")"
+}
+
+# _tunnel_watch <N> <pid> <root>: started by `sim tunnel ios --background`. Ends the tunnel once <root> no longer holds
+# ios slot N, and removes the pidfile once the tunnel is gone (unless it names another tunnel by then).
+cmd_tunnel_watch() {
+  local n=$1 pid=$2 root=$3
+  while kill -0 "$pid" 2>/dev/null; do
+    if ! { sim_held ios "$n" && [ "$(sim_owner_field ios "$n" root)" = "$root" ]; }; then
+      kill "$pid" 2>/dev/null; break
+    fi
+    sleep "${SIM_TUNNEL_WATCH:-10}"
+  done
+  [ "$(tunnel_field "$n" pid)" != "$pid" ] || rm -f "$(tunnel_file "$n")"
+}
+
+reap_tunnels() { # drop pidfiles of background tunnels whose ssh is gone; close tunnels whose lease has ended
+  local n count pid root
+  count=$(sim_slots ios)
+  for ((n = 1; n <= count; n++)); do
+    [ -e "$(tunnel_file "$n")" ] || continue
+    pid=$(tunnel_field "$n" pid); root=$(tunnel_field "$n" root)
+    if ! [[ $pid =~ ^[0-9]+$ ]] || ! kill -0 "$pid" 2>/dev/null; then rm -f "$(tunnel_file "$n")"; continue; fi
+    sim_held ios "$n" && [ "$(sim_owner_field ios "$n" root)" = "$root" ] && continue
+    tunnel_stop "$n" >/dev/null && echo "ios $n: tunnel closed, its lease has ended"
+  done
+  return 0
 }
 
 metro_pidfile() { echo "$SIM_STATE/$1/$2.metro"; }
@@ -298,12 +495,17 @@ cmd_build() {
 # --test-output-dir and --debug-output, as `--x P` or `--x=P`, must name a path inside the worktree (rc 2), which is
 # made absolute. Sets MA_ARGS (Maestro's arguments), and per argument MA_OUT (the absolute output path it carries,
 # else empty) and MA_KEY (`--x=` when the path is in the same argument); MA_GIVEN lists the output flags given.
+# sim's own: --forward p[,p…] (iOS) sets MA_FORWARD.
 maestro_args() {
   local root=$1 a p; shift
-  MA_ARGS=(); MA_OUT=(); MA_KEY=(); MA_GIVEN=' '
+  MA_ARGS=(); MA_OUT=(); MA_KEY=(); MA_GIVEN=' '; MA_FORWARD=()
   while [ $# -gt 0 ]; do
     a=$1; shift
     case $a in
+      --forward|--forward=*)   # sim tunnel's ports for the run (iOS): MA_FORWARD
+        if [ "$a" = --forward ]; then [ $# -gt 0 ] || usage; p=$1; shift; else p=${a#*=}; fi
+        p=$(tunnel_parse "$p") || exit 2
+        mapfile -t MA_FORWARD <<<"$p" ;;
       --output|--test-output-dir|--debug-output)
         [ $# -gt 0 ] || die "$a needs a path" 2
         p=$(maestro_out_path "$root" "$1") || exit; shift
@@ -366,6 +568,7 @@ maestro_android() {
   local n root image name run home ttyf=() envs=() v rc args keep logcat
   root=$(sim_root)
   maestro_args "$root" "$@"
+  [ ${#MA_FORWARD[@]} = 0 ] || die "--forward is for iOS: on android, flows reach the host through the docker bridge" 2
   n=$(my_slot android) || exit 1
   image=$(sim_maestro_image); name=agent-sim-maestro-$n
   run=$SIM_STATE/android/$n.maestro; home=$SIM_CACHE/android/maestro-$n
@@ -422,13 +625,16 @@ maestro_ios_launcher() {
 # inside the worktree; output paths go to artifacts/<path in the worktree> of the run's directory on the Mac
 # (~/.cache/agent-sim/maestro-N/runs/<id>), which comes back to the host's run directory, from where they are copied
 # to the paths the caller gave. Maestro picks a free port for its driver on every run, so slots run side by side.
+# --forward p[,p…] is sim's own: a tunnel (above) holds those host ports on the Mac for the length of the run.
 maestro_ios() {
   [ $# -gt 0 ] || usage
   sim_mac_require
-  local n root app lock base mrun a i k words=() envs=() v tty=() rc err p rel src
+  local n root app lock base mrun a i k words=() envs=() v tty=() rc err p rel src toucher
   root=$(sim_root); app=$(sim_app_rel "$PWD" "$root")
   maestro_args "$root" "$@"
+  [ ${#MA_ARGS[@]} -gt 0 ] || usage
   n=$(my_slot ios) || exit 1
+  [ ${#MA_FORWARD[@]} = 0 ] || tunnel_in_block "$n" 0 "${MA_FORWARD[@]}" || exit 2
   base=$SIM_CACHE/ios/maestro-$n
   mkdir -p "$SIM_STATE/ios"
   exec {lock}> "$SIM_STATE/ios/$n.maestro.lock"
@@ -442,8 +648,15 @@ maestro_ios() {
   mrun=.cache/agent-sim/maestro-$n/runs/$MR_ID   # the run's directory on the Mac, under the runner's home
   # A long suite is use: keep the reaper off the simulator while it runs.
   ( exec {lock}>&-; while sleep 60; do sim_touch ios "$n"; done ) >/dev/null 2>&1 &
+  toucher=$!
   # shellcheck disable=SC2064   # expanded now: the trap runs after this function's locals are gone
-  trap "kill $! 2>/dev/null" EXIT
+  trap "kill $toucher 2>/dev/null" EXIT
+  if [ ${#MA_FORWARD[@]} -gt 0 ]; then
+    TUNNEL_CLOSE_FD=$lock tunnel_start "$n" "${MA_FORWARD[@]}"
+    # shellcheck disable=SC2064
+    trap "kill $toucher $TUNNEL_PID 2>/dev/null" EXIT
+    for a in "${MA_FORWARD[@]}"; do echo "tunnel up: Mac 127.0.0.1:$a -> host 127.0.0.1:$a" >&2; done
+  fi
   # Words for the remote shell: output paths to the run's artifacts/, other worktree paths into the synced copy.
   for i in "${!MA_ARGS[@]}"; do
     a=${MA_ARGS[i]}
@@ -790,8 +1003,10 @@ case $sub in
   ios) cmd_ios "$@" ;;
   lease) cmd_lease "$@" ;;
   release) cmd_release "$@" ;;
+  tunnel) cmd_tunnel "$@" ;;
   _hold) cmd_hold "$@" ;;
   _wake) cmd_wake "$@" ;;
   _mac) cmd_mac "$@" ;;
+  _tunnel_watch) cmd_tunnel_watch "$@" ;;
   *) usage ;;
 esac

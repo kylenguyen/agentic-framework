@@ -1,9 +1,14 @@
 #!/bin/sh
 # e2e stand-in for Maestro on the fake Mac (tests/e2e/sim-mac.sh). Logs its arguments to ~/maestro.log and its
 # working directory to ~/maestro.cwd, writes a log and a screenshot into every --debug-output and --test-output-dir
-# directory and a report at every --output path, then exits with the code in ~/maestro.rc (default 0).
+# directory and a report at every --output path, then exits with the code in ~/maestro.rc (default 0). When
+# ~/maestro.curl holds a URL it fetches it first, as a flow's HTTP call would: body to ~/maestro.curl.out, curl's
+# exit code to ~/maestro.curl.rc.
 printf '%s\n' "$*" >> "$HOME/maestro.log"
 pwd > "$HOME/maestro.cwd"
+if [ -s "$HOME/maestro.curl" ]; then
+  curl -s --max-time 5 "$(cat "$HOME/maestro.curl")" > "$HOME/maestro.curl.out"; echo $? > "$HOME/maestro.curl.rc"
+fi
 out() { # out <flag> <path>
   case $1 in
     --debug-output|--test-output-dir) mkdir -p "$2" && echo "maestro stub $1" > "$2/maestro.log" && echo png > "$2/screenshot-failed.png" ;;

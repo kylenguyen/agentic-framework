@@ -30,11 +30,23 @@ done
 # The Metro readiness loop (its last argument) is run by sh here.
 # While $T/ssh.down exists every call is logged, then fails as one to an unreachable host does (255).
 # With $T/mcp.fake present, the MCP launcher is that script run on the real node (tests/sim/62-ios-reconnect.sh).
+# A tunnel (-R) prints $T/tunnel.fail to stderr and exits 255 when that file exists; otherwise it marks $T/tunnel.up
+# and holds until a signal. lsof on the Mac (sim tunnel) prints $T/lsof.out when it exists, else, while a tunnel is
+# up, sshd listening on every port it was asked about.
 cat > "$T/shims/ssh" <<EOF
 #!/bin/sh
 printf '%s\n' "\$*" >> "$T/log/ssh"
 [ -e "$T/ssh.down" ] && exit 255
 case "\$*" in
+  *" -R "*)
+    [ -e "$T/tunnel.fail" ] && { cat "$T/tunnel.fail" >&2; exit 255; }
+    touch "$T/tunnel.up"; trap 'rm -f "$T/tunnel.up"; exit 0' TERM INT HUP
+    while :; do sleep 0.1; done ;;
+  *lsof*)
+    if [ -e "$T/lsof.out" ]; then cat "$T/lsof.out"
+    elif [ -e "$T/tunnel.up" ]; then
+      for p in \$(printf '%s\n' "\$*" | sed -n 's/.*for p in \([0-9 ]*\);.*/\1/p'); do printf '=%s\np99\ncsshd\n' "\$p"; done
+    fi ;;
   *sim-xcodebuildmcp*) [ -e "$T/mcp.fake" ] && exec "$SIM_RELAY_NODE" "$T/mcp.fake"; cat > /dev/null ;;
   *"sim-maestro --version"*) cat "$T/sim-maestro.version" 2>/dev/null || echo 2 ;;
   *sim-maestro*) exit "\$(cat "$T/ssh.rc" 2>/dev/null || echo 0)" ;;

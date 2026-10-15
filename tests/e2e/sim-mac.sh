@@ -369,6 +369,55 @@ has "metro stub: not serving" "$OUT" "metro: ...with the end of the Mac's Metro 
 run hx sim metro stop ios
 run hx sim release ios
 
+say "sim tunnel ios and sim maestro ios --forward: host services on the Mac"
+# Two web servers on the host, on the first two ports of the slot's block; the Mac reaches them only through a tunnel.
+# mac_listens <port>: "open" while the port takes connections on the Mac. Not lsof: as the runner it cannot see
+# sshd's forward listeners (sshd is not dumpable), which is why sim tunnel probes by connecting too.
+mac_listens() { mx bash -c 'exec 3<>"/dev/tcp/127.0.0.1/$1"' _ "$1" 2>/dev/null && echo open; }
+run hx sim lease ios
+has "leased for $WT" "$OUT" "tunnel: sim lease ios for the worktree"
+P1=$(hx sim ports ios 1); P2=$((P1 + 1))
+for p in "$P1" "$P2"; do docker exec -d -u "$U" -w /w "$HOSTC" python3 -m http.server --bind 127.0.0.1 "$p"; done
+for _ in $(seq 1 30); do hx curl -fs "127.0.0.1:$P2" >/dev/null 2>&1 && break; sleep 0.2; done
+check "tunnel: nothing listens on the Mac at $P1 before" "" "$(mac_listens "$P1")"
+check "tunnel: ...nor at $P2" "" "$(mac_listens "$P2")"
+SECONDS_AT=$SECONDS; run hx timeout 30 sim tunnel ios "$P1" --background; took=$((SECONDS - SECONDS_AT))
+check "tunnel --background: exit 0" 0 "$RC"
+has "tunnel up: Mac 127.0.0.1:$P1 -> host 127.0.0.1:$P1" "$OUT" "tunnel --background: says it is up"
+[ "$took" -le 10 ] && ok "tunnel --background: returns at once, detached (${took}s)" || bad "tunnel --background: returns at once" "took ${took}s"
+has "Directory listing" "$(mx curl -s "127.0.0.1:$P1")" "tunnel: the Mac reaches the host's server at 127.0.0.1:$P1"
+check "tunnel: the Mac takes connections on $P1 (the probe the checks below use)" open "$(mac_listens "$P1")"
+has "tunnel $P1" "$(status_of ios 1)$(status_of ios 2)" "tunnel: sim status shows it"
+run hx sim tunnel ios "$P1"
+check "tunnel: a second one on the port is rc 1" 1 "$RC"
+has "port $P1 already bound on the Mac by" "$OUT" "tunnel: ...saying the port is already bound"
+# The shared ssh master goes away (ControlPersist ends, or a drop kills it); the tunnel has a connection of its own.
+hx bash -c 'for s in "$1"/ios/ssh-*; do [ -S "$s" ] && ssh -o ControlPath="$s" -O exit runner@mac; done' _ "$STATE" >/dev/null 2>&1
+has "Directory listing" "$(mx curl -s "127.0.0.1:$P1")" "tunnel: outlives the shared ssh master"
+mx sh -c "echo http://127.0.0.1:$P2/ > maestro.curl; echo 0 > maestro.rc; rm -f maestro.curl.rc maestro.curl.out"
+run hx sim maestro ios --forward "$P2" test flows/
+check "maestro --forward: exit 0" 0 "$RC"
+has "tunnel up: Mac 127.0.0.1:$P2" "$OUT" "maestro --forward: says the tunnel is up"
+check "maestro --forward: the flow's HTTP call reached the host" 0 "$(mx cat maestro.curl.rc 2>/dev/null)"
+has "Directory listing" "$(mx cat maestro.curl.out 2>/dev/null)" "maestro --forward: ...and got the host's answer"
+lacks "forward" "$(mx tail -1 maestro.log)" "maestro --forward: Maestro never sees --forward"
+for _ in $(seq 1 20); do [ -z "$(mac_listens "$P2")" ] && break; sleep 0.25; done
+check "maestro --forward: the tunnel is gone after the run" "" "$(mac_listens "$P2")"
+mx rm -f maestro.curl maestro.curl.rc maestro.curl.out
+run hx sim tunnel ios --stop
+check "tunnel --stop: exit 0" 0 "$RC"
+for _ in $(seq 1 20); do [ -z "$(mac_listens "$P1")" ] && break; sleep 0.25; done
+check "tunnel --stop: the Mac no longer listens on $P1" "" "$(mac_listens "$P1")"
+lacks "tunnel" "$(status_of ios 1)$(status_of ios 2)" "tunnel --stop: sim status shows none"
+run hx env SIM_TUNNEL_WATCH=1 sim tunnel ios "$P1" --background
+check "tunnel: a new one with a 1 s watcher" 0 "$RC"
+run hx sim release ios
+for _ in $(seq 1 40); do [ -z "$(mac_listens "$P1")" ] && break; sleep 0.25; done
+check "tunnel: closed once the lease is released" "" "$(mac_listens "$P1")"
+for _ in $(seq 1 20); do [ -z "$(hx bash -c 'ls "$1"/ios/*.tunnel 2>/dev/null' _ "$STATE")" ] && break; sleep 0.25; done
+check "tunnel: ...and its pidfile removed" "" "$(hx bash -c 'ls "$1"/ios/*.tunnel 2>/dev/null' _ "$STATE")"
+hx pkill -f 'http.server' >/dev/null 2>&1
+
 pass=$(grep -c '^ok$' "$T/results"); fail=$(grep -c '^FAIL$' "$T/results")
 printf '\n%d passed, %d failed (%ds)\n' "$pass" "$fail" "$SECONDS"
 [ "$fail" = 0 ]
