@@ -9,6 +9,16 @@
      route in app.mjs: #/ (session list) and #/s/<name> (terminal). No inline style or script, ever: the CSP
      (default-src 'self') refuses both. Later tasks add markup in their own marked sections at the end of
      <body>, or fill the elements marked data-slot from app.mjs. -->
+<!-- --- phone --- installable app: manifest, home-screen icon, standalone on iOS -->
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icons/icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Agents">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="theme-color" content="#f5f6f8" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0e1116" media="(prefers-color-scheme: dark)">
 <link rel="stylesheet" href="/vendor/xterm.css">
 <link rel="stylesheet" href="/style.css">
 <script type="module" src="/app.mjs"></script>
@@ -107,6 +117,35 @@
 <!-- --- paste --- -->
 <!-- T8: status of an upload from a paste, a drop or the paperclip (app.mjs, the paste section). -->
 <div id="paste-toast" class="paste-toast" role="status" aria-live="polite" hidden></div>
+
+<!-- --- phone --- -->
+<!-- The bar under the terminal on a narrow screen; app.mjs puts a copy in the term-footer slot below 700 px. -->
+<template id="phone-footer">
+  <form class="phone-line" hidden>
+    <input class="phone-line-input" type="text" enterkeyhint="send" autocomplete="off" autocapitalize="none"
+           autocorrect="off" spellcheck="false" aria-label="Line to send" placeholder="Type a line, Enter sends it">
+    <button type="submit" class="btn small primary">Send</button>
+  </form>
+  <div class="phone-keys" role="toolbar" aria-label="Terminal keys">
+    <div class="phone-scroll">
+      <button type="button" class="key" data-key="esc">Esc</button>
+      <button type="button" class="key" data-key="tab">Tab</button>
+      <button type="button" class="key mod" data-key="ctrl" aria-pressed="false">Ctrl</button>
+      <button type="button" class="key" data-key="up" aria-label="Up">↑</button>
+      <button type="button" class="key" data-key="down" aria-label="Down">↓</button>
+      <button type="button" class="key" data-key="left" aria-label="Left">←</button>
+      <button type="button" class="key" data-key="right" aria-label="Right">→</button>
+      <button type="button" class="key" data-key="|">|</button>
+      <button type="button" class="key" data-key="/">/</button>
+      <button type="button" class="key" data-key="~">~</button>
+      <button type="button" class="key" data-key="ctrl-c" aria-label="Control C">^C</button>
+      <button type="button" class="key" data-key="ctrl-b" aria-label="Control B">^B</button>
+      <button type="button" class="key font" data-key="font-down" aria-label="Smaller text">A−</button>
+      <button type="button" class="key font" data-key="font-up" aria-label="Larger text">A+</button>
+    </div>
+    <button type="button" class="key line-toggle" data-key="line" aria-pressed="false" aria-label="Line input">Line</button>
+  </div>
+</template>
 
 </body>
 </html>

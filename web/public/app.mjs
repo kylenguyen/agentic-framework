@@ -699,3 +699,205 @@ clip.setAttribute('aria-label', 'Attach a file or image');
 clip.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 11.5l-8.6 8.6a5 5 0 0 1-7.1-7.1l8.6-8.6a3.5 3.5 0 0 1 5 5l-8.6 8.6a2 2 0 0 1-2.8-2.8l7.9-7.9"/></svg>';
 clip.addEventListener('click', () => picker.click());
 slots.termActions.append(clip, picker);
+
+// --- phone -----------------------------------------------------------------------------------------------------
+// docs/web-dashboard-plan.md T7. Below 700 px the terminal gets the #phone-footer bar (index.html) in the
+// term-footer slot: soft keys a phone keyboard lacks, a sticky Ctrl, a line box and the font size. The page also
+// registers sw.js, which with manifest.webmanifest makes it installable; T10 adds push to that worker.
+const PHONE = matchMedia('(max-width: 700px)');
+const FONT_KEY = 'agent-web.fontSize';
+const FONT_MIN = 12;
+const FONT_MAX = 18;
+const LINE_KEY = 'agent-web.lineMode';
+const CSI = (final, mod) => (mod ? `\x1b[1;5${final}` : `\x1b[${final}`);
+
+// localStorage throws in some private modes and is empty in others; neither may break the page.
+function stored(key) {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+function store(key, value) {
+  try {
+    localStorage.setItem(key, String(value));
+  } catch { /* the setting lasts this visit only */ }
+}
+
+function fontSize() {
+  const n = Number(stored(FONT_KEY));
+  return Number.isInteger(n) && n >= FONT_MIN && n <= FONT_MAX ? n : null;
+}
+
+let ctrlArmed = false;
+let phoneBar = null;   // the footer's clone while it is mounted
+
+function armCtrl(on) {
+  ctrlArmed = on;
+  phoneBar?.querySelector('[data-key="ctrl"]').setAttribute('aria-pressed', String(on));
+}
+
+// Ctrl applies to whatever the next key is, so the conversion sits where every key ends up: the terminal
+// socket's send. xterm's onData (the on-screen keyboard, IME, a hardware keyboard) and the soft keys all reach it
+// through sendInput(); hooking the send keeps one place for all of those input paths. Only binary frames to a
+// /term socket are touched; resize messages are text and pass by.
+const wsSend = WebSocket.prototype.send;
+WebSocket.prototype.send = function (data) {
+  if (ctrlArmed && data instanceof Uint8Array && this.url.includes('/term')) {
+    armCtrl(false);
+    if (data.length === 1) data = Uint8Array.of(ctrlByte(data[0]));
+  }
+  return wsSend.call(this, data);
+};
+
+// a-z and A-Z (iOS capitalises the first letter) and @[\]^_ map to 0x00-0x1f, ? to DEL, space to NUL and / to
+// ^_, as a hardware keyboard sends them; anything else goes as typed.
+function ctrlByte(b) {
+  if (b === 0x3f) return 0x7f;
+  if (b === 0x20) return 0x00;
+  if (b === 0x2f) return 0x1f;
+  if ((b >= 0x40 && b <= 0x5f) || (b >= 0x61 && b <= 0x7a)) return b & 0x1f;
+  return b;
+}
+
+function arrow(final) {
+  const ctrl = ctrlArmed;
+  armCtrl(false);
+  if (ctrl) return CSI(final, true);
+  // Full-screen programs (less, vim, the harness TUIs) switch the cursor keys to application mode.
+  return currentTerminal()?.term.modes.applicationCursorKeysMode ? `\x1bO${final}` : CSI(final);
+}
+
+const KEYS = {
+  esc: () => '\x1b',
+  tab: () => '\t',
+  up: () => arrow('A'),
+  down: () => arrow('B'),
+  right: () => arrow('C'),
+  left: () => arrow('D'),
+  '|': () => '|',
+  '/': () => '/',   // armed Ctrl turns it into ^_ in the send hook, as a keyboard would
+  '~': () => '~',
+  'ctrl-c': () => '\x03',
+  'ctrl-b': () => '\x02',
+};
+
+function setFont(delta) {
+  const t = currentTerminal();
+  const now = t?.term.options.fontSize ?? fontSize() ?? 14;
+  const next = Math.min(FONT_MAX, Math.max(FONT_MIN, now + delta));
+  store(FONT_KEY, next);
+  if (t) {
+    t.term.options.fontSize = next;
+    fitTerminal();
+  }
+}
+
+function setLineMode(on, { focus = true } = {}) {
+  if (!phoneBar) return;
+  const form = phoneBar.querySelector('.phone-line');
+  form.hidden = !on;
+  phoneBar.querySelector('[data-key="line"]').setAttribute('aria-pressed', String(on));
+  store(LINE_KEY, on ? 1 : 0);
+  fitTerminal();
+  if (!focus) return;
+  if (on) form.querySelector('input').focus();
+  else currentTerminal()?.term.focus();
+}
+
+function onKey(key) {
+  if (key === 'ctrl') return armCtrl(!ctrlArmed);
+  if (key === 'font-down') return setFont(-1);
+  if (key === 'font-up') return setFont(1);
+  if (key === 'line') return setLineMode(phoneBar.querySelector('.phone-line').hidden);
+  const seq = KEYS[key]?.();
+  if (seq === undefined) return;
+  // Esc, Tab and ^C/^B are already what Ctrl would make of them; a held Ctrl ends with this key either way.
+  if (key !== '/' && key !== '|' && key !== '~') armCtrl(false);
+  sendInput(seq);
+}
+
+function mountPhoneBar() {
+  if (phoneBar) return;
+  const box = el('div', 'phone-bar');
+  box.append(...$('phone-footer').content.cloneNode(true).children);
+  phoneBar = box;
+  // A tap on a key must not move focus: the on-screen keyboard would close and the terminal lose its input.
+  // So pointerdown is cancelled, and with it the mouse events that would move focus; iOS WebKit then sends no
+  // click either, so a key acts on pointerup over the key it went down on. A swipe along the strip scrolls it
+  // and cancels the pointer instead. click is left to a key pressed from a hardware keyboard (detail 0).
+  let down = null;
+  box.addEventListener('pointerdown', (e) => {
+    down = e.target.closest('.key');
+    if (down) e.preventDefault();
+  });
+  box.addEventListener('mousedown', (e) => {
+    if (e.target.closest('.key')) e.preventDefault();
+  });
+  box.addEventListener('pointerup', (e) => {
+    const k = e.target.closest('.key');
+    if (k && k === down) onKey(k.dataset.key);
+    down = null;
+  });
+  box.addEventListener('pointercancel', () => { down = null; });
+  box.addEventListener('click', (e) => {
+    const k = e.target.closest('.key');
+    if (k && e.detail === 0) onKey(k.dataset.key);
+  });
+  const form = box.querySelector('.phone-line');
+  const input = form.querySelector('input');
+  // The line box sidesteps the iOS keyboard's trouble with xterm's hidden textarea (autocorrect, dictation,
+  // swallowed keys): the text is edited as plain text and goes over in one piece with Enter.
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    if (sendInput(`${input.value}\r`)) input.value = '';
+    input.focus();
+  });
+  slots.termFooter.append(box);
+  armCtrl(false);
+  setLineMode(stored(LINE_KEY) === '1', { focus: false });
+}
+
+function unmountPhoneBar() {
+  if (!phoneBar) return;
+  phoneBar.remove();
+  phoneBar = null;
+  armCtrl(false);
+  fitTerminal();
+}
+
+function syncPhone() {
+  if (PHONE.matches && route.view === 'term') mountPhoneBar();
+  else unmountPhoneBar();
+}
+
+PHONE.addEventListener('change', syncPhone);
+hooks.view.push(syncPhone);
+hooks.terminalOpen.push(({ term }) => {
+  const size = fontSize();
+  if (size && size !== term.options.fontSize) {
+    term.options.fontSize = size;
+    fitTerminal();
+  }
+});
+
+// iOS keeps the layout viewport full height under the on-screen keyboard, so a 100dvh terminal view would put
+// the key bar behind it. The visual viewport is the part above the keyboard; the phone CSS sizes the view to it.
+if (window.visualViewport) {
+  const vv = window.visualViewport;
+  const root = document.documentElement;
+  const sync = () => {
+    root.style.setProperty('--vv-height', `${Math.round(vv.height)}px`);
+    root.style.setProperty('--vv-top', `${Math.round(vv.offsetTop)}px`);
+  };
+  vv.addEventListener('resize', sync);
+  vv.addEventListener('scroll', sync);
+  sync();
+}
+
+// The worker caches nothing (sw.js); registering it is what makes the page installable and, with T10, lets
+// push reach it. Not available on plain http other than localhost, which only the tests use.
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js').catch((err) => console.warn('service worker:', err.message));
+}

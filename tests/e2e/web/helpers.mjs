@@ -6,8 +6,9 @@
 //   sh(cmd)                 run a shell command in the container, return trimmed stdout (throws on non-zero)
 //   agent(...args)          run bin/agent with that environment, return trimmed stdout
 //   sessions()              `agent ls --json`, parsed
-//   tag(testInfo)           a short per-project suffix ("c" for chromium, "w" for webkit), so both projects can
-//                           make sessions and worktrees without clashing on one host
+//   tag(testInfo)           a short per-project suffix ("c" desktop-chromium, "w" desktop-webkit, "i" phone-iphone,
+//                           "a" phone-android), so the projects can make sessions and worktrees without clashing
+//                           on one host
 //   newShell(slug?)         `agent new demo --harness shell [--slug S] --no-attach`; returns the session name
 //   restartServer()         SIGTERM to the running server; fixture.sh's supervisor starts a new one. Resolves
 //                           once the new process answers /api/health
@@ -34,7 +35,8 @@ export function agent(...args) {
 
 export const sessions = () => JSON.parse(agent('ls', '--json'));
 
-export const tag = (testInfo) => (testInfo.project.name.includes('webkit') ? 'w' : 'c');
+const TAGS = { 'desktop-chromium': 'c', 'desktop-webkit': 'w', 'phone-iphone': 'i', 'phone-android': 'a' };
+export const tag = (testInfo) => TAGS[testInfo.project.name] ?? (testInfo.project.name.includes('webkit') ? 'w' : 'c');
 
 export function newShell(slug) {
   const args = ['new', 'demo', '--harness', 'shell'];

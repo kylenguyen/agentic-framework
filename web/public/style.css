@@ -303,3 +303,76 @@ body:has(#view-term:not([hidden])) { overflow: hidden; background: var(--term-bg
 .paste-toast[data-kind="error"] { border-color: var(--danger); color: var(--danger); background: var(--danger-soft); }
 .paste-toast[data-kind="ok"] { border-color: var(--ok); }
 .term-view.paste-drop .term-wrap { outline: 2px dashed var(--accent); outline-offset: -4px; }
+
+/* --- phone --- */
+/* docs/web-dashboard-plan.md T7: below 700 px the list is single-column cards (name, attention, state, age) and
+   the terminal fills the visual viewport, with app.mjs's key bar (#phone-footer in index.html) under it. The bar
+   is dark in both themes, like the terminal it sits against. */
+.phone-bar {
+  --key-bg: #222a35;
+  --key-border: #323b48;
+  --key-text: #e6edf3;
+  background: #161b22; border-top: 1px solid #262d37;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+.phone-line { display: flex; gap: 8px; padding: 8px 8px 0; }
+.phone-line-input {
+  flex: 1; min-width: 0; height: 38px; padding: 0 10px; border-radius: 8px;
+  border: 1px solid var(--key-border); background: #0d1117; color: var(--key-text);
+  font: 16px var(--mono);   /* 16 px or iOS zooms the page on focus */
+}
+.phone-line .btn { height: 38px; padding: 0 14px; }
+.phone-line-input:focus { outline: 2px solid #4d8dff; outline-offset: -1px; border-color: transparent; }
+.phone-keys { display: flex; align-items: center; }
+.phone-scroll {
+  flex: 1; min-width: 0; display: flex; gap: 6px; padding: 7px 8px;
+  overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none;
+  border-right: 1px solid #323b48;   /* where the strip scrolls out, before the Line toggle */
+}
+.phone-scroll::-webkit-scrollbar { display: none; }
+.key {
+  flex: none; min-width: 42px; height: 38px; padding: 0 10px;
+  border: 1px solid var(--key-border); border-radius: 8px;
+  background: var(--key-bg); color: var(--key-text);
+  font: 500 14px var(--mono);
+  touch-action: manipulation; user-select: none; -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent; cursor: pointer;
+}
+.key:active { background: #364152; }
+.key[aria-pressed="true"] { background: #4d8dff; border-color: #4d8dff; color: #fff; }
+.key.font { font-family: var(--sans); }
+.key[data-key="font-down"] { margin-left: 8px; }   /* a gap before the font pair */
+.line-toggle {
+  margin: 0 8px; font-family: var(--sans);
+}
+
+@media (max-width: 700px) {
+  .list-main { padding: 12px 12px 32px; }
+  .list-bar { height: 52px; padding-left: max(12px, env(safe-area-inset-left)); padding-right: max(12px, env(safe-area-inset-right)); }
+  .sessions { display: flex; flex-direction: column; gap: 8px; background: none; border: 0; box-shadow: none; overflow: visible; }
+  .card {
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--surface); box-shadow: var(--shadow); padding-right: 4px;
+  }
+  .card:first-child { border-top: 1px solid var(--border); }
+  .card-open {
+    grid-template-columns: 10px minmax(0, 1fr) auto auto; column-gap: 10px;
+    padding: 12px 4px 12px 14px; min-height: 60px;
+  }
+  .card-open > .harness, .card-open > .devices { display: none; }
+  .state-label { display: inline; font-size: 12px; }
+  .age { min-width: 1.8rem; }
+  .kill { opacity: 1; padding: 0 8px; }
+
+  /* The view follows the visual viewport (app.mjs sets the variables), so the key bar stays above the keyboard. */
+  .term-view {
+    position: fixed; left: 0; right: 0;
+    top: var(--vv-top, 0px); height: var(--vv-height, 100dvh);
+  }
+  .term-bar { height: 44px; padding-left: max(8px, env(safe-area-inset-left)); padding-right: max(8px, env(safe-area-inset-right)); }
+  .term-wrap { padding: 4px 2px 2px 6px; }
+  .term .xterm-helper-textarea { font-size: 16px; }   /* no iOS focus zoom */
+  .banner { padding: 8px 12px; }
+  /* T8's upload toast would sit on the key bar or behind the keyboard at the bottom: under the top bar instead. */
+  .paste-toast { top: calc(var(--vv-top, 0px) + 52px); bottom: auto; }
+}
