@@ -33,6 +33,7 @@ import {
   HttpError, SECURITY_HEADERS, checkLogin, checkOrigin, checkPeer, checkPost, loginOf, parseAllow,
 } from './lib/auth.mjs';
 import { serveStatic } from './lib/static.mjs';
+import { createSession, getRepos, getSessions, killSession, worktreeStatus } from './lib/sessions.mjs';
 
 export { HttpError, readBody, readJson } from './lib/auth.mjs';
 
@@ -58,6 +59,11 @@ export function onShutdown(fn) {
 const ROUTES = [
   ['GET', '/api/health', () => ({ ok: true })],
   ['GET', '/api/me', (req, res, ctx) => ({ login: ctx.login })],
+  ['GET', '/api/sessions', getSessions],
+  ['GET', '/api/repos', getRepos],
+  ['POST', '/api/sessions', createSession],
+  ['GET', '/api/sessions/:name/worktree', worktreeStatus],
+  ['POST', '/api/sessions/:name/kill', killSession],
 ];
 for (const r of ROUTES) addRoute(...r);
 
