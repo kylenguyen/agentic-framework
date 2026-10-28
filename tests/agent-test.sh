@@ -11,7 +11,8 @@ REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 AGENT=$REPO/bin/agent
 T=$(mktemp -d)
 export AGENT_TMUX_SOCKET=af-test-$$
-cleanup() { tmux -L "$AGENT_TMUX_SOCKET" kill-server >/dev/null 2>&1; rm -rf "$T"; }
+J=af-json-$$                                       # a second socket, for cases that need an exact session set
+cleanup() { tmux -L "$AGENT_TMUX_SOCKET" kill-server >/dev/null 2>&1; tmux -L "$J" kill-server >/dev/null 2>&1; rm -rf "$T"; }
 trap cleanup EXIT
 : > "$T/results"                                   # one line per case; cases may run in subshells
 ok()    { echo ok >> "$T/results"; printf 'ok   %s\n' "$1"; }
@@ -477,6 +478,111 @@ POPUP
   kill "$pop_pid" 2>/dev/null || true
   wait "$pop_pid" 2>/dev/null || true
 fi
+
+echo "# ls --json: what the web dashboard reads"
+# Its own socket, so the listing holds exactly the sessions made here: one in a worktree, one whose harness
+# exited. @created is pinned, which makes the whole --porcelain output a literal the change cannot drift from.
+aj() { AGENT_TMUX_SOCKET=$J "$AGENT" "$@"; }
+tj() { tmux -L "$J" "$@"; }
+jsid() { tj list-sessions -F '#{session_id}' -f "#{==:#{session_name},$1}" 2>/dev/null | head -1; }
+jopt_is() { [ "$(tj display-message -p -t "$(jsid "$1")" "#{$2}" 2>/dev/null)" = "$3" ]; }
+jq_is() { [ "$(aj ls --json | jq -r "$1")" = "$2" ]; }                   # jq_is <filter> <want>
+check "ls --json: no sessions prints []" "[]" "$(aj ls --json)"
+aj new demo --slug js --harness shell --no-attach >/dev/null 2>&1
+aj new demo --name jx --no-attach >/dev/null 2>&1
+tj set-option -t "$(jsid demo-js)" @created 1700000000
+tj set-option -t "$(jsid jx)" @created 1700000100
+wait_until 10 jopt_is jx pane_current_command claude-proc
+kill "$(tj display-message -p -t "$(jsid jx)" '#{pane_pid}')" 2>/dev/null
+wait_until 10 jopt_is jx pane_dead 1 || bad "ls --json: the jx harness exits" "pane_dead never became 1"
+check "ls --porcelain: byte-for-byte the recorded output" \
+  "demo-js	shell	demo	agent/js	$HOME/workspace/demo.wt/js	running	1700000000	-
+jx	claude	demo	main	$HOME/workspace/demo	exited	1700000100	-" "$(aj ls --porcelain)"
+json=$(aj ls --json)
+check "ls --json: valid JSON, one object per session" true "$(printf '%s' "$json" | jq -e 'length==2' 2>&1)"
+check "ls --json: its fields are the --porcelain columns" "$(aj ls --porcelain)" "$(printf '%s' "$json" | jq -r \
+  '.[] | [.name, .harness, .repo, .branch, .cwd, .state, (.created|tostring), (if .devices == [] then "-" else .devices | join(",") end)] | @tsv')"
+check "ls --json: worktree is a boolean" "true false" "$(printf '%s' "$json" | jq -r '[.[].worktree] | map(tostring) | join(" ")')"
+check "ls --json: no attention is null" "null null" "$(printf '%s' "$json" | jq -r '[.[].attention] | map(tostring) | join(" ")')"
+check "ls --json: created and activity are integers" true \
+  "$(printf '%s' "$json" | jq '[.[] | .created, .activity] | all(type == "number" and . == floor)')"
+# Quotes and backslashes are what hand-built JSON gets wrong; jq has to carry them through untouched.
+odd_branch='a"b\c'; odd_cwd="$HOME/workspace/demo.wt/q\"u\\o"
+tj set-option -t "$(jsid demo-js)" @branch "$odd_branch"
+tj set-option -t "$(jsid demo-js)" @cwd "$odd_cwd"
+check "ls --json: a branch with \" and \\ round-trips" "$odd_branch" "$(aj ls --json | jq -r '.[] | select(.name=="demo-js") | .branch')"
+check "ls --json: a cwd with \" and \\ round-trips" "$odd_cwd" "$(aj ls --json | jq -r '.[] | select(.name=="demo-js") | .cwd')"
+tj set-option -t "$(jsid demo-js)" @branch agent/js
+tj set-option -t "$(jsid demo-js)" @cwd "$HOME/workspace/demo.wt/js"
+# activity is the harness window's last output: typing into the pane has to move it to now.
+sleep 1.1; t0=$(date +%s)
+tj send-keys -t "$(jsid demo-js)" 'echo typed' Enter
+if wait_until 10 jq_is '.[] | select(.name=="demo-js") | .activity >= '"$t0" true; then
+  act=$(aj ls --json | jq -r '.[] | select(.name=="demo-js") | .activity')
+  check "ls --json: activity is an integer within 5 s of now after typing" 1 \
+    "$(now=$(date +%s); [ "$act" -le "$now" ] && [ $((now - act)) -le 5 ] && echo 1 || echo "$act vs $now")"
+else
+  bad "ls --json: activity is an integer within 5 s of now after typing" "activity stayed before $t0"
+fi
+
+echo "# attention"
+aj attention set --reason permission --source claude demo-js
+check "attention set: the reason shows in ls --json" permission "$(aj ls --json | jq -r '.[] | select(.name=="demo-js") | .attention.reason')"
+check "attention set: and the source" claude "$(aj ls --json | jq -r '.[] | select(.name=="demo-js") | .attention.source')"
+check "attention set: since is an epoch within 5 s of now" 1 \
+  "$(s=$(aj ls --json | jq -r '.[] | select(.name=="demo-js") | .attention.since'); now=$(date +%s); [ $((now - s)) -le 5 ] 2>/dev/null && echo 1 || echo "$s")"
+check "attention set: only that session" null "$(aj ls --json | jq -r '.[] | select(.name=="jx") | .attention')"
+aj attention clear demo-js
+check "attention clear: back to null" null "$(aj ls --json | jq -r '.[] | select(.name=="demo-js") | .attention')"
+check "attention: no subcommand exits 2" 2 "$(aj attention >/dev/null 2>&1; echo $?)"
+check "attention clear: --reason is not taken" 2 "$(aj attention clear --reason x demo-js >/dev/null 2>&1; echo $?)"
+out=$(env -u TMUX -u TMUX_PANE AGENT_TMUX_SOCKET=$J "$AGENT" attention set --source test 2>&1); rc=$?
+check "attention set: outside tmux with no name, exit 0 and no output" "0[]" "${rc}[$out]"
+out=$(aj attention set nosuch 2>&1); rc=$?
+check "attention set: an unknown session, exit 0 and no output" "0[]" "${rc}[$out]"
+out=$(env -u TMUX -u TMUX_PANE AGENT_TMUX_SOCKET=af-nothing-$$ "$AGENT" attention clear demo-js 2>&1); rc=$?
+check "attention clear: no tmux server, exit 0 and no output" "0[]" "${rc}[$out]"
+# The way a hook runs it: no name, inside the harness pane, with tmux's TMUX_PANE.
+tj send-keys -t "$(jsid demo-js)" \
+  "export PATH='$PATH' AGENT_TMUX_SOCKET='$J'; '$AGENT' attention set --source test" Enter
+wait_until 10 jq_is '.[] | select(.name=="demo-js") | .attention.source' test \
+  && ok "attention set: with no name, from inside the pane, marks its session" \
+  || bad "attention set: with no name, from inside the pane, marks its session" "$(aj ls --json | jq -c '.[].attention')"
+check "attention set: the default reason" input "$(aj ls --json | jq -r '.[] | select(.name=="demo-js") | .attention.reason')"
+aj attention clear demo-js
+
+echo "# AGENT_DEVICE and attention from a view"
+if [ "$HAVE_PTY" = 0 ]; then
+  skip "AGENT_DEVICE" "script(1) is not available, so no pty for a tmux client"
+else
+  env -u TMUX SSH_CLIENT="10.2.2.2 51000 22" AGENT_DEVICE=web AGENT_TMUX_SOCKET=$J \
+    timeout 60 script -qfc "$AGENT attach demo-js" /dev/null >/dev/null 2>&1 &
+  dev_pid=$!
+  if wait_until 15 jopt_is 'demo-js@1' session_attached 1; then
+    check "AGENT_DEVICE=web attach: @device is web, not the ssh address" web "$(tj display-message -p -t "$(jsid 'demo-js@1')" '#{@device}')"
+    check "ls --json: devices is an array holding it" '["web"]' "$(aj ls --json | jq -c '.[] | select(.name=="demo-js") | .devices')"
+    tj send-keys -t "$(jsid 'demo-js@1')" \
+      "export PATH='$PATH' AGENT_TMUX_SOCKET='$J'; '$AGENT' attention set --source fromview" Enter
+    wait_until 10 jq_is '.[] | select(.name=="demo-js") | .attention.source' fromview \
+      && ok "attention set: typed in a view, the base is marked" \
+      || bad "attention set: typed in a view, the base is marked" "$(aj ls --json | jq -c '.[].attention')"
+    aj attention clear demo-js
+    # Named explicitly, the view is mapped to its base the same way.
+    aj attention set --source byname 'demo-js@1'
+    check "attention set demo-js@1: marks the base" byname "$(aj ls --json | jq -r '.[] | select(.name=="demo-js") | .attention.source')"
+    check "attention set demo-js@1: not the view" "" "$(tj display-message -p -t "$(jsid 'demo-js@1')" '#{@attention_source}')"
+    aj attention clear 'demo-js@1'
+    check "attention clear demo-js@1: clears the base" null "$(aj ls --json | jq -r '.[] | select(.name=="demo-js") | .attention')"
+    tj detach-client -s 'demo-js@1' 2>/dev/null || true
+  else
+    bad "AGENT_DEVICE=web attach: a view is created" "sessions: $(tj list-sessions -F '#{session_name}' 2>/dev/null | tr '\n' ' ')"
+  fi
+  kill "$dev_pid" 2>/dev/null || true
+  wait "$dev_pid" 2>/dev/null || true
+fi
+aj kill jx >/dev/null 2>&1
+aj kill demo-js >/dev/null 2>&1
+tj kill-server >/dev/null 2>&1
 
 echo "# the login fragment runs the picker, and only for interactive ssh logins"
 FRAG=$REPO/config/bashrc.d/tmux-autoattach.sh

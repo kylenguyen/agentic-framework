@@ -5,11 +5,13 @@
 #
 # Usage:
 #   agent new <repo> [--harness claude|codex|omp|opencode|shell] [--slug <slug>] [--name <name>] [--no-attach]
-#   agent ls [--porcelain]
+#   agent ls [--porcelain|--json]
 #   agent attach <name>
 #   agent pick [--switch]        # --switch only inside tmux (the Ctrl+B g popup); implied by $TMUX
 #   agent switch                 # alias for: agent pick --switch
 #   agent kill <name> [--force] [--keep-worktree]
+#   agent attention set [--reason R] [--source S] [<name>]
+#   agent attention clear [<name>]
 #
 # Model: one harness run in one repo is one tmux "base" session, never attached directly. Each device
 # attaches its own "view" session (<name>@<n>) grouped with the base: shared processes, own current window,
@@ -18,6 +20,11 @@
 # state: no registry file, nothing survives a reboot. A worktree made by `agent new --slug` is removed by
 # `agent kill`: the directory only, never the agent/<slug> branch, and never silently while it has
 # uncommitted changes.
+#
+# Attention is a flag on the base session (@attention_reason, @attention_source, @attention_since) that a
+# harness hook raises when it waits for the operator and clears when they answer; `ls --json` carries it to
+# the web dashboard. Hooks call it with no name from inside the pane, so it resolves the session from
+# $TMUX_PANE, and it exits 0 silently whenever it cannot: a hook must never break the harness that runs it.
 #
 # Session names never contain "." or ":": tmux rewrites the first and treats both as target separators.
 # Names are for display; every command resolves a name to a session id once and then uses the id.
@@ -30,7 +37,9 @@
 # server. AGENT_PICK_FILTER makes `pick` non-interactive: a ";"-separated list of fzf filters, one per menu
 # in the order a flow's menus appear ("kill session;scratch" walks the kill flow). Each menu takes the first
 # match of its filter, a menu without one takes its first row, and the loop runs once. --porcelain is the
-# interface phase 5 and the tests consume: keep its columns stable.
+# interface phase 5 and the tests consume: keep its columns stable. --json is the web dashboard's; add fields,
+# never rename one. AGENT_DEVICE replaces the SSH_CLIENT address as a view's device (the web server sets it to
+# "web").
 set -euo pipefail
 
 WORKSPACE=$HOME/workspace
@@ -59,11 +68,13 @@ usage() {
   cat >&2 <<'USAGE'
 usage: agent <command>
   new <repo> [--harness claude|codex|omp|opencode|shell] [--slug <slug>] [--name <name>] [--no-attach]
-  ls [--porcelain]
+  ls [--porcelain|--json]
   attach <name>
   pick [--switch]
   switch
   kill <name> [--force] [--keep-worktree]
+  attention set [--reason R] [--source S] [<name>]
+  attention clear [<name>]
 USAGE
   exit "${1:-2}"
 }
@@ -100,9 +111,12 @@ is_view() {                                                      # is_view <name
   esac
 }
 
-device() {                                                       # the Mac's address, as ssh saw it
+device() {                                                       # the client's address, as ssh saw it
   local d=${SSH_CLIENT:-}
   d=${d%% *}
+  # AGENT_DEVICE names a client ssh never saw (the web server's "web"). "," and "|" would split the devices
+  # column it lands in, and whitespace the porcelain row.
+  [ -z "${AGENT_DEVICE:-}" ] || d=${AGENT_DEVICE//[[:space:],|]/_}
   printf '%s' "${d:-local}"
 }
 
@@ -317,24 +331,79 @@ cmd_kill() {
   printf 'worktree kept: git -C %s worktree remove %s%s\n' "$root" "$hint" "$cwd"
 }
 
+# --- attention ----------------------------------------------------------------------------------------
+
+# attention_target [<name>]: the base session's id, or nothing. With no name it is the session of the pane
+# this runs in ($TMUX_PANE, which tmux exports into every pane): a hook knows nothing else. A view resolves
+# to its base, since the base is the one session the listing shows and every view shares its windows.
+attention_target() {
+  local name=${1:-} id
+  if [ -z "$name" ]; then
+    [ -n "${TMUX_PANE:-}" ] || return 0
+    name=$(tm display-message -p -t "$TMUX_PANE" '#{session_name}' 2>/dev/null) || return 0
+  fi
+  id=$(session_id "$name") || return 0
+  [ -n "$id" ] || return 0
+  if is_view "$name" "$id"; then id=$(session_id "${name%@*}") || return 0; fi
+  printf '%s' "$id"
+}
+
+# Reason and source are free words from a hook's command line; they are cut to [A-Za-z0-9._-] so a stray
+# "|" or tab cannot split the listing they are read back through. Each set takes a fresh since, which is how
+# the dashboard tells a new wait from the one already shown.
+cmd_attention() {
+  local action=${1:-} reason=input source=agent name="" id
+  case $action in set | clear) shift ;; *) usage ;; esac
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --reason) [ "$action" = set ] && [ $# -ge 2 ] || usage; reason=$2; shift 2 ;;
+      --source) [ "$action" = set ] && [ $# -ge 2 ] || usage; source=$2; shift 2 ;;
+      -*) usage ;;
+      *) [ -z "$name" ] || usage; name=$1; shift ;;
+    esac
+  done
+  id=$(attention_target "$name") || true
+  [ -n "$id" ] || return 0
+  # One tmux command list per action, so a listing taken meanwhile never sees half of it.
+  if [ "$action" = set ]; then
+    reason=${reason//[^A-Za-z0-9._-]/_}; source=${source//[^A-Za-z0-9._-]/_}
+    tm set-option -t "$id" @attention_reason "${reason:-input}" \
+       ';' set-option -t "$id" @attention_source "${source:-agent}" \
+       ';' set-option -t "$id" @attention_since "$(date +%s)" 2>/dev/null || true
+  else
+    tm set-option -u -t "$id" @attention_reason ';' set-option -u -t "$id" @attention_source \
+       ';' set-option -u -t "$id" @attention_since 2>/dev/null || true
+  fi
+  return 0
+}
+
 # --- listing ------------------------------------------------------------------------------------------
 
-# rows: name harness repo branch wt cwd state created devices, SEP-separated, oldest first.
+# rows [json]: name harness repo branch wt cwd state created devices, SEP-separated, oldest first.
 # One line per base session. A session with no @harness (made by hand) is a shell session and is listed,
 # never killed. Views are not listed; their @device lands in their base's devices column.
+# With "json" the row goes on with attention reason, source and since and the harness window's activity, and
+# is tab-separated: tmux turns a tab in any value into "_", so jq can split on it without a quoting scheme.
 rows() {
-  local fmt raw dead sid name grouped created created_opt harness repo branch cwd hwin dev attached path base wt state
+  local mode=${1:-} fmt raw panes sid name grouped created created_opt harness repo branch cwd hwin dev attached path base wt state
+  local areason asource asince sact activity fs=$SEP
+  [ "$mode" != json ] || fs=$'\t'
   fmt="#{session_id}${SEP}#{session_name}${SEP}#{session_grouped}${SEP}#{session_created}${SEP}#{@harness}"
   fmt="$fmt${SEP}#{@repo}${SEP}#{@branch}${SEP}#{@hwin}${SEP}#{@device}${SEP}#{session_attached}"
+  fmt="$fmt${SEP}#{@attention_reason}${SEP}#{@attention_source}${SEP}#{@attention_since}${SEP}#{session_activity}"
   fmt="$fmt${SEP}#{@created}${SEP}#{pane_current_path}${SEP}#{@cwd}"      # paths last: see SEP above
   raw=$(tm list-sessions -F "$fmt" 2>/dev/null) || return 0
   [ -n "$raw" ] || return 0
-  dead=$(tm list-panes -a -F "#{window_id}${SEP}#{pane_dead}" 2>/dev/null || true)
-  declare -A devices=() dead_of=()
-  local w d
-  while IFS=$SEP read -r w d; do [ -z "$w" ] || [ "$d" != 1 ] || dead_of[$w]=1; done <<<"$dead"
+  panes=$(tm list-panes -a -F "#{window_id}${SEP}#{pane_dead}${SEP}#{window_activity}" 2>/dev/null || true)
+  declare -A devices=() dead_of=() activity_of=()
+  local w d a
+  while IFS=$SEP read -r w d a; do
+    [ -n "$w" ] || continue
+    [ "$d" != 1 ] || dead_of[$w]=1
+    activity_of[$w]=$a
+  done <<<"$panes"
   # pass 1: views contribute their device to the base they are grouped with
-  while IFS=$SEP read -r sid name grouped created harness repo branch hwin dev attached created_opt path cwd; do
+  while IFS=$SEP read -r sid name grouped created harness repo branch hwin dev attached _ _ _ _ created_opt path cwd; do
     [ -n "$name" ] || continue
     [ "$grouped" = 1 ] || continue
     case $name in *@[0-9]*) ;; *) continue ;; esac
@@ -343,16 +412,38 @@ rows() {
     devices[$base]=${devices[$base]:+${devices[$base]},}${dev:-local}
   done <<<"$raw"
   # pass 2: the base sessions themselves
-  while IFS=$SEP read -r sid name grouped created harness repo branch hwin dev attached created_opt path cwd; do
+  while IFS=$SEP read -r sid name grouped created harness repo branch hwin dev attached areason asource asince sact created_opt path cwd; do
     [ -n "$name" ] || continue
     if [ "$grouped" = 1 ]; then case $name in *@[0-9]*) continue ;; esac; fi
     state=running
     [ -z "$hwin" ] || [ -z "${dead_of[$hwin]:-}" ] || state=exited
     wt=-; case $cwd in "$WORKSPACE"/*.wt/*) wt=wt ;; esac
-    printf '%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n' \
-      "$name" "$SEP" "${harness:-shell}" "$SEP" "${repo:--}" "$SEP" "${branch:--}" "$SEP" "$wt" "$SEP" \
-      "${cwd:-$path}" "$SEP" "$state" "$SEP" "${created_opt:-$created}" "$SEP" "${devices[$name]:--}"
-  done <<<"$raw" | sort -t"$SEP" -k8,8n -k1,1
+    printf '%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s' \
+      "$name" "$fs" "${harness:-shell}" "$fs" "${repo:--}" "$fs" "${branch:--}" "$fs" "$wt" "$fs" \
+      "${cwd:-$path}" "$fs" "$state" "$fs" "${created_opt:-$created}" "$fs" "${devices[$name]:--}"
+    if [ "$mode" = json ]; then
+      # A session made by hand has no @hwin; its own last activity is the nearest thing.
+      activity=$sact; [ -z "$hwin" ] || activity=${activity_of[$hwin]:-$sact}
+      printf '\t%s\t%s\t%s\t%s' "$areason" "$asource" "$asince" "$activity"
+    fi
+    printf '\n'
+  done <<<"$raw" | sort -t"$fs" -k8,8n -k1,1
+}
+
+# ls_json: rows as the JSON array the web dashboard reads (contract in docs/web-dashboard-plan.md, section 2).
+# Every value goes through jq, never through a quoted printf: a branch or a path may hold " or \. repo and
+# branch keep the "-" that --porcelain prints for none, so the two listings agree field for field.
+ls_json() {
+  rows json | jq -Rn '
+    def num: if . == "" then null else tonumber end;
+    [inputs | split("\t") | {
+      name: .[0], harness: .[1], repo: .[2], branch: .[3], worktree: (.[4] == "wt"), cwd: .[5],
+      state: .[6], created: (.[7] | num),
+      devices: (if .[8] == "-" then [] else .[8] | split(",") end),
+      activity: (.[12] | num),
+      attention: (if .[9] == "" then null
+                  else {reason: .[9], source: (if .[10] == "" then null else .[10] end), since: (.[11] | num)} end)
+    }]'
 }
 
 age_of() {
@@ -475,6 +566,7 @@ table() {
 cmd_ls() {
   case ${1:-} in
     --porcelain) rows | cut -d"$SEP" -f1-4,6-9 | tr "$SEP" '\t' ;;
+    --json) ls_json ;;
     "") ls_human 1 ;;
     *) usage ;;
   esac
@@ -712,6 +804,7 @@ case ${1:-} in
   pick)   shift; cmd_pick "$@" ;;
   switch) shift; [ $# = 0 ] || usage; cmd_pick --switch ;;
   kill)   shift; cmd_kill "$@" ;;
+  attention) shift; cmd_attention "$@" ;;
   -h|--help|help) usage 0 ;;
   *) usage ;;
 esac
