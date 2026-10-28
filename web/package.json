@@ -1,0 +1,21 @@
+{
+  "name": "agent-web",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Browser front end for the agent host sessions, served on loopback behind tailscale serve",
+  "type": "module",
+  "main": "server.mjs",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@xterm/addon-clipboard": "0.2.0",
+    "@xterm/addon-fit": "0.11.0",
+    "@xterm/xterm": "6.0.0",
+    "web-push": "3.6.7",
+    "ws": "8.22.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.1"
+  }
+}
