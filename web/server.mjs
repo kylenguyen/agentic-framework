@@ -34,6 +34,7 @@ import {
 } from './lib/auth.mjs';
 import { serveStatic } from './lib/static.mjs';
 import { createSession, getRepos, getSessions, killSession, worktreeStatus } from './lib/sessions.mjs';
+import { hangUpTerminals, openTerminal } from './lib/term.mjs';
 
 export { HttpError, readBody, readJson } from './lib/auth.mjs';
 
@@ -64,8 +65,10 @@ const ROUTES = [
   ['POST', '/api/sessions', createSession],
   ['GET', '/api/sessions/:name/worktree', worktreeStatus],
   ['POST', '/api/sessions/:name/kill', killSession],
+  ['WS', '/api/sessions/:name/term', openTerminal],
 ];
 for (const r of ROUTES) addRoute(...r);
+onShutdown(hangUpTerminals);
 
 function match(method, pathname) {
   for (const r of routes) {
