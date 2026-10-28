@@ -542,3 +542,160 @@ queueMicrotask(() => {
   onRoute();
   poll();
 });
+
+// --- paste -----------------------------------------------------------------------------------------------------
+// T8: an image pasted into the terminal, a file dropped on the page, or one picked with the paperclip goes to
+// POST /api/sessions/<name>/upload, and the path the server answers with is typed into the session followed by a
+// space, the way WezTerm's Cmd+V reaches a harness over SSH. Images other than PNG are converted here first (the
+// server only takes image/png, which clip-put files as an image). A text paste never comes this way: the paste
+// listener only claims clipboards that carry a file, and leaves the rest to xterm.
+const UPLOAD_MAX = 20 * 1024 * 1024;
+const pasteToast = $('paste-toast');
+let toastTimer = null;
+
+function toast(text, kind = 'info', ms = 0) {
+  clearTimeout(toastTimer);
+  pasteToast.textContent = text;
+  pasteToast.dataset.kind = kind;
+  pasteToast.hidden = false;
+  if (ms) toastTimer = setTimeout(() => { pasteToast.hidden = true; }, ms);
+}
+
+async function toPng(file) {
+  const bitmap = await createImageBitmap(file);
+  try {
+    const { width, height } = bitmap;
+    if (typeof OffscreenCanvas !== 'undefined') {
+      const canvas = new OffscreenCanvas(width, height);
+      canvas.getContext('2d').drawImage(bitmap, 0, 0);
+      return await canvas.convertToBlob({ type: 'image/png' });
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    canvas.getContext('2d').drawImage(bitmap, 0, 0);
+    return await new Promise((resolve, reject) => {
+      canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('the canvas made no PNG'))), 'image/png');
+    });
+  } finally {
+    bitmap.close?.();
+  }
+}
+
+// A pasted screenshot has no name, or the browser's generic "image.png".
+const baseName = (file) => (file.name || 'pasted').replace(/\.[^.]*$/, '');
+
+async function uploadOne(name, file) {
+  let body = file;
+  let type = file.type || 'application/octet-stream';
+  let fileName = file.name || 'pasted';
+  if (type.startsWith('image/') && type !== 'image/png') {
+    try {
+      body = await toPng(file);
+    } catch {
+      throw new Error(`cannot convert ${fileName} (${type}) to PNG`);
+    }
+    type = 'image/png';
+    fileName = `${baseName(file)}.png`;
+  }
+  if (body.size > UPLOAD_MAX) throw new Error(`${fileName} is over 20 MB`);
+  const res = await fetch(`/api/sessions/${encodeURIComponent(name)}/upload`, {
+    method: 'POST',
+    // X-File-Name is URL-encoded: header values are Latin-1, file names are not (web/lib/upload.mjs).
+    headers: { 'X-Agent-Web': '1', 'Content-Type': type, 'X-File-Name': encodeURIComponent(fileName) },
+    body,
+    cache: 'no-store',
+  });
+  let data = null;
+  try {
+    data = await res.json();
+  } catch { /* the status says enough */ }
+  if (!res.ok || typeof data?.path !== 'string') throw new Error(data?.error ?? `${res.status} ${res.statusText}`);
+  return data.path;
+}
+
+// One file at a time, in order, so several paths arrive in the order they were picked.
+async function uploadFiles(files) {
+  const t = currentTerminal();
+  if (!t || !files.length) return;
+  for (const [i, file] of files.entries()) {
+    const label = files.length > 1 ? ` (${i + 1}/${files.length})` : '';
+    toast(`Uploading ${file.name || 'image'}${label}…`);
+    let p;
+    try {
+      p = await uploadOne(t.name, file);
+    } catch (err) {
+      toast(`Upload failed: ${err.message}`, 'error', 6000);
+      return;
+    }
+    // The view may have changed while the upload ran; the path belongs to the session it was meant for.
+    if (currentTerminal()?.name !== t.name || !sendInput(`${p} `)) {
+      toast(`Uploaded to ${p}, but the terminal is not connected`, 'error', 8000);
+      return;
+    }
+  }
+  toast(files.length > 1 ? `Pasted ${files.length} paths` : 'Pasted the path', 'ok', 1500);
+  currentTerminal()?.term.focus();
+}
+
+const filesOf = (dt) => [...(dt?.items ?? [])].filter((it) => it.kind === 'file').map((it) => it.getAsFile()).filter(Boolean);
+const hasFiles = (dt) => [...(dt?.types ?? [])].includes('Files');
+
+hooks.terminalOpen.push(({ el: box }) => {
+  // Capture phase on the box: this runs before xterm's own listener on its textarea, and stops the event only
+  // when the clipboard holds a file. Plain text goes on to xterm unchanged (bracketed paste and all).
+  box.addEventListener('paste', (e) => {
+    const files = filesOf(e.clipboardData);
+    if (!files.length) return;
+    e.preventDefault();
+    e.stopPropagation();
+    uploadFiles(files);
+  }, { capture: true });
+});
+
+// Drops are taken on the whole window, so a file that misses the terminal never makes the browser navigate away
+// from the dashboard. Only the terminal view uploads; elsewhere the drop is just swallowed.
+const termView = $('view-term');
+let dragDepth = 0;
+window.addEventListener('dragenter', (e) => {
+  if (!hasFiles(e.dataTransfer)) return;
+  dragDepth += 1;
+  if (currentTerminal()) termView.classList.add('paste-drop');
+});
+window.addEventListener('dragleave', () => {
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (!dragDepth) termView.classList.remove('paste-drop');
+});
+window.addEventListener('dragover', (e) => {
+  if (!hasFiles(e.dataTransfer)) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = currentTerminal() ? 'copy' : 'none';
+});
+window.addEventListener('drop', (e) => {
+  dragDepth = 0;
+  termView.classList.remove('paste-drop');
+  const files = [...(e.dataTransfer?.files ?? [])];
+  if (!files.length) return;
+  e.preventDefault();
+  uploadFiles(files);
+});
+
+// The paperclip: any file type, several at once. On a phone the picker also offers the camera.
+const picker = el('input');
+picker.type = 'file';
+picker.multiple = true;
+picker.hidden = true;
+picker.id = 'paste-picker';
+picker.addEventListener('change', () => {
+  const files = [...picker.files];
+  picker.value = '';
+  uploadFiles(files);
+});
+const clip = el('button', 'btn ghost icon paste-attach');
+clip.type = 'button';
+clip.id = 'paste-attach';
+clip.title = 'Attach a file or image';
+clip.setAttribute('aria-label', 'Attach a file or image');
+clip.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 11.5l-8.6 8.6a5 5 0 0 1-7.1-7.1l8.6-8.6a3.5 3.5 0 0 1 5 5l-8.6 8.6a2 2 0 0 1-2.8-2.8l7.9-7.9"/></svg>';
+clip.addEventListener('click', () => picker.click());
+slots.termActions.append(clip, picker);

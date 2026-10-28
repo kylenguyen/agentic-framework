@@ -290,3 +290,16 @@ body:has(#view-term:not([hidden])) { overflow: hidden; background: var(--term-bg
   background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
   font-size: 12.5px; white-space: pre;
 }
+
+/* --- paste --- */
+/* T8: the upload toast over the bottom of the terminal, and the outline while a file is dragged over the page. */
+.paste-toast {
+  position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); z-index: 20;
+  max-width: min(90vw, 560px); padding: 8px 14px;
+  border: 1px solid var(--border-strong); border-radius: 8px;
+  background: var(--surface); color: var(--text); box-shadow: var(--shadow-lg);
+  font-size: 13px; overflow-wrap: anywhere;
+}
+.paste-toast[data-kind="error"] { border-color: var(--danger); color: var(--danger); background: var(--danger-soft); }
+.paste-toast[data-kind="ok"] { border-color: var(--ok); }
+.term-view.paste-drop .term-wrap { outline: 2px dashed var(--accent); outline-offset: -4px; }
