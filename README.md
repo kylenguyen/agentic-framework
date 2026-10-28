@@ -9,7 +9,7 @@ checkout, so edit here, never the installed copy.
 
 | Script | Runs on | As | Does |
 |---|---|---|---|
-| `install-host.sh` | host | the host login; `sudo` per command, only for phase 1 steps not yet done | phase 1: apt packages (tmux, mosh, gh, zsh, fzf, git, curl, file, jq, unattended-upgrades), zsh as login shell, linger, Tailscale auto-update, unattended-upgrades; then symlinked configs, secrets file skeleton, `xclip` shim, `agent` session picker, oh-my-zsh, mise toolchains, uv, the four harnesses |
+| `install-host.sh` | host | the host login; `sudo` per command, only for phase 1 steps not yet done | phase 1: apt packages (tmux, mosh, gh, zsh, fzf, git, curl, file, jq, unattended-upgrades), zsh as login shell, linger, Tailscale auto-update, unattended-upgrades; then symlinked configs, secrets file skeleton, `xclip` shim, `agent` session picker, oh-my-zsh, mise toolchains, uv, the four harnesses, the simulators and the web dashboard unit |
 | `install-mac.sh` | Mac | you, no sudo | mosh, pngpaste, `~/.ssh/config` block, SSH key and key login to the host, WezTerm include, `clip-push` |
 | `install-linux.sh` | Linux desktop (apt, dnf, pacman or zypper) | you; `sudo` once, only for missing packages | ssh client, mosh, wl-clipboard, xclip; then the same as `install-mac.sh` |
 | `install-ios-runner.sh` | the Mac that runs iOS simulators (optional) | its dedicated non-admin login, no sudo; piped over ssh by `sim ios bootstrap` | mise, Node, Ruby, CocoaPods, XcodeBuildMCP, simulators `agent-ios-N`, the stdio launcher (section 6) |
@@ -334,6 +334,55 @@ runner: `rm -rf ~/sims ~/.local/bin/sim-xcodebuildmcp ~/.local/bin/sim-maestro ~
 `mise use -g --remove java`, `xcrun simctl delete agent-ios-1 agent-ios-2`, and the
 `agentic-framework:sim` block in `~/.zshenv`.
 
+## 7. Web dashboard (optional: the sessions in a browser)
+
+A page on the host lists the base sessions (New, Kill), opens any of them in a browser terminal as one more
+grouped view, takes pasted images and files, shows the simulator slots and flags a session waiting for input, with
+Web Push to a phone. It listens on `127.0.0.1:7690` only; `tailscale serve` puts it on your tailnet over HTTPS and
+tells it who is calling. Design and API: [docs/web-dashboard-plan.md](docs/web-dashboard-plan.md).
+
+`install-host.sh` installs the packages in `web/package-lock.json` (again only when the lockfile changes; with
+`--no-tools` from the npm cache only), links `agent-web` and the `agent-web.service` user unit, enables it and
+creates `~/.config/agent-web/`. The unit does not start until that folder holds `env` with the logins allowed in:
+
+```
+host$ tailscale status --json | jq -r '.User[(.Self.UserID|tostring)].LoginName'   # your tailnet login
+host$ echo 'AGENT_WEB_ALLOW=<your tailnet login>' > ~/.config/agent-web/env    # comma-separated for several
+host$ systemctl --user restart agent-web.service
+host$ systemctl --user is-active agent-web.service && journalctl --user -u agent-web -n 3   # active; "agent-web listening on http://127.0.0.1:7690"
+```
+
+Tailscale is the operator's to set up, never a script's. Once per host, so `tailscale serve` runs without sudo:
+
+```
+host$ sudo tailscale set --operator=$USER
+host$ tailscale serve --bg 7690                                    # survives reboots; `tailscale serve status` shows it
+```
+
+Then open `https://<host>.<tailnet>.ts.net/` on any device logged in to the tailnet as an allowed login. Without
+the header `tailscale serve` adds (a direct request to the port, another login) the server answers 403.
+
+On an iPhone (iOS 16.4 or later), open the page in Safari and Share, Add to Home Screen: Web Push only reaches a
+page started from the home screen. Then tap Enable alerts at the top of the page. Android Chrome can install it from
+its menu the same way, or take alerts in the tab.
+
+Checks:
+
+```
+host$ systemctl --user status agent-web.service | head -3            # active (running)
+host$ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:7690/api/health   # 403: no Tailscale login header
+host$ cd ~/workspace/agentic-framework && bash tests/web-test.sh | tail -1         # N passed, 0 failed
+host$ bash tests/e2e/web.sh | tail -1                                               # N passed, 0 failed (Docker)
+```
+
+After a pull that changes `web/`: re-run `./install-host.sh --no-tools`, then `systemctl --user restart
+agent-web.service` (open terminals reconnect). Sessions survive a restart or stop of the unit: the comment in
+`config/systemd/agent-web.service` says how.
+
+Rollback: `tailscale serve --https=443 off`; `systemctl --user disable --now agent-web.service`;
+`rm ~/.local/bin/agent-web ~/.config/systemd/user/agent-web.service`; `rm -rf ~/.config/agent-web
+~/.local/state/agent-web ~/workspace/agentic-framework/web/node_modules`.
+
 ## More clients and rebuilds
 
 - Every further Mac or Linux client: section 2 only, with the same `.env` (the host script prints it), then the
@@ -367,6 +416,8 @@ runner: `rm -rf ~/sims ~/.local/bin/sim-xcodebuildmcp ~/.local/bin/sim-maestro ~
   (one base session per harness run, an independent view per device), its command contract and its test layers.
 - [docs/simulators-plan.md](docs/simulators-plan.md): the device simulation service: slots and leases, Android
   isolation, the iOS path over ssh, phase 0 findings, the `sim` contract and its test layers.
+- [docs/web-dashboard-plan.md](docs/web-dashboard-plan.md): the web dashboard: contracts, security rules, API and
+  the task plan it was built from.
 - [AGENTS.md](AGENTS.md): status table, layout, install contract, boundaries for humans and agents.
 - `tests/agent-test.sh`: `bin/agent` and the login fragment against a throwaway HOME, a stand-in harness and a
   tmux socket of its own. Runs anywhere; no sudo, network or Docker.

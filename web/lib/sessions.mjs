@@ -61,8 +61,9 @@ export async function createSession(req, res, ctx) {
     args.push('--slug', slug);
   }
   args.push('--no-attach');
-  // With --no-attach the name is the only thing on stdout; notes and git's output go to stderr.
-  const { stdout } = await runAgent(args, ctx.env);
+  // With --no-attach the name is the only thing on stdout; notes and git's output go to stderr. `agent new` is
+  // the one call that can start the tmux server, hence the scope (agent.mjs, scoped).
+  const { stdout } = await runAgent(args, ctx.env, { scope: true });
   const name = stdout.trim().split('\n').at(-1);
   if (!name) throw new HttpError(500, 'agent new printed no session name');
   return { name };

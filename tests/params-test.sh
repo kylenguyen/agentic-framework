@@ -216,13 +216,14 @@ echo "# no deployment literals anywhere in the repo"
   # tailnet. Placeholders in the docs are <host>, <user>, <lan-ip>; the tests use box, alice and 10.x.
   # Add a word here when a deployment value slips in and gets fixed, so it cannot come back. This file is skipped
   # because it carries the list; .env is the one place the real values belong. config/claude-settings.json is
-  # skipped too: it is the operator's live ~/.claude/settings.json and names their own checkout.
+  # skipped too: it is the operator's live ~/.claude/settings.json and names their own checkout. web/ and the
+  # units are scanned like the rest; web/node_modules is npm's, not ours.
   cd "$REPO" || exit 1
   words='as1|kyle|kylepc|macbook|manee-goby|ios-agent|192\.168\.10\.'
-  hits=$(grep -rnwE --exclude-dir=.git --exclude=.git --exclude=.env --exclude=params-test.sh --exclude=claude-settings.json "$words" . || true)
+  hits=$(grep -rnwE --exclude-dir=.git --exclude-dir=node_modules --exclude=.git --exclude=.env --exclude=params-test.sh --exclude=claude-settings.json "$words" . || true)
   [ -z "$hits" ] && ok "scan: no deployment literals in scripts, templates, configs or docs" || bad "scan: deployment literals found" "$hits"
   # .env.example values are examples too: they may appear only there.
-  ex=$(grep -rnw --exclude-dir=.git --exclude=.git --exclude=.env --exclude=.env.example --exclude=params-test.sh 'agent-host\.example\.ts\.net\|192\.168\.1\.10\|mac-mini\.example\.ts\.net\|ios-sim' . || true)
+  ex=$(grep -rnw --exclude-dir=.git --exclude-dir=node_modules --exclude=.git --exclude=.env --exclude=.env.example --exclude=params-test.sh 'agent-host\.example\.ts\.net\|192\.168\.1\.10\|mac-mini\.example\.ts\.net\|ios-sim' . || true)
   [ -z "$ex" ] && ok "scan: .env.example values appear only in .env.example" || bad "scan: .env.example values leaked" "$ex"
   left=$(grep -rln '@AGENT_[A-Z_]*@' bin config lib install-host.sh install-mac.sh install-linux.sh | grep -v -e '\.in$' -e '^lib/' || true)   # two -e: BSD grep misreads $\|
   [ -z "$left" ] && ok "scan: placeholders only in .in templates and lib" || bad "scan: placeholders outside templates" "$left"

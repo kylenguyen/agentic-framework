@@ -1,0 +1,44 @@
+# The web dashboard (web/server.mjs, docs/web-dashboard-plan.md) on 127.0.0.1:7690, reached only through
+# `tailscale serve`. Linked into ~/.config/systemd/user and enabled by install-host.sh; ~/.local/bin/agent-web is
+# install-host.sh's link to web/server.mjs, and node resolves it to the checkout, so the server runs from there.
+# Settings: ~/.config/agent-web/env (AGENT_WEB_ALLOW=<your tailnet login>, required; README.md section 7).
+[Unit]
+Description=agent-web: browser dashboard for the agent sessions
+# Without the env file there is no AGENT_WEB_ALLOW and the server would only exit 2: skip the start instead, so
+# install-host.sh can enable the unit before the operator has written it (then: systemctl --user restart agent-web).
+ConditionPathExists=%h/.config/agent-web/env
+StartLimitIntervalSec=120
+StartLimitBurst=3
+
+[Service]
+Type=simple
+EnvironmentFile=-%h/.config/agent-web/env
+# A user unit starts with the manager's short PATH. The routes run agent, clip-put and sim (~/.local/bin), and
+# through them tmux, jq, git and python3; node and python come from mise as in a login shell.
+Environment=PATH=%h/.local/bin:%h/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin
+# mise picks node from the global config when no project config is above the working directory.
+WorkingDirectory=%h
+ExecStart=%h/.local/share/mise/shims/node %h/.local/bin/agent-web
+# AGENT_DEVICE=web is not set here: term.mjs sets it on each terminal bridge, and in the unit's environment it
+# would be copied into a tmux server the dashboard starts and so into every shell in every session.
+#
+# Sessions must outlive this unit. The dashboard can be what starts the tmux server (`agent new` when none runs,
+# e.g. after a reboot before any ssh login), and everything that server runs would then belong to this unit:
+# - The server runs `agent new` in a scope of its own (`systemd-run --user --scope`, web/lib/agent.mjs), so tmux
+#   lands outside this unit's cgroup.
+# - KillMode=process is the backstop should tmux ever end up in it anyway: a stop signals node alone. node then
+#   hangs up the terminal bridges (onShutdown), and a bridge whose node died some other way exits on stdin EOF.
+# - No PrivateTmp: tmux keeps its socket in /tmp/tmux-<uid>, so a private /tmp would hide the operator's server
+#   and make the dashboard start a second one that ssh logins cannot see.
+# - No NoNewPrivileges: the flag is inherited and cannot be cleared, so a tmux server started from here would
+#   pass it to every session and sudo would fail in all of them. It would not confine much anyway: the
+#   dashboard's job is a shell as this login.
+KillMode=process
+TimeoutStopSec=10
+# Exit 2 is a configuration error (AGENT_WEB_ALLOW empty, a bad port): restarting cannot fix it.
+Restart=on-failure
+RestartSec=5
+RestartPreventExitStatus=2
+
+[Install]
+WantedBy=default.target

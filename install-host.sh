@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Idempotent host setup, phases 1 to 4 and the device simulation service. Safe to re-run. Run as the host login, never with sudo.
+# Idempotent host setup, phases 1 to 4, the device simulation service and the web dashboard. Safe to re-run. Run as the host login, never with sudo.
 # Usage: ./install-host.sh [--no-tools] [--no-root]
-#   --no-tools   skip network installs (oh-my-zsh, mise toolchains, uv, the four harnesses)
+#   --no-tools   skip network installs (oh-my-zsh, mise toolchains, uv, the four harnesses); web/ packages come
+#                from the npm cache only
 #   --no-root    skip phase 1 (the steps that need sudo)
 # Phase 1 (apt packages, zsh as login shell, linger, Tailscale auto-update, unattended-upgrades) runs one command at
 # a time through as_root, only when the host is not already in the wanted state, so a configured host never prompts.
@@ -243,6 +244,45 @@ if [ "$TOOLS" = 1 ]; then
   else note "iOS: set AGENT_IOS_HOST and AGENT_IOS_USER in .env, then run \`sim ios bootstrap\`"; fi
   note "first-time logins are manual: claude (OAuth) or ANTHROPIC_API_KEY in ~/.config/agents/env; codex login --device-auth or OPENAI_API_KEY piped to codex login --with-api-key; gh auth login"
 fi
+
+say "Web dashboard: agent-web, its npm packages and user unit (docs/web-dashboard-plan.md, README.md section 7)"
+link "$REPO/web/server.mjs" "$HOME/.local/bin/agent-web"
+link "$REPO/config/systemd/agent-web.service" "$HOME/.config/systemd/user/agent-web.service"
+install -d -m 700 "$HOME/.config/agent-web"; chmod 700 "$HOME/.config/agent-web"
+# Exactly the lockfile's packages. The stamp holds the lockfile's hash and lives inside node_modules, which npm ci
+# empties first, so a failed install leaves no stamp. --no-tools keeps off the network: npm ci --offline installs
+# from npm's cache (filled by any earlier install of the same lockfile, tests/web-test.sh included) or not at all.
+WEB_STAMP=$REPO/web/node_modules/.agentic-framework-lock
+WEB_LOCK=$(sha256sum "$REPO/web/package-lock.json" | cut -d' ' -f1)
+NPM_PATH=$HOME/.local/share/mise/shims:$PATH
+NPM_CI=(npm ci --ignore-scripts --no-audit --no-fund --prefix "$REPO/web")
+if [ "$(cat "$WEB_STAMP" 2>/dev/null)" = "$WEB_LOCK" ]; then
+  note "ok   web/node_modules"
+elif ! PATH=$NPM_PATH command -v npm >/dev/null; then
+  note "no npm for web/node_modules: re-run without --no-tools (mise installs node)"
+elif [ "$TOOLS" = 1 ]; then
+  PATH=$NPM_PATH "${NPM_CI[@]}" | tail -1
+  echo "$WEB_LOCK" > "$WEB_STAMP"; note "npm  web/node_modules"
+elif PATH=$NPM_PATH "${NPM_CI[@]}" --offline >/dev/null 2>&1; then
+  echo "$WEB_LOCK" > "$WEB_STAMP"; note "npm  web/node_modules (offline, from the npm cache)"
+else
+  note "web/node_modules is not in the npm cache; re-run without --no-tools"
+fi
+if systemctl --user daemon-reload 2>/dev/null; then
+  # Skipped, not failed, until ~/.config/agent-web/env exists (ConditionPathExists in the unit).
+  if systemctl --user enable --now agent-web.service 2>/dev/null; then note "ok   agent-web.service"
+  else note "could not enable agent-web.service; run: systemctl --user enable --now agent-web.service"; fi
+else
+  note "systemctl --user unavailable here; run: systemctl --user daemon-reload && systemctl --user enable --now agent-web.service"
+fi
+if [ -f "$HOME/.config/agent-web/env" ]; then
+  note "ok   ~/.config/agent-web/env"
+else
+  note "add this line to ~/.config/agent-web/env, with the login \`tailscale status\` shows for you:"
+  note "  AGENT_WEB_ALLOW=<your tailnet login>"
+  note "then: systemctl --user restart agent-web.service, and the tailscale serve steps in README.md section 7"
+fi
+note "after a pull that changes web/: systemctl --user restart agent-web.service"
 
 say "Parameters for the clients: put these lines in .env in the agentic-framework checkout on each Mac or Linux client (README.md, section 2)"
 params_env_text | grep -v '^#'

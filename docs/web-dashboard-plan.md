@@ -545,6 +545,10 @@ mitigated.
       the repo)
     - `EnvironmentFile=-%h/.config/agent-web/env`, `Environment=AGENT_DEVICE=web`, `Restart=on-failure`,
       `NoNewPrivileges=yes`, `PrivateTmp=yes`
+    - As built: no `AGENT_DEVICE`, `NoNewPrivileges` or `PrivateTmp`, plus `KillMode=process`,
+      `RestartPreventExitStatus=2` and `ConditionPathExists` on the env file. A tmux server the dashboard starts
+      would inherit the first two, and a private `/tmp` hides the tmux socket; `agent new` runs in its own scope.
+      The unit's comment has the reasons.
   - **`install-host.sh`:**
     - Behind `--no-tools`: `npm ci --ignore-scripts --prefix "$REPO/web"` when the lockfile changed (stamp
       file).

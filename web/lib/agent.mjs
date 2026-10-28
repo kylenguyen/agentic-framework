@@ -5,7 +5,7 @@
 //   runCommand(file, args, env, opts?)   -> {code, signal, timedOut, stdout, stderr}; never throws for a non-zero
 //                                           exit. opts: timeout (ms, default 15000), cwd.
 //   runAgent(args, env, opts?)           -> {stdout, stderr} on exit 0; otherwise throws HttpError mapped from
-//                                           the failure (see agentError).
+//                                           the failure (see agentError). opts.scope: see scoped().
 //   listSessions(env)                    -> the `agent ls --json` array.
 //   findSession(env, name)               -> that base session's object from the list, or HttpError 404. Every
 //                                           route that takes a session name calls this first.
@@ -77,8 +77,20 @@ export function agentError(r, args) {
   return new HttpError(500, msg || 'agent failed');
 }
 
-export async function runAgent(args, env, opts) {
-  const r = await runCommand(agentBin(env), args, env, opts);
+// Under systemd (INVOCATION_ID is set in every unit's processes) a command that may start the tmux server runs in
+// a transient scope of its own, so the server and every session it holds live outside agent-web.service's cgroup
+// and a stop or restart of the dashboard never takes them down (config/systemd/agent-web.service). The unit's own
+// variables stay behind: a tmux server keeps the environment it started with and hands it to every session.
+// Outside a unit (tests, a server run by hand) the command runs as it is. -> [file, args, env]
+export function scoped(file, args, env) {
+  if (!env.INVOCATION_ID) return [file, args, env];
+  const { INVOCATION_ID, JOURNAL_STREAM, MANAGERPID, SYSTEMD_EXEC_PID, ...rest } = env;
+  return ['systemd-run', ['--user', '--scope', '--quiet', '--collect', '--', file, ...args], rest];
+}
+
+export async function runAgent(args, env, opts = {}) {
+  const [file, argv, cenv] = opts.scope ? scoped(agentBin(env), args, env) : [agentBin(env), args, env];
+  const r = await runCommand(file, argv, cenv, opts);
   if (r.code !== 0) throw agentError(r, args);
   return { stdout: r.stdout, stderr: r.stderr };
 }

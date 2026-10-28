@@ -1,0 +1,12 @@
+#!/bin/sh
+# npm shim: logs the call and stands in for `npm ci --prefix <dir>` the way install-host.sh runs it for web/, with
+# an empty node_modules (the container has no node and the run no network). The packages themselves are covered by
+# tests/web-test.sh and tests/e2e/web.sh.
+echo "npm $*" >> /var/log/e2e-shims.log
+prefix=
+while [ $# -gt 0 ]; do
+  case "$1" in --prefix) prefix=$2; shift ;; esac
+  shift
+done
+[ -n "$prefix" ] && rm -rf "$prefix/node_modules" && mkdir -p "$prefix/node_modules"
+exit 0

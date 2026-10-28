@@ -4,7 +4,7 @@
 
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { after, before, describe, test } from 'node:test';
 import { fixture, startServer } from './helpers.mjs';
@@ -205,6 +205,35 @@ describe('sessions API', () => {
     const k = await s.req('/api/sessions/demo/kill', { body: {}, headers: { 'X-Agent-Web': null } });
     assert.equal(k.status, 403);
     assert.ok((await names()).includes('demo'));
+  });
+
+  // Under systemd `agent new` runs in a scope of its own, so a tmux server it starts outlives the unit. A stand-in
+  // systemd-run records its arguments and runs the command after `--`; the real one is never called.
+  test('under systemd, create runs agent new through systemd-run --user --scope', async () => {
+    const stub = path.join(fx.root, 'stub-bin');
+    const log = path.join(fx.root, 'systemd-run.log');
+    mkdirSync(stub, { recursive: true });
+    writeFileSync(path.join(stub, 'systemd-run'),
+      `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\nprintf 'INVOCATION_ID=%s\\n' "$INVOCATION_ID" >> '${log}.env'\nwhile [ "$1" != -- ]; do shift; done; shift\nexec "$@"\n`, { mode: 0o755 });
+    const unit = await startServer({ INVOCATION_ID: 'test', PATH: `${stub}:${fx.env.PATH}` });
+    try {
+      const r = await unit.req('/api/sessions', { body: { repo: 'demo', harness: 'shell', slug: 'unit' } });
+      assert.equal(r.status, 200, r.text);
+      assert.equal(r.json.name, 'demo-unit');
+      assert.match(readFileSync(log, 'utf8'), /^--user --scope --quiet --collect -- \S+\/bin\/agent new demo --harness shell --slug unit --no-attach$/m);
+      // Listing and killing never start a server, so they run directly.
+      assert.equal((await unit.req('/api/sessions/demo-unit/kill', { body: { force: true } })).status, 200);
+      assert.equal(readFileSync(log, 'utf8').trim().split('\n').length, 1);
+      // The unit's own variables do not reach the tmux server (and through it every session).
+      assert.equal(readFileSync(`${log}.env`, 'utf8'), 'INVOCATION_ID=\n');
+    } finally {
+      await unit.stop();
+    }
+    // Without INVOCATION_ID (the server above this describe) the stand-in is never reached.
+    const before = readFileSync(log, 'utf8');
+    const r = await create({ repo: 'demo', harness: 'shell' });
+    assert.equal(r.status, 200, r.text);
+    assert.equal(readFileSync(log, 'utf8'), before);
   });
 });
 

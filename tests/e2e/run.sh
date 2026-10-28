@@ -36,7 +36,8 @@ run() { RAW=$("$@" 2>&1); RC=$?; OUT=$(printf '%s\n' "$RAW" | strip); }         
 say "images and containers"
 command -v docker >/dev/null || { echo "docker is required" >&2; exit 2; }
 docker rm -f "$BOX" "$MAC" >/dev/null 2>&1; docker network rm "$NET" >/dev/null 2>&1
-docker build -q -f "$REPO/tests/e2e/Dockerfile.host" --build-arg "LOGIN=$LOGIN" --build-arg "PASSWORD=$PASSWORD" -t af-e2e-host "$REPO/tests/e2e" >/dev/null || { echo "host image build failed" >&2; exit 1; }
+SIM_APT=$(bash -c '. "$1/lib/sim.sh" && echo $SIM_APT_PACKAGES' _ "$REPO")   # phase 1 finds them installed
+docker build -q -f "$REPO/tests/e2e/Dockerfile.host" --build-arg "LOGIN=$LOGIN" --build-arg "PASSWORD=$PASSWORD" --build-arg "SIM_APT=$SIM_APT" -t af-e2e-host "$REPO/tests/e2e" >/dev/null || { echo "host image build failed" >&2; exit 1; }
 docker build -q -f "$REPO/tests/e2e/Dockerfile.mac" -t af-e2e-mac "$REPO/tests/e2e" >/dev/null || { echo "mac image build failed" >&2; exit 1; }
 docker network create "$NET" >/dev/null
 docker run -d --name "$BOX" --hostname "$ALIAS" --network "$NET" --network-alias "$ALIAS" af-e2e-host >/dev/null
@@ -73,6 +74,16 @@ check "host: Codex global AGENTS.md links into the repo" "$BOX_REPO/config/works
 check "host: one codex block in ~/.codex/config.toml" 1 "$(box grep -c 'agentic-framework:codex >>>' "/home/$LOGIN/.codex/config.toml")"
 check "host: the codex block sets project_doc_max_bytes" 1 "$(box grep -c '^project_doc_max_bytes = ' "/home/$LOGIN/.codex/config.toml")"
 has "Parameters for the clients" "$out" "host: prints the .env block for the clients"
+# The web dashboard: unit linked and enabled through the shim, packages through the npm shim (--offline: the run
+# is --no-tools), the settings folder private, and the one line the operator must add printed rather than guessed.
+check "host: agent-web unit linked" "$BOX_REPO/config/systemd/agent-web.service" "$(box readlink "/home/$LOGIN/.config/systemd/user/agent-web.service")"
+check "host: agent-web links to the server" "$BOX_REPO/web/server.mjs" "$(box readlink "/home/$LOGIN/.local/bin/agent-web")"
+has "systemctl --user enable --now agent-web.service" "$log" "host: enable --now agent-web.service"
+has "npm ci --ignore-scripts --no-audit --no-fund --prefix $BOX_REPO/web --offline" "$log" "host: npm ci for web/, offline under --no-tools"
+box test -d web/node_modules && ok "host: web/node_modules installed" || bad "host: web/node_modules installed"
+check "host: ~/.config/agent-web mode" 700 "$(box stat -c %a "/home/$LOGIN/.config/agent-web")"
+has "  AGENT_WEB_ALLOW=<your tailnet login>" "$out" "host: prints the env line to add"
+box touch web/node_modules/.e2e-marker
 has "tailscale not installed" "$out" "host: tailscale absence is a note, not a failure"
 
 say "host: unit tests inside the container"
@@ -337,7 +348,11 @@ has "ok   Linger=yes" "$out2" "host: second run leaves linger alone"
 has "ok   /usr/bin/zsh" "$out2" "host: second run leaves the shell alone"
 check "host: second run keeps one codex block" 1 "$(box grep -c 'agentic-framework:codex >>>' "/home/$LOGIN/.codex/config.toml")"
 after=$(root sh -c 'wc -l < /var/log/e2e-shims.log')
-root sed -n "$((before + 1)),\$p" /var/log/e2e-shims.log | grep -qE 'reload|enable-linger' && bad "host: second run made no root changes" "$(root sed -n "$((before + 1)),\$p" /var/log/e2e-shims.log)" || ok "host: second run made no root changes ($((after - before)) read-only shim calls)"
+root sed -n "$((before + 1)),\$p" /var/log/e2e-shims.log | grep -q '^npm ' && bad "host: second run leaves web/node_modules alone" "npm ran again" \
+  || { box test -e web/node_modules/.e2e-marker && has "ok   web/node_modules" "$out2" "host: second run leaves web/node_modules alone"; } \
+  || bad "host: second run leaves web/node_modules alone" "node_modules was replaced"
+has "systemctl --user enable --now agent-web.service" "$(root sed -n "$((before + 1)),\$p" /var/log/e2e-shims.log)" "host: second run enables agent-web.service again"
+root sed -n "$((before + 1)),\$p" /var/log/e2e-shims.log | grep -v 'systemctl --user' | grep -qE 'reload|enable-linger' && bad "host: second run made no root changes" "$(root sed -n "$((before + 1)),\$p" /var/log/e2e-shims.log)" || ok "host: second run made no root changes ($((after - before)) read-only shim calls)"
 # .env from a Mac with a different login must be refused on the host, before anything runs.
 box sh -c "sed -i 's/^AGENT_HOST_USER=.*/AGENT_HOST_USER=someone/' .env"
 run box ./install-host.sh --no-tools --no-root
