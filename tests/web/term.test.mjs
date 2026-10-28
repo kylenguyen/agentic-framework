@@ -210,7 +210,8 @@ test('a client that stops answering pings is dropped and its view removed', asyn
   }
 });
 
-test('SIGTERM to the server hangs up every bridge', async () => {
+// The page tells a restart from a session that ended by the exit message: none here, and 1012.
+test('SIGTERM to the server hangs up every bridge and closes with 1012, not exit', async () => {
   const srv = await startServer();
   const name = newSession();
   const a = await term(srv, name);
@@ -218,7 +219,9 @@ test('SIGTERM to the server hangs up every bridge', async () => {
   await waitFor(() => hasSession(`${name}@1`) && hasSession(`${name}@2`));
   const r = await srv.stop('SIGTERM');
   assert.equal(r.code, 0);
-  await Promise.all([a.closed, b.closed]);
+  const closes = await Promise.all([a.closed, b.closed]);
+  assert.deepEqual(closes.map((c) => c.code), [1012, 1012]);
+  assert.deepEqual([...a.msgs, ...b.msgs], []);
   await waitFor(() => !hasSession(`${name}@1`) && !hasSession(`${name}@2`), { timeout: 2000 });
   assert.ok(hasSession(name));
   assert.equal(bridgesLeft(), '');

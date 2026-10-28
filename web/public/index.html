@@ -2,13 +2,107 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
 <title>Agents</title>
-<!-- Placeholder until T6 builds the page (docs/web-dashboard-plan.md). No inline style or script: the CSP
-     (default-src 'self') refuses both. -->
+<!-- web/public/index.html: the dashboard page (docs/web-dashboard-plan.md T6). Two views switched by the hash
+     route in app.mjs: #/ (session list) and #/s/<name> (terminal). No inline style or script, ever: the CSP
+     (default-src 'self') refuses both. Later tasks add markup in their own marked sections at the end of
+     <body>, or fill the elements marked data-slot from app.mjs. -->
+<link rel="stylesheet" href="/vendor/xterm.css">
+<link rel="stylesheet" href="/style.css">
+<script type="module" src="/app.mjs"></script>
 </head>
 <body>
-<h1>Agents</h1>
-<p>The dashboard is not built yet. <a href="/api/sessions">/api/sessions</a> lists the sessions once it exists.</p>
+
+<section id="view-list" class="view list-view" hidden>
+  <header class="bar list-bar">
+    <div class="brand">
+      <svg class="logo" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7l5 5-5 5M12 17h7"/></svg>
+      <h1>Agents</h1>
+      <span id="count" class="count"></span>
+    </div>
+    <span class="spacer"></span>
+    <div id="header-actions" class="bar-actions" data-slot="header-actions"></div>
+    <button type="button" id="new-btn" class="btn primary">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>New session
+    </button>
+  </header>
+  <main class="list-main">
+    <div id="list-notice" class="notice" role="status" hidden></div>
+    <ul id="sessions" class="sessions" aria-label="Sessions"></ul>
+    <div id="empty" class="empty" hidden>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M12 15h5"/></svg>
+      <h2>No sessions</h2>
+      <p>Start a harness in one of your repos. It keeps running when you close this tab.</p>
+      <button type="button" id="empty-new" class="btn primary">New session</button>
+    </div>
+    <div id="list-panels" class="panels" data-slot="list-panels"></div>
+  </main>
+</section>
+
+<section id="view-term" class="view term-view" hidden>
+  <header class="bar term-bar">
+    <a href="#/" id="back" class="btn ghost icon" aria-label="Back to sessions" title="Back to sessions">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
+    </a>
+    <span id="term-dot" class="dot"></span>
+    <h1 id="term-name" class="term-name"></h1>
+    <span id="term-state" class="pill"></span>
+    <span class="spacer"></span>
+    <div id="term-actions" class="bar-actions" data-slot="term-actions"></div>
+    <button type="button" id="term-kill" class="btn danger-ghost">Kill</button>
+  </header>
+  <div id="banner" class="banner" role="alert" hidden>
+    <span id="banner-text"></span>
+    <button type="button" id="banner-retry" class="btn small">Reconnect</button>
+    <a href="#/" id="banner-back" class="btn small ghost">Back to sessions</a>
+  </div>
+  <div class="term-wrap"><div id="term" class="term"></div></div>
+  <div id="term-footer" class="term-footer" data-slot="term-footer"></div>
+</section>
+
+<dialog id="new-dialog" class="dialog">
+  <form id="new-form" method="dialog">
+    <h2>New session</h2>
+    <label>Repository
+      <select id="new-repo" name="repo" required></select>
+    </label>
+    <label>Harness
+      <select id="new-harness" name="harness">
+        <option value="claude" selected>Claude Code</option>
+        <option value="codex">Codex</option>
+        <option value="omp">Oh My Pi</option>
+        <option value="opencode">OpenCode</option>
+        <option value="shell">Shell</option>
+      </select>
+    </label>
+    <label>Worktree slug <span class="hint">optional; makes branch agent/&lt;slug&gt; in its own worktree</span>
+      <input id="new-slug" name="slug" autocomplete="off" autocapitalize="none" spellcheck="false"
+             pattern="[a-z0-9][a-z0-9\-]{0,40}" placeholder="e.g. fix-login" maxlength="41">
+    </label>
+    <p id="new-error" class="error" hidden></p>
+    <div class="dialog-actions">
+      <button type="button" class="btn ghost" data-close>Cancel</button>
+      <button type="submit" id="new-create" class="btn primary">Create</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="kill-dialog" class="dialog">
+  <form method="dialog">
+    <h2>Kill <span id="kill-name" class="mono"></span>?</h2>
+    <p id="kill-text" class="muted"></p>
+    <ul id="kill-files" class="files" hidden></ul>
+    <p id="kill-error" class="error" hidden></p>
+    <div class="dialog-actions">
+      <button type="button" class="btn ghost" data-close>Cancel</button>
+      <button type="button" id="kill-keep" class="btn" hidden>Kill, keep worktree</button>
+      <button type="button" id="kill-force" class="btn danger" hidden>Kill and discard changes</button>
+      <button type="button" id="kill-go" class="btn danger" hidden>Kill</button>
+    </div>
+  </form>
+</dialog>
+
 </body>
 </html>

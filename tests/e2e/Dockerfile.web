@@ -1,0 +1,13 @@
+# tests/e2e/Dockerfile.web: the browser e2e image for the web dashboard (tests/e2e/web.sh). The Playwright image
+# whose browsers match the pinned @playwright/test, plus what the server and bin/agent run on the host: tmux,
+# git, python3 (the pty bridge), jq (agent ls --json) and zsh. web/node_modules is installed here from the
+# lockfile; web.sh builds with a context holding only web/package.json and web/package-lock.json, so the image
+# is rebuilt when the pins change and the repo itself is copied in at run time.
+FROM mcr.microsoft.com/playwright:v1.64.1-noble
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends tmux git python3 jq zsh procps \
+    && rm -rf /var/lib/apt/lists/*
+COPY package.json package-lock.json /opt/web/
+RUN cd /opt/web && npm ci --ignore-scripts --no-audit --no-fund && chmod -R a+rX /opt/web
+# The test login's throwaway HOME (made by tests/e2e/web/fixture.sh); its bin holds agent and the stand-ins.
+ENV PATH=/work/home/bin:$PATH

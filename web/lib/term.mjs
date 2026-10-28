@@ -5,7 +5,7 @@
 // Binary frames are raw terminal bytes both ways; text frames are JSON: {"type":"resize","cols","rows"} in, and
 // {"type":"exit","code"} out just before the server closes because the bridge exited. A closed socket hangs the
 // bridge up (SIGHUP), the tmux client goes and destroy-unattached removes the view. An unknown session closes
-// with 4404 before any data. Terminal bytes are never logged.
+// with 4404 before any data; a server shutdown closes every terminal with 1012 and no exit message. Terminal bytes are never logged.
 
 import { spawn } from 'node:child_process';
 import os from 'node:os';
@@ -20,6 +20,9 @@ export const limits = { max: 16, pingMs: 25000, highWater: 1 << 20 };
 
 const bridges = new Set();
 let reserved = 0;
+// Set by hangUpTerminals: a bridge that exits because the server is going is not the session ending, so the
+// browser gets 1012 (service restart) and offers a reconnect instead of {"type":"exit"}.
+let stopping = false;
 
 const clamp = (v, lo, hi, dflt) => {
   const n = Number.parseInt(v, 10);
@@ -140,6 +143,10 @@ function run(ws, ctx) {
     if (drain) clearInterval(drain);
     // After a hangup the socket is already closing; tmux attach's exit 1 then means nothing.
     if (ws.readyState !== ws.OPEN) return;
+    if (stopping) {
+      ws.close(1012, 'server restarting');
+      return;
+    }
     ws.send(JSON.stringify({ type: 'exit', code: exitCode(code, signal) }));
     ws.close(1000);
   });
@@ -147,6 +154,7 @@ function run(ws, ctx) {
 
 // For onShutdown: hang every bridge up and wait (briefly) for them, so no tmux client outlives the server.
 export async function hangUpTerminals(waitMs = 1000) {
+  stopping = true;
   const all = [...bridges];
   for (const { child } of all) {
     if (child.exitCode === null && child.signalCode === null) child.kill('SIGHUP');

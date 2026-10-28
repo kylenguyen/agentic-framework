@@ -55,6 +55,9 @@ phase 5 or 6, update this table and section 8 of the plan doc.
 | `bin/xclip` | clipboard shim: serves `~/.clip/latest` to Claude Code on Ctrl+V; copies go back via OSC 52 | `~/.local/bin/xclip` |
 | `bin/clip-push-mac.sh.in` | template: pngpaste or pbpaste piped over `ssh <alias>-clip` into `clip-put`; prints the type, then the host path for an image. WezTerm runs `--if-image` on Cmd+V and pastes line 2 | `~/.local/bin/clip-push` on the Mac |
 | `bin/clip-push-linux.sh.in` | template: the same contract, reading the clipboard with `wl-paste` (Wayland) or `xclip` (X11); only `image/png` is an image | `~/.local/bin/clip-push` on a Linux client |
+| `web/server.mjs`, `web/lib/*.mjs` | the web dashboard service (docs/web-dashboard-plan.md): Node 20+, ES modules, on 127.0.0.1 only behind `tailscale serve`, which supplies the `Tailscale-User-Login` header it checks against `AGENT_WEB_ALLOW`. One line per route in `ROUTES`; every command runs through `bin/agent` with an argument array. `web/package.json` pins its packages exactly (`npm ci --ignore-scripts`) | run from the checkout |
+| `web/pty-bridge.py` | stdlib-only pty between the terminal WebSocket and `agent attach <name>`; resize lines on fd 3 | run by `web/lib/term.mjs` |
+| `web/public/` | the page: `index.html`, `app.mjs` (hash routes `#/` and `#/s/<name>`, xterm.js from `/vendor/`, hooks for later sections listed in its header), `style.css` (light and dark custom properties). No inline script or style: the CSP refuses them, and `app.mjs` bridges xterm's own inline styles through the CSSOM | served by `web/lib/static.mjs` |
 | `config/tmux.conf` | OSC 52 passthrough, mouse, history; prefix `g` opens the picker in a popup, prefix `c` keeps the cwd, `status-left` shows session and harness | `~/.tmux.conf` |
 | `config/zshenv` | sources `agents-env.sh` for every zsh, including `ssh <host> <cmd>` | `~/.zshenv` |
 | `config/zshrc` | oh-my-zsh (robbyrussell, git plugin, updates off), then the interactive fragments | `~/.zshrc` |
@@ -66,6 +69,8 @@ phase 5 or 6, update this table and section 8 of the plan doc.
 | `config/statusline-command.sh` | Claude Code status line, two lines; needs jq | `~/.claude/statusline-command.sh` |
 | `config/workspace/CLAUDE.md` | house rules for every repo under `~/workspace` and every harness | `~/workspace/CLAUDE.md`, `~/workspace/AGENTS.md`, `~/.codex/AGENTS.md` |
 | `tests/agent-test.sh` | unit tests for `bin/agent` and the login fragment: throwaway HOME, stand-in harness, own tmux socket | anywhere; no sudo, network or Docker |
+| `tests/web-test.sh`, `tests/web/` | node:test unit and integration tests for `web/` against real tmux on its own socket and a throwaway HOME (`tests/web/helpers.mjs`); `bash tests/web-test.sh <pattern>` runs the matching `tests/web/*.test.mjs` | anywhere; no sudo or Docker; network for the first `npm ci` |
+| `tests/e2e/web.sh`, `tests/e2e/web/` | the dashboard in Playwright (Chromium and WebKit) inside one container (`Dockerfile.web`): `fixture.sh` makes the throwaway host and supervises the server, specs run `agent` through `helpers.mjs` and restart the server by its pid file. `web.sh <filter>` runs matching spec files; `SHOTS=<dir>` adds the screenshot pass; `KEEP=1` | docker without sudo; network for the image build |
 | `tests/sim-test.sh`, `tests/sim/` | unit tests for `lib/sim.sh`, `bin/sim`, `bin/sim-mcp` and its relay from a temp copy of the repo with shims (systemctl, ssh, rsync, mise, the server). The runner sources `tests/sim/harness.sh` (setup, shims) then each `tests/sim/NN-<topic>.sh`; `bash tests/sim-test.sh <pattern>` runs only matching files. Add cases as new numbered files (numbering in the runner header) | anywhere; no sudo, network, emulator or Mac |
 | `tests/mcp-probe.mjs` | a stdio MCP client: initialize, tools/list, `--call`s; drives the live simulator checks in README section 6 | node |
 | `tests/params-test.sh` | unit tests for `lib/params.sh`, every rendered template checked with real tools, dry runs of `install-mac.sh` and `install-linux.sh --no-packages`, and the literal scan | anywhere; no sudo or network |
@@ -140,12 +145,14 @@ Run these on the host without sudo before you open a PR. If `shellcheck` is miss
 ```
 bash tests/agent-test.sh             # N passed, 0 failed
 bash tests/params-test.sh            # N passed, 0 failed
+bash tests/web-test.sh               # N passed, 0 failed
+bash tests/e2e/web.sh                # about 1 min plus the first image build; N passed, 0 failed
 bash tests/e2e/run.sh                # about 3 min; N passed, 0 failed
 bash tests/e2e/linux.sh              # about 10 min with five distros; N passed, 0 failed
 bash tests/e2e/sim-mac.sh            # under a minute after the image builds; N passed, 0 failed
 bash tests/e2e/tui.sh                # about 12 min; N passed, 0 failed
 bash tests/e2e/harness-paste.sh      # about 4 min plus the first image build; N passed, 0 failed
-shellcheck -x install-host.sh install-mac.sh install-linux.sh tests/e2e/linux.sh bin/agent bin/xclip bin/clip-put config/statusline-command.sh config/bashrc.d/*.sh tests/e2e/harness-paste.sh
+shellcheck -x install-host.sh install-mac.sh install-linux.sh tests/e2e/linux.sh tests/e2e/web.sh tests/e2e/web/fixture.sh tests/web-test.sh bin/agent bin/xclip bin/clip-put config/statusline-command.sh config/bashrc.d/*.sh tests/e2e/harness-paste.sh
 shellcheck -x -s bash lib/params.sh lib/client.sh tests/params-test.sh tests/agent-test.sh bin/clip-push-mac.sh.in bin/clip-push-linux.sh.in
 bash -n install-host.sh install-mac.sh install-linux.sh bin/agent bin/xclip bin/clip-put bin/clip-push-mac.sh.in bin/clip-push-linux.sh.in config/statusline-command.sh lib/params.sh lib/client.sh
 printf '{"model":{"display_name":"M"},"workspace":{"current_dir":"%s"}}' "$PWD" | bash config/statusline-command.sh   # two lines: ➜ agentic-framework git:(branch) [M], then ctx —
@@ -161,7 +168,7 @@ python3 -m json.tool config/claude-settings.json >/dev/null
 
 Which suite to run: `sim-test.sh` for `lib/sim.sh`, `bin/sim`, `bin/sim-mcp`, its relay or the unit, `e2e/sim-mac.sh` as well
 when the iOS path, ssh or the relay changes, plus the live
-checks in README section 6 when the emulator, an MCP version or the Mac side changes; `agent-test.sh` for `bin/agent` or the login fragment; `params-test.sh` for anything
+checks in README section 6 when the emulator, an MCP version or the Mac side changes; `agent-test.sh` for `bin/agent` or the login fragment; `web-test.sh` for `web/` (and `agent-test.sh` too when the change reaches `bin/agent`), `e2e/web.sh` as well for `web/public/`, the terminal route or anything the page calls; `params-test.sh` for anything
 under `lib/`, a template, or a doc (the literal scan); `e2e/run.sh` for any install script, `lib/client.sh` or the
 clipboard bridge; `e2e/linux.sh` as well for `install-linux.sh`, `lib/client.sh`, the Linux `clip-push` or the
 WezTerm module; `e2e/tui.sh` for the picker's menus; `e2e/harness-paste.sh` when a harness is upgraded
