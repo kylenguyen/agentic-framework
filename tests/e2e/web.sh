@@ -7,12 +7,13 @@
 # can run `agent` on the very host the page shows (tests/e2e/web/helpers.mjs). The Tailscale-User-Login header
 # that tailscale serve would add comes from Playwright's extraHTTPHeaders.
 #
-# Needs docker without sudo; network only for the image build. KEEP=1 leaves the container up (af-web-e2e;
-# /work/server.log, /work/results). SHOTS=<dir> also runs the screenshot pass and copies the PNGs there.
+# Needs docker without sudo; network only for the image build. KEEP=1 leaves the container up ($E2E_NAME,
+# default af-web-e2e; /work/server.log, /work/results). Set E2E_NAME to run two suites at once.
+# SHOTS=<dir> also runs the screenshot pass and copies the PNGs there.
 # Usage: bash tests/e2e/web.sh [filter...]   (passed to `playwright test`: a spec file name such as `paste`)
 set -euo pipefail
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-IMG=af-e2e-web; C=af-web-e2e
+IMG=af-e2e-web; C=${E2E_NAME:-af-web-e2e}
 T=$(mktemp -d)
 say() { printf '\033[1;34m==> %s\033[0m\n' "$*"; }
 cleanup() {
