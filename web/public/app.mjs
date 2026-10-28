@@ -901,3 +901,120 @@ if (window.visualViewport) {
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js').catch((err) => console.warn('service worker:', err.message));
 }
+// --- sim ---
+// The Devices panel (T9) in slots.listPanels: GET /api/sim every 10 s, and only while the list view shows, since
+// a status may reach the Mac over ssh. Slots are grouped by platform in the order sim prints them. The panel is
+// out of the DOM while the service is unavailable (no sim, or it failed), so the slot stays empty and hidden; a
+// failed fetch keeps what was shown. Open or collapsed is remembered per browser.
+const SIM_POLL_MS = 10000;
+const SIM_PLATFORM = { android: 'Android', ios: 'iOS', web: 'Web' };
+const SIM_OPEN_KEY = 'agent-web.sim-open';
+let simTimer = null;
+let simGen = 0;
+let simKey = null;
+
+const simPanel = el('details', 'panel sim-panel');
+simPanel.id = 'sim-panel';
+const simSummary = el('summary', 'panel-head');
+const simCount = el('span', 'count');
+simSummary.append(el('h2', null, 'Devices'), simCount);
+const simBody = el('div', 'sim-groups');
+simPanel.append(simSummary, simBody);
+try {
+  simPanel.open = localStorage.getItem(SIM_OPEN_KEY) !== '0';
+} catch {
+  simPanel.open = true;
+}
+// Saved on the summary's click (keyboard activation is a click too) rather than on 'toggle', which setting .open
+// above fires as well. The click comes before the toggle it causes, so the state to save is the opposite one.
+simSummary.addEventListener('click', () => {
+  try {
+    localStorage.setItem(SIM_OPEN_KEY, simPanel.open ? '0' : '1');
+  } catch { /* storage blocked: the panel opens next time */ }
+});
+
+function idleText(secs) {
+  if (secs === null || secs === undefined) return 'unused';
+  if (secs < 60) return 'used just now';
+  if (secs < 3600) return `idle ${Math.floor(secs / 60)}m`;
+  if (secs < 86400) return `idle ${Math.floor(secs / 3600)}h`;
+  return `idle ${Math.floor(secs / 86400)}d`;
+}
+
+const holderOf = (lease) => (lease?.root ? lease.root.replace(/\/+$/, '').split('/').at(-1) : null);
+
+function simRow(s) {
+  const li = el('li', 'sim-slot');
+  li.dataset.platform = s.platform;
+  li.dataset.slot = String(s.slot);
+  const head = el('span', 'sim-head');
+  head.append(el('span', 'sim-num', `#${s.slot}`));
+  head.append(el('span', 'sim-device mono', s.device ?? `${SIM_PLATFORM[s.platform] ?? s.platform} slot ${s.slot}`));
+  if (s.state) {
+    const st = el('span', 'pill sim-state', s.state);
+    st.dataset.state = s.state;
+    head.append(st);
+  }
+  const meta = el('span', 'sim-meta');
+  const holder = holderOf(s.lease);
+  const lease = el('span', `sim-lease${holder ? ' held' : ''}`, holder ?? 'free');
+  if (holder) lease.title = `${s.lease.kind ?? ''} lease, ${s.lease.root}`.trim();
+  meta.append(lease, el('span', 'sim-idle', idleText(s.idle_secs)));
+  if (s.tunnel?.length) meta.append(el('span', 'sim-tunnel mono', `tunnel ${s.tunnel.join(', ')}`));
+  li.append(head, meta);
+  return li;
+}
+
+function renderSim(data) {
+  const slotsList = data?.available ? data.slots ?? [] : [];
+  if (!slotsList.length) {
+    simPanel.remove();
+    simKey = null;
+    return;
+  }
+  const key = JSON.stringify(slotsList);
+  if (key !== simKey) {
+    simKey = key;
+    const groups = new Map();
+    for (const s of slotsList) {
+      if (!groups.has(s.platform)) groups.set(s.platform, []);
+      groups.get(s.platform).push(s);
+    }
+    simBody.replaceChildren(...[...groups].map(([platform, list]) => {
+      const g = el('section', 'sim-group');
+      g.dataset.platform = platform;
+      const h = el('h3', 'sim-group-title', SIM_PLATFORM[platform] ?? platform);
+      h.append(el('span', 'muted', ` ${list.length}`));
+      const ul = el('ul', 'sim-slots');
+      ul.append(...list.map(simRow));
+      g.append(h, ul);
+      return g;
+    }));
+    simCount.textContent = String(slotsList.length);
+  }
+  if (!simPanel.isConnected) slots.listPanels.append(simPanel);
+}
+
+async function simPoll() {
+  clearTimeout(simTimer);
+  const gen = ++simGen;
+  let data;
+  try {
+    data = await api('/api/sim');
+  } catch {
+    data = undefined;
+  }
+  if (gen !== simGen || route.view !== 'list') return;
+  if (data !== undefined) renderSim(data);
+  simTimer = setTimeout(simPoll, SIM_POLL_MS);
+}
+
+function simStop() {
+  clearTimeout(simTimer);
+  simGen += 1;
+}
+
+hooks.view.push((r) => (r.view === 'list' ? simPoll() : simStop()));
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && route.view === 'list') simPoll();
+});

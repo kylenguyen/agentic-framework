@@ -38,7 +38,13 @@ export function runCommand(file, args, env, { timeout = TIMEOUT_MS, cwd } = {}) 
     child.stderr.on('data', (b) => err.push(b));
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill('SIGTERM');
+      // The whole group: 'close' waits for the pipes, which a grandchild (sim's ssh to the Mac) would hold open
+      // past the timeout if only the direct child went.
+      try {
+        process.kill(-child.pid, 'SIGTERM');
+      } catch {
+        child.kill('SIGTERM');
+      }
     }, timeout);
     child.on('error', (e) => { spawnError = `${file}: ${e.code ?? e.message}`; });
     child.on('close', (code, signal) => {

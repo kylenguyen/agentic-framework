@@ -36,6 +36,7 @@ import { serveStatic } from './lib/static.mjs';
 import { createSession, getRepos, getSessions, killSession, worktreeStatus } from './lib/sessions.mjs';
 import { hangUpTerminals, openTerminal } from './lib/term.mjs';
 import { uploadFile } from './lib/upload.mjs';
+import { getSim } from './lib/sim.mjs';
 
 export { HttpError, readBody, readJson } from './lib/auth.mjs';
 
@@ -68,6 +69,7 @@ const ROUTES = [
   ['POST', '/api/sessions/:name/kill', killSession],
   ['WS', '/api/sessions/:name/term', openTerminal],
   ['POST', '/api/sessions/:name/upload', uploadFile, { raw: true }],
+  ['GET', '/api/sim', getSim],
 ];
 for (const r of ROUTES) addRoute(...r);
 onShutdown(hangUpTerminals);

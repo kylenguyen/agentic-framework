@@ -1,0 +1,65 @@
+[
+  {
+    "platform": "android",
+    "slot": 1,
+    "device": "emulator-5600",
+    "state": "active",
+    "idle_secs": 95,
+    "lease": {
+      "kind": "mcp",
+      "pid": 41234,
+      "root": "/home/alice/workspace/demo.wt/login-fix",
+      "since": "2026-10-28T09:12:03",
+      "until": null
+    },
+    "tunnel": []
+  },
+  {
+    "platform": "android",
+    "slot": 2,
+    "device": "emulator-5602",
+    "state": "active",
+    "idle_secs": 1500,
+    "lease": {
+      "kind": "cli",
+      "pid": 41301,
+      "root": "/home/alice/workspace/shop",
+      "since": "2026-10-28T08:40:51",
+      "until": 1793187651
+    },
+    "tunnel": []
+  },
+  {
+    "platform": "android",
+    "slot": 3,
+    "device": "emulator-5604",
+    "state": "inactive",
+    "idle_secs": null,
+    "lease": null,
+    "tunnel": []
+  },
+  {
+    "platform": "web",
+    "slot": 1,
+    "device": null,
+    "state": null,
+    "idle_secs": 40,
+    "lease": {
+      "kind": "mcp",
+      "pid": 41290,
+      "root": "/home/alice/workspace/demo.wt/checkout",
+      "since": "2026-10-28T09:20:17",
+      "until": null
+    },
+    "tunnel": []
+  },
+  {
+    "platform": "web",
+    "slot": 2,
+    "device": null,
+    "state": null,
+    "idle_secs": 565259,
+    "lease": null,
+    "tunnel": []
+  }
+]
