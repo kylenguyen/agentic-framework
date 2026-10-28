@@ -33,7 +33,9 @@ import {
   HttpError, SECURITY_HEADERS, checkLogin, checkOrigin, checkPeer, checkPost, loginOf, parseAllow,
 } from './lib/auth.mjs';
 import { serveStatic } from './lib/static.mjs';
-import { createSession, getRepos, getSessions, killSession, worktreeStatus } from './lib/sessions.mjs';
+import { createSession, getRepos, killSession, worktreeStatus } from './lib/sessions.mjs';
+import { getSessions, markSeen, startAlerts, stopAlerts } from './lib/attention.mjs';
+import { getPushKey, pushSubscribe, pushTest, pushUnsubscribe } from './lib/push.mjs';
 import { hangUpTerminals, openTerminal } from './lib/term.mjs';
 import { uploadFile } from './lib/upload.mjs';
 import { getSim } from './lib/sim.mjs';
@@ -70,9 +72,15 @@ const ROUTES = [
   ['WS', '/api/sessions/:name/term', openTerminal],
   ['POST', '/api/sessions/:name/upload', uploadFile, { raw: true }],
   ['GET', '/api/sim', getSim],
+  ['POST', '/api/sessions/:name/seen', markSeen],
+  ['GET', '/api/push/key', getPushKey],
+  ['POST', '/api/push/subscribe', pushSubscribe],
+  ['POST', '/api/push/unsubscribe', pushUnsubscribe],
+  ['POST', '/api/push/test', pushTest],
 ];
 for (const r of ROUTES) addRoute(...r);
 onShutdown(hangUpTerminals);
+onShutdown(stopAlerts);
 
 function match(method, pathname) {
   for (const r of routes) {
@@ -156,6 +164,7 @@ function parseUrl(req) {
 
 export function createServer(env = process.env, { log = (line) => console.log(line) } = {}) {
   const config = loadConfig(env);
+  startAlerts(env, config);   // the attention watcher (web/lib/attention.mjs), stopped by stopAlerts on shutdown
   const wss = new WebSocketServer({ noServer: true });
 
   async function onRequest(req, res) {

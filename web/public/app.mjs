@@ -1018,3 +1018,145 @@ hooks.view.push((r) => (r.view === 'list' ? simPoll() : simStop()));
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && route.view === 'list') simPoll();
 });
+
+// --- alerts ---
+// T10: sessions that need the user. The server's /api/sessions carries each one's effective attention (a hook,
+// an exit, or the quiet heuristic: web/lib/attention.mjs); here those cards sort first, keep their badge, and the
+// title counts them, "(2) Agents". Opening a session tells the server it was seen (POST /seen), which clears it.
+// "Enable alerts" in the header subscribes this browser to Web Push through sw.js; it shows only where PushManager
+// exists. iOS has it only in a page added to the home screen (16.4 or later), so there the header says that
+// instead. "Test" asks the server for a push to every subscription.
+const ALERT_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>';
+const IOS = /iP(hone|ad|od)/.test(navigator.userAgent)
+  || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const PUSH = 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+let attentionCount = 0;
+
+hooks.sessions.push((list) => [...list.filter((s) => s.attention), ...list.filter((s) => !s.attention)]);
+hooks.card.push((li, s) => li.classList.toggle('needs-you', Boolean(s.attention)));
+
+function alertTitle() {
+  const base = route.view === 'term' ? route.name : 'Agents';
+  document.title = attentionCount ? `(${attentionCount}) ${base}` : base;
+}
+hooks.rendered.push((list) => {
+  attentionCount = list.filter((s) => s.attention).length;
+  alertTitle();
+});
+hooks.view.push(alertTitle);
+
+hooks.terminalOpen.push(({ name }) => {
+  api(`/api/sessions/${encodeURIComponent(name)}/seen`, { body: {} })
+    .then(() => poll())
+    .catch((err) => console.warn('seen:', err.message));
+});
+
+// A notification click in sw.js lands here when a dashboard window is already open.
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.addEventListener('message', (e) => {
+    if (e.data?.type !== 'open' || typeof e.data.url !== 'string') return;
+    const u = new URL(e.data.url, location.href);
+    if (u.origin === location.origin) location.hash = u.hash || '#/';
+  });
+}
+
+function b64urlBytes(s) {
+  const bin = atob(s.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(s.length / 4) * 4, '='));
+  return Uint8Array.from(bin, (c) => c.charCodeAt(0));
+}
+
+const alertBtn = el('button', 'btn small alerts-btn');
+alertBtn.type = 'button';
+alertBtn.id = 'alerts-enable';
+alertBtn.innerHTML = ALERT_ICON;
+const alertLabel = el('span', 'alerts-label', 'Enable alerts');
+alertBtn.append(alertLabel);
+const testBtn = el('button', 'btn small ghost alerts-test', 'Test');
+testBtn.type = 'button';
+testBtn.title = 'Send a test alert to every subscribed browser';
+testBtn.id = 'alerts-test';
+testBtn.hidden = true;
+
+async function currentSub() {
+  const reg = await navigator.serviceWorker.ready;
+  return { reg, sub: await reg.pushManager.getSubscription() };
+}
+
+function showAlertState(on) {
+  const blocked = Notification.permission === 'denied';
+  alertLabel.textContent = on ? 'Alerts on' : blocked ? 'Alerts blocked' : 'Enable alerts';
+  alertBtn.setAttribute('aria-pressed', String(on));
+  alertBtn.title = on ? 'Alerts are on for this browser; click to turn them off'
+    : blocked ? 'Notifications are blocked for this site in the browser settings'
+      : 'Get a notification when a session needs you';
+  testBtn.hidden = !on;
+}
+
+async function enableAlerts() {
+  const perm = await Notification.requestPermission();
+  if (perm !== 'granted') throw new Error('notifications are not allowed for this site');
+  const { publicKey } = await api('/api/push/key');
+  const { reg, sub: old } = await currentSub();
+  const sub = old ?? await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64urlBytes(publicKey) });
+  await api('/api/push/subscribe', { body: sub.toJSON() });
+}
+
+async function disableAlerts() {
+  const { sub } = await currentSub();
+  if (!sub) return;
+  await api('/api/push/unsubscribe', { body: { endpoint: sub.endpoint } });
+  await sub.unsubscribe();
+}
+
+alertBtn.addEventListener('click', async () => {
+  alertBtn.disabled = true;
+  const on = alertBtn.getAttribute('aria-pressed') === 'true';
+  try {
+    if (on) {
+      await disableAlerts();
+      toast('Alerts off for this browser', 'ok', 2000);
+    } else {
+      await enableAlerts();
+      toast('Alerts on: a notification comes when a session needs you', 'ok', 3000);
+    }
+    showAlertState(!on);
+  } catch (err) {
+    toast(`Alerts: ${err.message}`, 'error', 6000);
+    showAlertState(on);
+  } finally {
+    alertBtn.disabled = false;
+  }
+});
+
+testBtn.addEventListener('click', async () => {
+  testBtn.disabled = true;
+  try {
+    const r = await api('/api/push/test', { body: {} });
+    toast(r.sent ? 'Test alert sent' : 'The push service did not take the test alert', r.sent ? 'ok' : 'error', 3000);
+  } catch (err) {
+    toast(`Test alert: ${err.message}`, 'error', 6000);
+  } finally {
+    testBtn.disabled = false;
+  }
+});
+
+if (PUSH) {
+  slots.headerActions.append(alertBtn, testBtn);
+  showAlertState(false);
+  // Already subscribed in an earlier visit: say so, and hand the server the subscription again in case it dropped
+  // it (a 410 from the push service, or a fresh state directory). Only asked once notifications are allowed, when
+  // there can be a subscription at all: Playwright's WebKit hangs the page on getSubscription() otherwise.
+  if (Notification.permission === 'granted') {
+    currentSub().then(async ({ sub }) => {
+      if (!sub) return;
+      showAlertState(true);
+      await api('/api/push/subscribe', { body: sub.toJSON() });
+    }).catch((err) => console.warn('alerts:', err.message));
+  }
+} else if (IOS) {
+  const hint = el('span', 'alerts-hint', 'Alerts: add to Home Screen');
+  hint.id = 'alerts-hint';
+  hint.title = 'On iPhone and iPad, notifications work only in the app added to the Home Screen (Share, Add to '
+    + 'Home Screen, iOS 16.4 or later). Open it from there and enable alerts.';
+  slots.headerActions.append(hint);
+}

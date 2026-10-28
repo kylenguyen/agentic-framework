@@ -423,3 +423,17 @@ body:has(#view-term:not([hidden])) { overflow: hidden; background: var(--term-bg
   background: var(--accent-soft); color: var(--accent); max-width: 100%; overflow-wrap: anywhere;
 }
 .sim-tunnel { font-size: 11.5px; overflow-wrap: anywhere; }
+
+/* --- alerts --- */
+/* T10: the header's alert buttons and the cards that need the user (app.mjs, the alerts section). */
+.alerts-btn svg { width: 15px; height: 15px; flex: none; }
+.alerts-btn[aria-pressed="true"] { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
+.alerts-hint { color: var(--muted); font-size: 12.5px; white-space: nowrap; }
+.card.needs-you { box-shadow: inset 3px 0 0 var(--warn); }
+
+@media (max-width: 700px) {
+  /* Icon only: the bar also holds the brand and New session at 390 px. */
+  .alerts-btn { width: 34px; padding: 0; }
+  .alerts-label { display: none; }
+  .alerts-hint { font-size: 11.5px; white-space: normal; max-width: 9rem; line-height: 1.2; }
+}
