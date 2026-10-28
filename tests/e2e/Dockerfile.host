@@ -2,7 +2,8 @@
 # container cannot run; tests/e2e/shims/host stands in for them and logs every call to /var/log/e2e-shims.log.
 # The phase 1 apt packages are preinstalled so the run needs no network: the simulator libraries come in as
 # SIM_APT (lib/sim.sh SIM_APT_PACKAGES, passed by run.sh), Ubuntu 26.04 names like the live host. Login and
-# password come from run.sh.
+# password come from run.sh. A real install writes /etc/default/locale (pam_env gives it to ssh logins); the 26.04
+# image has none, and without a UTF-8 LANG tmux 3.6 draws every non-ASCII cell of an attached session as '_'.
 FROM ubuntu:26.04
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -16,6 +17,7 @@ COPY shims/host/ /usr/local/sbin/
 RUN chmod 755 /usr/local/sbin/* && touch /var/log/e2e-shims.log && chmod 666 /var/log/e2e-shims.log \
     && mkdir -p /run/sshd && ssh-keygen -A \
     && printf 'PasswordAuthentication yes\n' > /etc/ssh/sshd_config.d/50-cloud-init.conf \
+    && printf 'LANG=C.UTF-8\n' > /etc/default/locale \
     && printf '# The suites fail logins on purpose, many from one address; OpenSSH 10 would then refuse that address.\nPerSourcePenalties no\n' > /etc/ssh/sshd_config.d/90-e2e.conf
 ARG LOGIN=alice
 ARG PASSWORD=alice-pw

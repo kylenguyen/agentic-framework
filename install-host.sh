@@ -137,9 +137,12 @@ if [ "$(getent passwd "$USER_NAME" | cut -d: -f7)" != "$(command -v zsh || true)
   note "login shell is not zsh yet: re-run without --no-root, or: chsh -s $(command -v zsh || echo /usr/bin/zsh)"
 fi
 touch "$HOME/.bashrc"
+# The block text is written as is, for the shell that reads .bashrc to expand.
+# shellcheck disable=SC2016
 block "$HOME/.bashrc" env top \
 '# All shells, incl. non-interactive ssh commands: PATH, mise shims, ~/.config/agents/env
 [ -r "$HOME/.bashrc.d/agents-env.sh" ] && . "$HOME/.bashrc.d/agents-env.sh"'
+# shellcheck disable=SC2016
 block "$HOME/.bashrc" interactive bottom \
 '[ -r "$HOME/.bashrc.d/mise.sh" ] && . "$HOME/.bashrc.d/mise.sh"
 [ -r "$HOME/.bashrc.d/tmux-autoattach.sh" ] && . "$HOME/.bashrc.d/tmux-autoattach.sh"'
@@ -185,8 +188,11 @@ link "$REPO/config/systemd/agent-sim-reap.service" "$HOME/.config/systemd/user/a
 link "$REPO/config/systemd/agent-sim-reap.timer" "$HOME/.config/systemd/user/agent-sim-reap.timer"
 if systemctl --user daemon-reload 2>/dev/null; then
   # Idle devices are stopped every 5 minutes (lib/sim.sh, Uptime); AGENT_SIM_IDLE_MINUTES=0 in .env keeps them up.
-  systemctl --user enable --now agent-sim-reap.timer 2>/dev/null && note "ok   agent-sim-reap.timer" \
-    || note "could not enable agent-sim-reap.timer; run: systemctl --user enable --now agent-sim-reap.timer"
+  if systemctl --user enable --now agent-sim-reap.timer 2>/dev/null; then
+    note "ok   agent-sim-reap.timer"
+  else
+    note "could not enable agent-sim-reap.timer; run: systemctl --user enable --now agent-sim-reap.timer"
+  fi
 else
   note "systemctl --user unavailable here; run: systemctl --user daemon-reload && systemctl --user enable --now agent-sim-reap.timer"
 fi

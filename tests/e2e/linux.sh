@@ -15,6 +15,8 @@
 # shellcheck disable=SC2015,SC2016
 set -u
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+# shellcheck source=tests/e2e/host-image.sh
+. "$REPO/tests/e2e/host-image.sh"
 NET=af-lx; BOX=af-lx-box
 LOGIN=alice; PASSWORD=alice-pw; ALIAS=box; LUSER=linuxuser; SUDO_PW=linux-pw
 DISTROS=${DISTROS:-ubuntu:24.04 debian:12 fedora:41 archlinux:latest opensuse/tumbleweed}
@@ -41,7 +43,7 @@ slug() { printf '%s' "$1" | tr ':/.' '---'; }
 say "host image and container"
 command -v docker >/dev/null || { echo "docker is required" >&2; exit 2; }
 docker rm -f "$BOX" >/dev/null 2>&1; docker network rm "$NET" >/dev/null 2>&1
-docker build -q -f "$REPO/tests/e2e/Dockerfile.host" --build-arg "LOGIN=$LOGIN" --build-arg "PASSWORD=$PASSWORD" -t af-e2e-host "$REPO/tests/e2e" >/dev/null || { echo "host image build failed" >&2; exit 1; }
+host_image
 docker network create "$NET" >/dev/null
 docker run -d --name "$BOX" --hostname "$ALIAS" --network "$NET" --network-alias "$ALIAS" af-e2e-host >/dev/null
 BOX_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$BOX")

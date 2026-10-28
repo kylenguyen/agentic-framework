@@ -15,6 +15,7 @@
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 set -euo pipefail
 host=${CLIP_PUSH_HOST:-@AGENT_HOST@-clip}
+# shellcheck disable=SC2088  # the ~ is for the remote shell
 remote() { ssh -o BatchMode=yes -o ConnectTimeout=3 "$host" "~/.local/bin/clip-put $*"; }
 
 if_image=0

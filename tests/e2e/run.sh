@@ -13,6 +13,8 @@
 # shellcheck disable=SC2015,SC2016
 set -u
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+# shellcheck source=tests/e2e/host-image.sh
+. "$REPO/tests/e2e/host-image.sh"
 NET=af-e2e; BOX=af-e2e-box; MAC=af-e2e-mac
 LOGIN=alice; PASSWORD=alice-pw; ALIAS=box
 BOX_REPO=/home/$LOGIN/workspace/agentic-framework; MAC_REPO=/home/macuser/workspace/agentic-framework
@@ -36,8 +38,7 @@ run() { RAW=$("$@" 2>&1); RC=$?; OUT=$(printf '%s\n' "$RAW" | strip); }         
 say "images and containers"
 command -v docker >/dev/null || { echo "docker is required" >&2; exit 2; }
 docker rm -f "$BOX" "$MAC" >/dev/null 2>&1; docker network rm "$NET" >/dev/null 2>&1
-SIM_APT=$(bash -c '. "$1/lib/sim.sh" && echo $SIM_APT_PACKAGES' _ "$REPO")   # phase 1 finds them installed
-docker build -q -f "$REPO/tests/e2e/Dockerfile.host" --build-arg "LOGIN=$LOGIN" --build-arg "PASSWORD=$PASSWORD" --build-arg "SIM_APT=$SIM_APT" -t af-e2e-host "$REPO/tests/e2e" >/dev/null || { echo "host image build failed" >&2; exit 1; }
+host_image   # phase 1 finds the simulator packages installed
 docker build -q -f "$REPO/tests/e2e/Dockerfile.mac" -t af-e2e-mac "$REPO/tests/e2e" >/dev/null || { echo "mac image build failed" >&2; exit 1; }
 docker network create "$NET" >/dev/null
 docker run -d --name "$BOX" --hostname "$ALIAS" --network "$NET" --network-alias "$ALIAS" af-e2e-host >/dev/null

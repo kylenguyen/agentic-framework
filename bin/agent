@@ -772,7 +772,7 @@ pick_new_shell() {
 # Killing the session behind the popup you stand in is allowed and ends the popup with it. A worktree with
 # uncommitted changes asks once more, on the terminal.
 pick_kill() {
-  local list sel name
+  local list sel name out
   list=$(table 1 "$UI_TEXT" 0)
   if [ -z "$list" ]; then PICK_NOTE='no sessions to kill'; return 1; fi
   sel=$(printf '%s\n' "$list" | MENU_DANGER=1 menu 'kill>' "$(pick_filter 1)" 1 \
@@ -780,7 +780,9 @@ pick_kill() {
           "↑↓ move   enter kill   esc back$HINT_TAIL") || return 1
   [ -n "$sel" ] || return 1
   name=${sel%% *}
-  cmd_kill "$name" || PICK_NOTE="could not kill $name"
+  out=$(cmd_kill "$name") || { PICK_NOTE="could not kill $name"; return 0; }
+  # fzf repaints over whatever was printed, so the by-hand command for a kept worktree goes in the next header.
+  case $out in *'worktree kept: '*) out=${out##*worktree kept: }; PICK_NOTE="worktree kept: ${out%%$'\n'*}" ;; esac
 }
 
 # Inside tmux the popup cannot end the login shell itself, so it marks the client's tty and detaches it;

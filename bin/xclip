@@ -22,7 +22,7 @@ log() { [ -n "${CLIP_BRIDGE_DEBUG:-}" ] && printf 'xclip-shim: %s\n' "$*" >&2; r
 is_png() { head -c 8 "$1" 2>/dev/null | od -An -tx1 | tr -d ' \n' | grep -q '^89504e470d0a1a0a$'; }
 
 spool=${CLIP_BRIDGE_SPOOL:-$HOME/.clip/latest}
-sel=clipboard target= out=0
+sel=clipboard target='' out=0
 while [ $# -gt 0 ]; do
   case $1 in
     -selection|-sel|-se|-s) [ $# -ge 2 ] || exit 1; sel=$2; shift 2 ;;

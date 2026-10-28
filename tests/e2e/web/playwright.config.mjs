@@ -2,7 +2,7 @@
 // inside its container against the server fixture.sh supervises. One worker: every spec shares one tmux server
 // and one web server (which a spec restarts), so nothing runs in parallel. The phone projects run phone.spec.mjs
 // alone, and the desktop ones everything else: the desktop specs assume a wide window. alerts.spec.mjs runs on
-// desktop-chromium only.
+// desktop-chromium only; journey.spec.mjs (the T13 walk-through) runs on both and checks the push in Chromium.
 import { defineConfig, devices } from '@playwright/test';
 import { BASE, LOGIN } from './helpers.mjs';
 

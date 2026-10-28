@@ -24,6 +24,8 @@
 # shellcheck disable=SC2015,SC2016
 set -u
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+# shellcheck source=tests/e2e/host-image.sh
+. "$REPO/tests/e2e/host-image.sh"
 NET=af-hp; BOX=af-hp-box; MAC=af-hp-mac
 LOGIN=alice; PASSWORD=alice-pw; ALIAS=box
 BOX_REPO=/home/$LOGIN/workspace/agentic-framework; MAC_REPO=/home/macuser/workspace/agentic-framework
@@ -70,7 +72,7 @@ paste()  { ct set-buffer -- "$1"; ct paste-buffer -p -t term; }
 say "images and containers"
 command -v docker >/dev/null || { echo "docker is required" >&2; exit 2; }
 docker rm -f "$BOX" "$MAC" >/dev/null 2>&1; docker network rm "$NET" >/dev/null 2>&1
-docker build -q -f "$REPO/tests/e2e/Dockerfile.host" --build-arg "LOGIN=$LOGIN" --build-arg "PASSWORD=$PASSWORD" -t af-e2e-host "$REPO/tests/e2e" >/dev/null || { echo "host image build failed" >&2; exit 1; }
+host_image
 echo "    af-e2e-harness: the three harnesses, minutes and a few hundred MB on a cold cache"
 docker build -q -f "$REPO/tests/e2e/Dockerfile.harness" --build-arg BASE=af-e2e-host --build-arg "LOGIN=$LOGIN" -t af-e2e-harness "$REPO/tests/e2e" >/dev/null || { echo "harness image build failed" >&2; exit 1; }
 docker build -q -f "$REPO/tests/e2e/Dockerfile.mac" -t af-e2e-mac "$REPO/tests/e2e" >/dev/null || { echo "mac image build failed" >&2; exit 1; }
