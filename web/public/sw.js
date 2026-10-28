@@ -6,26 +6,23 @@ self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (e) => e.waitUntil(self.clients.claim()));
 
 // --- alerts ---
-// T10: a push from web/lib/push.mjs carries {title, body, url, tag}, where url is /#/s/<name>. It is shown unless a
-// focused window is already on that session; a click focuses a dashboard window and sends it there (the page
-// listens for the message in app.mjs's alerts section), or opens a new one.
+// T10: a push from web/lib/push.mjs carries {title, body, url, tag}, where url is /#/s/<name>. Every push shows a
+// notification, even when a window is on that session: subscriptions are userVisibleOnly, and Safari revokes one
+// after pushes that show nothing. The tag replaces an earlier one for the same session. A click focuses a dashboard
+// window and sends it there (the page listens for the message in app.mjs's alerts section), or opens a new one.
 self.addEventListener('push', (e) => {
   let d = {};
   try {
     d = e.data?.json() ?? {};
   } catch { /* not JSON: a bare notification still says something needs looking at */ }
   const url = new URL(typeof d.url === 'string' ? d.url : '/', self.location.origin).href;
-  e.waitUntil((async () => {
-    const wins = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-    if (wins.some((c) => c.focused && c.url === url)) return;
-    await self.registration.showNotification(d.title || 'Agents', {
-      body: d.body || '',
-      tag: d.tag || 'agent-web',
-      renotify: true,
-      icon: '/icons/icon-192.png',
-      data: { url },
-    });
-  })());
+  e.waitUntil(self.registration.showNotification(d.title || 'Agents', {
+    body: d.body || '',
+    tag: d.tag || 'agent-web',
+    renotify: true,
+    icon: '/icons/icon-192.png',
+    data: { url },
+  }));
 });
 
 self.addEventListener('notificationclick', (e) => {

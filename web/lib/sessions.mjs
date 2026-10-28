@@ -2,12 +2,12 @@
 // route handlers server.mjs lists. Each input is validated here before it reaches bin/agent (security rule 5);
 // bin/agent repeats its own checks, so this is the first wall, not the only one.
 //
-// getSessions is kept a plain function of ctx so the attention merge (T10) can wrap it.
+// GET /api/sessions lives in attention.mjs, which merges the server's attention into the list.
 
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { HttpError, readJson } from './auth.mjs';
-import { findSession, listSessions, runAgent, runCommand } from './agent.mjs';
+import { findSession, runAgent, runCommand } from './agent.mjs';
 
 export const HARNESSES = ['claude', 'codex', 'omp', 'opencode', 'shell'];
 const REPO_RE = /^[A-Za-z0-9._-]+$/;
@@ -40,10 +40,6 @@ export function listRepos(env) {
     return [];
   }
   return names.filter((n) => isRepo(env, n)).sort();
-}
-
-export function getSessions(req, res, ctx) {
-  return listSessions(ctx.env);
 }
 
 export function getRepos(req, res, ctx) {
