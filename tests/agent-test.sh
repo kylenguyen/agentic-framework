@@ -580,6 +580,53 @@ else
   kill "$dev_pid" 2>/dev/null || true
   wait "$dev_pid" 2>/dev/null || true
 fi
+
+echo "# Claude Code hooks call agent attention"
+# The hook commands are read from config/claude-settings.json itself, so what is tested is what is installed.
+# Claude Code runs each through a shell with the hook's JSON on stdin and the pane's TMUX_PANE in its
+# environment; the throwaway HOME gets the ~/.local/bin/agent that install-host.sh would link.
+SETTINGS=$REPO/config/claude-settings.json
+python3 -m json.tool "$SETTINGS" >/dev/null 2>&1 && ok "claude-settings.json is valid JSON" || bad "claude-settings.json is valid JSON"
+hook() { jq -r --arg e "$1" '.hooks[$e][0].hooks[0].command // empty' "$SETTINGS" 2>/dev/null; }
+for e in Notification Stop UserPromptSubmit; do
+  check "hooks: $e has one command hook with a 5 s timeout" "command 5 1" \
+    "$(jq -r --arg e "$e" '[.hooks[$e][].hooks[]] | "\(.[0].type) \(.[0].timeout) \(length)"' "$SETTINGS" 2>/dev/null)"
+  case $(hook "$e") in
+    '$HOME/.local/bin/agent attention '*) ok "hooks: $e runs \$HOME/.local/bin/agent attention" ;;
+    *) bad "hooks: $e runs \$HOME/.local/bin/agent attention" "got [$(hook "$e")]" ;;
+  esac
+done
+check "hooks: Notification fires on permission prompts only" permission_prompt \
+  "$(jq -r '.hooks.Notification[0].matcher // empty' "$SETTINGS" 2>/dev/null)"
+mkdir -p "$HOME/.local/bin"; ln -sf "$AGENT" "$HOME/.local/bin/agent"
+# run_hook <event>: the command as Claude Code would run it, typed into demo-js's own pane.
+run_hook() {
+  tj send-keys -t "$(jsid demo-js)" \
+    "export PATH='$PATH' AGENT_TMUX_SOCKET='$J'; echo '{}' | sh -c '$(hook "$1")'" Enter
+}
+run_hook Notification
+wait_until 10 jq_is '.[] | select(.name=="demo-js") | .attention | "\(.source) \(.reason)"' "claude permission" \
+  && ok "hooks: Notification marks the session claude/permission" \
+  || bad "hooks: Notification marks the session claude/permission" "$(aj ls --json | jq -c '.[].attention')"
+run_hook UserPromptSubmit
+wait_until 10 jq_is '.[] | select(.name=="demo-js") | .attention' null \
+  && ok "hooks: UserPromptSubmit clears it" \
+  || bad "hooks: UserPromptSubmit clears it" "$(aj ls --json | jq -c '.[].attention')"
+run_hook Stop
+wait_until 10 jq_is '.[] | select(.name=="demo-js") | .attention | "\(.source) \(.reason)"' "claude done" \
+  && ok "hooks: Stop marks the session claude/done" \
+  || bad "hooks: Stop marks the session claude/done" "$(aj ls --json | jq -c '.[].attention')"
+check "hooks: only the pane's own session" null "$(aj ls --json | jq -r '.[] | select(.name=="jx") | .attention')"
+run_hook UserPromptSubmit
+wait_until 10 jq_is '.[] | select(.name=="demo-js") | .attention' null \
+  && ok "hooks: UserPromptSubmit clears done too" \
+  || bad "hooks: UserPromptSubmit clears done too" "$(aj ls --json | jq -c '.[].attention')"
+for e in Notification Stop UserPromptSubmit; do
+  out=$(echo '{}' | env -u TMUX -u TMUX_PANE AGENT_TMUX_SOCKET=$J sh -c "$(hook "$e")" 2>&1); rc=$?
+  check "hooks: $e outside tmux, exit 0 and no output" "0[]" "${rc}[$out]"
+done
+rm -f "$HOME/.local/bin/agent"
+
 aj kill jx >/dev/null 2>&1
 aj kill demo-js >/dev/null 2>&1
 tj kill-server >/dev/null 2>&1

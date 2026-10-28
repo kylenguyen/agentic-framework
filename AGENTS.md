@@ -62,7 +62,7 @@ phase 5 or 6, update this table and section 8 of the plan doc.
 | `config/bashrc.d/mise.sh`, `tmux-autoattach.sh` | interactive-only bits, valid in bash and zsh; `tmux-autoattach.sh` runs `agent pick` for interactive SSH logins and logs out on exit 3 | bottom of `~/.bashrc` and end of `~/.zshrc` |
 | `config/ssh_config.client.in` | template: `Host <alias>`, `<alias>-lan` (dropped without a LAN address), `<alias>-clip` (BatchMode, ControlMaster) | `agent-host` marker block in `~/.ssh/config` on each client |
 | `config/wezterm-agent-host.lua.in` | template: SSH domain `<alias>`, new-tab key, paste key with image push then paste of the host path, default colour scheme. Keys follow `wezterm.target_triple`: Cmd+Shift+A and Cmd+V on macOS, Ctrl+Shift+A, Ctrl+V and Ctrl+Shift+V elsewhere | `~/.config/wezterm/wezterm-agent-host.lua` |
-| `config/claude-settings.json` | Claude Code allow and deny lists, model, status line command | `~/.claude/settings.json` |
+| `config/claude-settings.json` | Claude Code allow and deny lists, model, status line command, and hooks that call `$HOME/.local/bin/agent attention`: `Notification` (permission prompts) and `Stop` set it, `UserPromptSubmit` clears it | `~/.claude/settings.json` |
 | `config/statusline-command.sh` | Claude Code status line, two lines; needs jq | `~/.claude/statusline-command.sh` |
 | `config/workspace/CLAUDE.md` | house rules for every repo under `~/workspace` and every harness | `~/workspace/CLAUDE.md`, `~/workspace/AGENTS.md`, `~/.codex/AGENTS.md` |
 | `tests/agent-test.sh` | unit tests for `bin/agent` and the login fragment: throwaway HOME, stand-in harness, own tmux socket | anywhere; no sudo, network or Docker |
